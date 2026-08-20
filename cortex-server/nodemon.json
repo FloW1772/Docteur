@@ -1,0 +1,14 @@
+{
+  "watch": ["src"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": [
+    "data/**",
+    "node_modules/**",
+    "*.log",
+    "*.sqlite",
+    "*.sqlite-wal",
+    "*.sqlite-shm",
+    "*.lance"
+  ],
+  "delay": 500
+}

@@ -1,0 +1,198 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { YTDLP_BIN } from './ytdlp.js';
+import { assertSafeUrl } from './url-security.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '../..');
+export const TMP_DIR = path.join(ROOT, 'data', 'tmp');
+
+const WHISPER_SCRIPT = path.join(__dirname, 'whisper_transcribe.py');
+
+const PYTHON_BIN = process.platform === 'win32' ? 'python' : 'python3';
+
+// ── Tmp dir management ────────────────────────────────────────────────────────
+
+export function ensureTmpDir() {
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+}
+
+export function cleanTmpDir() {
+  try {
+    const files = fs.readdirSync(TMP_DIR);
+    for (const f of files) {
+      try { fs.unlinkSync(path.join(TMP_DIR, f)); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+function removeTmpFile(p) {
+  try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch { /* ignore */ }
+}
+
+// ── Get video duration via yt-dlp (no download) ───────────────────────────────
+
+export async function getVideoDuration(url) {
+  return new Promise((resolve) => {
+    const proc = spawn(YTDLP_BIN, [url, '--print', 'duration', '--no-playlist', '--no-warnings'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let out = '';
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.on('close', () => {
+      const n = parseInt(out.trim(), 10);
+      resolve(isNaN(n) ? null : n);
+    });
+    proc.on('error', () => resolve(null));
+  });
+}
+
+// ── Download audio only ────────────────────────────────────────────────────────
+
+export function downloadAudio(url, outputPath, { onProgress, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      url,
+      '-x',
+      '--audio-format', 'wav',
+      '--audio-quality', '0',
+      '--no-playlist',
+      '--newline',
+      '--no-warnings',
+      '-o', outputPath,
+    ];
+
+    const proc = spawn(YTDLP_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let lastStderr = '';
+
+    if (signal) {
+      signal.addEventListener('abort', () => { try { proc.kill(); } catch { /* ignore */ } }, { once: true });
+    }
+
+    proc.stdout.on('data', chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        const m = line.match(/\[download\]\s+([\d.]+)%/);
+        if (m) onProgress?.({ step: 'download', percent: parseFloat(m[1]) });
+      }
+    });
+    proc.stderr.on('data', d => { lastStderr = d.toString().trim(); });
+
+    proc.on('error', err => reject(err.code === 'ENOENT' ? new Error('yt-dlp introuvable') : err));
+    proc.on('close', code => {
+      if (signal?.aborted) { const e = new Error('Annulé'); e.name = 'AbortError'; return reject(e); }
+      if (code !== 0) return reject(new Error(lastStderr || 'Téléchargement audio échoué'));
+      resolve();
+    });
+  });
+}
+
+// ── Transcribe via Python faster-whisper ─────────────────────────────────────
+
+function transcribeAudio(audioPath, { onProgress, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [WHISPER_SCRIPT, audioPath];
+    const proc = spawn(PYTHON_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    if (signal) {
+      signal.addEventListener('abort', () => { try { proc.kill(); } catch { /* ignore */ } }, { once: true });
+    }
+
+    proc.stdout.on('data', d => {
+      const chunk = d.toString();
+      stdout += chunk;
+      // Progress lines: PROGRESS:<percent>
+      for (const line of chunk.split('\n')) {
+        const m = line.match(/^PROGRESS:(\d+)$/);
+        if (m) onProgress?.({ step: 'transcribe', percent: parseInt(m[1], 10) });
+      }
+    });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    proc.on('error', err => reject(err));
+    proc.on('close', code => {
+      if (signal?.aborted) { const e = new Error('Annulé'); e.name = 'AbortError'; return reject(e); }
+      if (code !== 0) return reject(new Error(stderr.trim() || 'Transcription échouée'));
+      try {
+        const result = JSON.parse(stdout.split('\n').findLast(l => l.startsWith('{')) ?? '{}');
+        resolve(result);
+      } catch {
+        reject(new Error('Résultat de transcription invalide'));
+      }
+    });
+  });
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Transcribe an audio file directly. Used by the voice endpoint.
+ * model: 'tiny' for fast wake-word check, 'small' for full transcription.
+ * Returns { text, language, duration_s }
+ */
+export async function transcribeAudioFile(audioPath, model = 'small', { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [WHISPER_SCRIPT, audioPath, model];
+    const proc = spawn(PYTHON_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    if (signal) {
+      signal.addEventListener('abort', () => { try { proc.kill(); } catch { /* ignore */ } }, { once: true });
+    }
+
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    proc.on('error', err => reject(err));
+    proc.on('close', code => {
+      if (signal?.aborted) { const e = new Error('Annulé'); e.name = 'AbortError'; return reject(e); }
+      if (code !== 0) return reject(new Error(stderr.trim() || 'Transcription échouée'));
+      try {
+        const result = JSON.parse(stdout.split('\n').findLast(l => l.startsWith('{')) ?? '{}');
+        resolve(result);
+      } catch {
+        reject(new Error('Résultat de transcription invalide'));
+      }
+    });
+  });
+}
+
+/**
+ * Full pipeline: assertSafeUrl → download audio → transcribe → delete audio
+ * VRAM note: caller must ensure Ollama is NOT running a request simultaneously.
+ * Returns { text, language, duration_s }
+ */
+export async function transcribeYouTube(url, { onProgress, signal } = {}) {
+  assertSafeUrl(url); // SSRF guard
+
+  ensureTmpDir();
+  const id = `whisper_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const audioPath = path.join(TMP_DIR, `${id}.wav`);
+
+  try {
+    onProgress?.({ step: 'download', percent: 0, label: 'Téléchargement audio…' });
+    await downloadAudio(url, audioPath.replace(/\.wav$/, '.%(ext)s'), { onProgress, signal });
+
+    // yt-dlp may output with the final extension in the template
+    const actualPath = fs.existsSync(audioPath) ? audioPath
+      : fs.readdirSync(TMP_DIR).map(f => path.join(TMP_DIR, f)).find(f => f.includes(id)) ?? audioPath;
+
+    onProgress?.({ step: 'transcribe', percent: 0, label: 'Transcription en cours…' });
+    const result = await transcribeAudio(actualPath, { onProgress, signal });
+
+    return result;
+  } finally {
+    // Always clean up audio file
+    removeTmpFile(audioPath);
+    // Also clean any variant (e.g. .webm before conversion)
+    try {
+      fs.readdirSync(TMP_DIR)
+        .filter(f => f.startsWith(id))
+        .forEach(f => removeTmpFile(path.join(TMP_DIR, f)));
+    } catch { /* ignore */ }
+  }
+}
