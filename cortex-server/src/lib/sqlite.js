@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 
 let database;
@@ -183,6 +184,30 @@ export function initSqlite(sqlitePath) {
       fallback_reason TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS corpus_sources (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      article_count INTEGER NOT NULL DEFAULT 0,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      keywords TEXT NOT NULL DEFAULT '',
+      min_size INTEGER,
+      max_size INTEGER,
+      status TEXT NOT NULL DEFAULT 'importing',
+      error_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      op_type TEXT NOT NULL,
+      item TEXT NOT NULL DEFAULT '',
+      result TEXT NOT NULL DEFAULT 'success',
+      reason TEXT,
+      duration_ms INTEGER,
+      model_used TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS todo_items (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL DEFAULT 'capture',
@@ -198,6 +223,87 @@ export function initSqlite(sqlitePath) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       done_at TEXT
     );
+
+    -- Conversation mode (chat) — always private, never indexed for RAG/search,
+    -- never sent to a cloud provider. See routes/chat.js.
+    CREATE TABLE IF NOT EXISTS conversations (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS conversation_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Preference facts — a short flat list, not a conversation history.
+    CREATE TABLE IF NOT EXISTS preference_facts (
+      id TEXT PRIMARY KEY,
+      fact TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Résumé de vidéo longue — pipeline résumable en plusieurs étapes.
+    CREATE TABLE IF NOT EXISTS video_jobs (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      title TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      provider_whisper TEXT NOT NULL DEFAULT 'auto',
+      provider_synthesis TEXT NOT NULL DEFAULT 'local',
+      resume_type TEXT NOT NULL DEFAULT 'auto',
+      duration_s REAL,
+      current_step TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      error_message TEXT,
+      cancelled INTEGER NOT NULL DEFAULT 0,
+      private INTEGER NOT NULL DEFAULT 0,
+      neuron_id TEXT,
+      disk_bytes INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}'
+    );
+
+    -- Générateur de prompts — complètement séparé des neurones : jamais indexé,
+    -- jamais dans pages, jamais dans la vue 3D, jamais dans les filtres de kind.
+    CREATE TABLE IF NOT EXISTS generated_prompts (
+      id TEXT PRIMARY KEY,
+      request TEXT NOT NULL,
+      draft_model TEXT NOT NULL,
+      draft_provider TEXT NOT NULL,
+      draft_text TEXT NOT NULL DEFAULT '',
+      review_model TEXT NOT NULL,
+      review_provider TEXT NOT NULL,
+      reviewed_text TEXT NOT NULL DEFAULT '',
+      changes_explained TEXT NOT NULL DEFAULT '',
+      unchanged INTEGER NOT NULL DEFAULT 0,
+      kept_version TEXT DEFAULT NULL,
+      outcome TEXT NOT NULL DEFAULT 'untested',
+      is_template INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS video_job_segments (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      start_s REAL,
+      end_s REAL,
+      audio_path TEXT,
+      transcript TEXT,
+      transcript_status TEXT NOT NULL DEFAULT 'pending',
+      summary TEXT,
+      summary_status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Idempotent migrations — ignore if column/index already exists
@@ -208,6 +314,8 @@ export function initSqlite(sqlitePath) {
     'ALTER TABLE file_originals ADD COLUMN treatments_count INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE file_results ADD COLUMN metadata TEXT NOT NULL DEFAULT "{}"',
     'ALTER TABLE file_results ADD COLUMN cloud_allowed INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE agent_runs ADD COLUMN similarity_note TEXT DEFAULT NULL',
+    'ALTER TABLE agents ADD COLUMN last_output_content TEXT DEFAULT NULL',
   ]) {
     try { database.exec(col); } catch { /* already exists */ }
   }
@@ -238,6 +346,26 @@ export function initSqlite(sqlitePath) {
       ON file_results(path);
     CREATE INDEX IF NOT EXISTS idx_todo_items_status
       ON todo_items(status, priority DESC, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_corpus_sources_created_at
+      ON corpus_sources(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp
+      ON activity_log(timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_activity_log_op_type
+      ON activity_log(op_type);
+    CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id
+      ON conversation_messages(conversation_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_status
+      ON video_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_created_at
+      ON video_jobs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_video_job_segments_job_id
+      ON video_job_segments(job_id, idx ASC);
+    CREATE INDEX IF NOT EXISTS idx_generated_prompts_created_at
+      ON generated_prompts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_generated_prompts_is_template
+      ON generated_prompts(is_template DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_generated_prompts_outcome
+      ON generated_prompts(outcome);
   `);
 
   statements = {
@@ -416,6 +544,18 @@ export function logRouterCall({
     provider,
     quotaHit ? 1 : 0,
   );
+
+  // Surface cloud calls in the activity journal — sensitive operation, no content logged.
+  if (provider && provider !== 'local') {
+    insertActivityLog({
+      opType: 'cloud_call',
+      item: actionType,
+      result: success ? 'success' : 'failure',
+      reason: success ? null : (errorMessage ?? 'échec appel cloud'),
+      durationMs: Math.round(latencyMs),
+      modelUsed: chosenModel ?? provider,
+    });
+  }
 }
 
 export function getRouterStats() {
@@ -483,6 +623,13 @@ export function getRouterSettings() {
     cloud_preference:    'local',   // 'local' | 'balanced' | 'quality'
     strict_local_mode:   false,     // when true: NO cloud call ever, regardless of router config
     groq_model:          'openai/gpt-oss-120b',
+    // "Mode puissant" model — quantized q3_K_M by default (~7.3 Go) so it
+    // actually fits an 8 Go card; the unquantized qwen2.5:14b (~9 Go) stays
+    // selectable in Settings but overflows VRAM and reloads cold each time.
+    powerful_model:      'qwen2.5:14b-instruct-q3_K_M',
+    // "Mode conversation" model — quantized for the same 8 Go VRAM budget as
+    // powerful_model above.
+    chat_model:          'mistral-nemo:12b-instruct-2407-q4_K_M',
   });
 }
 
@@ -634,6 +781,13 @@ export function deleteAgent(id) {
   database.prepare('DELETE FROM agent_outputs WHERE agent_id = ?').run(id);
 }
 
+// Remembers the content of the last run that actually produced a neuron, so
+// the next run can be compared against it to detect a near-duplicate result.
+export function updateAgentLastOutput(id, content) {
+  if (!database) return;
+  database.prepare('UPDATE agents SET last_output_content = ? WHERE id = ?').run(content, id);
+}
+
 function parseAgent(row) {
   return {
     ...row,
@@ -662,9 +816,24 @@ export function updateAgentRun(id, updates) {
   if (updates.output_neuron_id!== undefined) { fields.push('output_neuron_id = ?');vals.push(updates.output_neuron_id); }
   if (updates.output_title    !== undefined) { fields.push('output_title = ?');     vals.push(updates.output_title); }
   if (updates.error_message   !== undefined) { fields.push('error_message = ?');    vals.push(updates.error_message); }
+  if (updates.similarity_note !== undefined) { fields.push('similarity_note = ?');  vals.push(updates.similarity_note); }
   if (fields.length > 0) {
     vals.push(id);
     database.prepare(`UPDATE agent_runs SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  if (updates.status === 'success' || updates.status === 'error') {
+    const run   = database.prepare('SELECT * FROM agent_runs WHERE id = ?').get(id);
+    const agent = run ? database.prepare('SELECT name FROM agents WHERE id = ?').get(run.agent_id) : null;
+    const durationMs = run?.started_at && updates.finished_at
+      ? Date.parse(updates.finished_at) - Date.parse(run.started_at) : null;
+    insertActivityLog({
+      opType: 'agent_run',
+      item:   agent?.name ?? run?.agent_id ?? 'agent',
+      result: updates.status === 'success' ? 'success' : 'failure',
+      reason: updates.error_message ?? null,
+      durationMs,
+    });
   }
 }
 
@@ -814,6 +983,19 @@ export function updateSkillRun(id, { output, model_used, latency_ms, finished_at
     vals.push(id);
     database.prepare(`UPDATE skill_runs SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
   }
+
+  if (status === 'success' || status === 'error') {
+    const run   = database.prepare('SELECT * FROM skill_runs WHERE id = ?').get(id);
+    const skill = run ? database.prepare('SELECT name FROM skills WHERE id = ?').get(run.skill_id) : null;
+    insertActivityLog({
+      opType: 'skill_run',
+      item:   skill?.name ?? run?.skill_id ?? 'compétence',
+      result: status === 'success' ? 'success' : 'failure',
+      reason: error_message ?? null,
+      durationMs: latency_ms ?? null,
+      modelUsed: model_used ?? null,
+    });
+  }
 }
 
 export function getSkillRuns(skillId, limit = 30) {
@@ -950,6 +1132,60 @@ export function getPageFromStore(id) {
   try { return JSON.parse(row.data); } catch { return null; }
 }
 
+// ── Lightweight metadata queries (no blocks payload) ─────────────────────────
+// Use json_extract to avoid deserialising the full data blob into JS.
+
+const META_SELECT = `
+  SELECT
+    json_extract(data, '$.id')        AS id,
+    json_extract(data, '$.kind')      AS kind,
+    json_extract(data, '$.title')     AS title,
+    json_extract(data, '$.links')     AS links,
+    json_extract(data, '$.tags')      AS tags,
+    json_extract(data, '$.color')     AS color,
+    json_extract(data, '$.private')   AS priv,
+    json_extract(data, '$.createdAt') AS createdAt,
+    json_extract(data, '$.updatedAt') AS updatedAt,
+    json_extract(data, '$.metadata')  AS metadata
+  FROM pages
+`;
+
+function rowToMeta(r) {
+  return {
+    id:        r.id,
+    kind:      r.kind ?? 'note',
+    title:     r.title ?? '',
+    links:     r.links     ? JSON.parse(r.links)     : [],
+    tags:      r.tags      ? JSON.parse(r.tags)      : undefined,
+    color:     r.color     || undefined,
+    private:   r.priv === 1 || r.priv === true || r.priv === 'true',
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    metadata:  r.metadata  ? JSON.parse(r.metadata)  : undefined,
+  };
+}
+
+export function getRecentPagesFromStore(limit = 50) {
+  if (!database) return [];
+  return database.prepare(`${META_SELECT} ORDER BY updated_at DESC LIMIT ?`).all(limit).map(rowToMeta);
+}
+
+export function getAllPagesMetaFromStore() {
+  if (!database) return [];
+  return database.prepare(`${META_SELECT} ORDER BY updated_at DESC`).all().map(rowToMeta);
+}
+
+export function getPageCountsFromStore() {
+  if (!database) return { total: 0, byKind: {} };
+  const total  = database.prepare('SELECT COUNT(*) AS n FROM pages').get()?.n ?? 0;
+  const rows   = database.prepare(
+    "SELECT json_extract(data, '$.kind') AS kind, COUNT(*) AS n FROM pages GROUP BY json_extract(data, '$.kind')",
+  ).all();
+  const byKind = {};
+  for (const r of rows) { if (r.kind) byKind[r.kind] = r.n; }
+  return { total, byKind };
+}
+
 // ── Privacy violations log ────────────────────────────────────────────────────
 // Logs blocked cloud calls (no content ever stored here).
 
@@ -959,6 +1195,13 @@ export function insertPrivacyViolation({ functionCalled, providerTargeted }) {
     INSERT INTO privacy_violations (occurred_at, function_called, provider_targeted)
     VALUES (CURRENT_TIMESTAMP, ?, ?)
   `).run(functionCalled, providerTargeted);
+
+  insertActivityLog({
+    opType: 'privacy_block',
+    item:   functionCalled,
+    result: 'failure',
+    reason: `verrou de sortie — cloud "${providerTargeted}" bloqué`,
+  });
 }
 
 export function getPrivacyViolations(limit = 100) {
@@ -1108,4 +1351,448 @@ export function upsertFileResult(file) {
 export function deleteFileResult(id) {
   if (!database) return;
   statements.deleteFileResult.run(id);
+}
+
+// ── Journal d'activité ─────────────────────────────────────────────────────
+// Jamais de contenu de neurone, jamais de clé API, jamais d'audio/image —
+// uniquement : quoi, quand, résultat, raison d'échec, durée, modèle.
+
+export function insertActivityLog({ opType, item = '', result = 'success', reason = null, durationMs = null, modelUsed = null }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO activity_log (timestamp, op_type, item, result, reason, duration_ms, model_used)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    new Date().toISOString(),
+    opType,
+    String(item ?? '').slice(0, 300),
+    result,
+    reason ? String(reason).slice(0, 500) : null,
+    durationMs !== null && durationMs !== undefined ? Math.round(durationMs) : null,
+    modelUsed,
+  );
+}
+
+export function getActivityLog({ opType, result, from, to, q, limit = 50, offset = 0 } = {}) {
+  if (!database) return { rows: [], total: 0 };
+  const clauses = [];
+  const params  = [];
+  if (opType) { clauses.push('op_type = ?'); params.push(opType); }
+  if (result) { clauses.push('result = ?'); params.push(result); }
+  if (from)   { clauses.push('timestamp >= ?'); params.push(from); }
+  if (to)     { clauses.push('timestamp <= ?'); params.push(to); }
+  if (q)      { clauses.push('(item LIKE ? OR reason LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const total = database.prepare(`SELECT COUNT(*) AS n FROM activity_log ${where}`).get(...params).n;
+  const rows  = database.prepare(
+    `SELECT * FROM activity_log ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`,
+  ).all(...params, Math.min(Number(limit) || 50, 200), Math.max(Number(offset) || 0, 0));
+
+  return { rows, total };
+}
+
+// Unpaginated — export only. Journal entries never leave the machine on their
+// own (see routes/activity.js localhost guard); this just avoids the 200-row
+// page-size clamp on getActivityLog when the user explicitly asks to export.
+export function getAllActivityLogForExport() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM activity_log ORDER BY timestamp DESC, id DESC').all();
+}
+
+export function getActivityLogOpTypes() {
+  if (!database) return [];
+  return database.prepare('SELECT DISTINCT op_type FROM activity_log ORDER BY op_type ASC').all().map(r => r.op_type);
+}
+
+export function clearActivityLog() {
+  if (!database) return 0;
+  const result = database.prepare('DELETE FROM activity_log').run();
+  return result.changes;
+}
+
+export function purgeActivityLogOlderThan(days) {
+  if (!database) return 0;
+  const cutoff = new Date(Date.now() - Number(days) * 86_400_000).toISOString();
+  const result = database.prepare('DELETE FROM activity_log WHERE timestamp < ?').run(cutoff);
+  return result.changes;
+}
+
+export function getActivityLogStats() {
+  if (!database) return { count: 0, sizeBytes: 0, retentionDays: 90 };
+  const count = database.prepare('SELECT COUNT(*) AS n FROM activity_log').get().n;
+  let sizeBytes = 0;
+  try {
+    const row = database.prepare("SELECT SUM(pgsize) AS n FROM dbstat WHERE name = 'activity_log'").get();
+    sizeBytes = row?.n ?? 0;
+  } catch {
+    // dbstat virtual table not compiled in this better-sqlite3 build — rough estimate instead
+    sizeBytes = count * 180;
+  }
+  return { count, sizeBytes, retentionDays: getActivityLogRetentionDays() };
+}
+
+export function getActivityLogRetentionDays() {
+  return getMeta('activity_log_retention_days', 90);
+}
+
+export function setActivityLogRetentionDays(days) {
+  const clamped = Math.max(1, Math.min(365, Number(days) || 90));
+  setMeta('activity_log_retention_days', clamped);
+  return clamped;
+}
+
+// ── Corpus de référence (import de connaissances externes) ───────────────────
+
+export function insertCorpusSource({ id, name, keywords = '', min_size = null, max_size = null }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO corpus_sources (id, name, keywords, min_size, max_size, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'importing', CURRENT_TIMESTAMP)
+  `).run(id, name, keywords, min_size, max_size);
+}
+
+export function updateCorpusSource(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals   = [];
+  if (updates.article_count !== undefined) { fields.push('article_count = ?'); vals.push(updates.article_count); }
+  if (updates.size_bytes    !== undefined) { fields.push('size_bytes = ?');    vals.push(updates.size_bytes); }
+  if (updates.status        !== undefined) { fields.push('status = ?');        vals.push(updates.status); }
+  if (updates.error_count   !== undefined) { fields.push('error_count = ?');   vals.push(updates.error_count); }
+  if (fields.length === 0) return;
+  vals.push(id);
+  database.prepare(`UPDATE corpus_sources SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getCorpusSources() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM corpus_sources ORDER BY created_at DESC').all();
+}
+
+export function getCorpusSourceById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM corpus_sources WHERE id = ?').get(id) ?? null;
+}
+
+export function deleteCorpusSource(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM corpus_sources WHERE id = ?').run(id);
+}
+
+// ── Conversation mode (chat) — always private, own tables, never indexed ─────
+
+export function createConversation(id, title = '') {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)
+  `).run(id, title, now, now);
+}
+
+export function listConversations(limit = 50) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM conversations ORDER BY updated_at DESC LIMIT ?').all(limit);
+}
+
+export function getConversationById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM conversations WHERE id = ?').get(id) ?? null;
+}
+
+export function touchConversation(id, title) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  if (title !== undefined) {
+    database.prepare('UPDATE conversations SET updated_at = ?, title = ? WHERE id = ?').run(now, title, id);
+  } else {
+    database.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, id);
+  }
+}
+
+export function deleteConversation(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+  database.prepare('DELETE FROM conversation_messages WHERE conversation_id = ?').run(id);
+}
+
+export function addConversationMessage(conversationId, role, content) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO conversation_messages (id, conversation_id, role, content, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(crypto.randomUUID(), conversationId, role, content, new Date().toISOString());
+}
+
+// limit is applied to the MOST RECENT messages (the "last N exchanges" context
+// window) — ORDER BY DESC then reversed, not a plain ORDER BY ASC LIMIT which
+// would return the OLDEST messages instead.
+export function getConversationMessages(conversationId, limit = 20) {
+  if (!database) return [];
+  const rows = database.prepare(
+    'SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?',
+  ).all(conversationId, limit);
+  return rows.reverse();
+}
+
+export function getAllConversationsForBackup() {
+  if (!database) return [];
+  const conversations = database.prepare('SELECT * FROM conversations ORDER BY created_at ASC').all();
+  return conversations.map(conv => ({
+    ...conv,
+    messages: database.prepare(
+      'SELECT role, content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC',
+    ).all(conv.id),
+  }));
+}
+
+// ── Preference facts — flat list, not a conversation history ─────────────────
+
+const MAX_PREFERENCE_FACTS = 50;
+
+export function listPreferenceFacts() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM preference_facts ORDER BY created_at ASC').all();
+}
+
+export function countPreferenceFacts() {
+  if (!database) return 0;
+  return database.prepare('SELECT COUNT(*) AS n FROM preference_facts').get().n;
+}
+
+export function addPreferenceFact(fact) {
+  if (!database) return null;
+  if (countPreferenceFacts() >= MAX_PREFERENCE_FACTS) {
+    throw new Error(`Limite de ${MAX_PREFERENCE_FACTS} faits retenus atteinte — supprimez-en un avant d'en ajouter un nouveau.`);
+  }
+  const id = crypto.randomUUID();
+  database.prepare('INSERT INTO preference_facts (id, fact, created_at) VALUES (?, ?, ?)')
+    .run(id, fact, new Date().toISOString());
+  return id;
+}
+
+export function updatePreferenceFact(id, fact) {
+  if (!database) return;
+  database.prepare('UPDATE preference_facts SET fact = ? WHERE id = ?').run(fact, id);
+}
+
+export function deletePreferenceFact(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM preference_facts WHERE id = ?').run(id);
+}
+
+export function clearPreferenceFacts() {
+  if (!database) return;
+  database.prepare('DELETE FROM preference_facts').run();
+}
+
+// ── Résumé de vidéo longue — jobs durables et segments résumables ────────────
+
+function parseVideoJob(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    cancelled: row.cancelled === 1,
+    private:   row.private === 1,
+    metadata:  safeJson(row.metadata, {}),
+  };
+}
+
+export function insertVideoJob({ id, url, title = null, status = 'pending', provider_whisper = 'auto', provider_synthesis = 'local', resume_type = 'auto', duration_s = null, private: priv = false, metadata = {} }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO video_jobs (id, url, title, status, provider_whisper, provider_synthesis, resume_type, duration_s, current_step, created_at, updated_at, cancelled, private, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, ?, ?)
+  `).run(id, url, title, status, provider_whisper, provider_synthesis, resume_type, duration_s, now, now, priv ? 1 : 0, JSON.stringify(metadata ?? {}));
+}
+
+export function updateVideoJob(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals   = [];
+  if (updates.title              !== undefined) { fields.push('title = ?');              vals.push(updates.title); }
+  if (updates.status             !== undefined) { fields.push('status = ?');             vals.push(updates.status); }
+  if (updates.provider_whisper   !== undefined) { fields.push('provider_whisper = ?');   vals.push(updates.provider_whisper); }
+  if (updates.provider_synthesis !== undefined) { fields.push('provider_synthesis = ?'); vals.push(updates.provider_synthesis); }
+  if (updates.resume_type        !== undefined) { fields.push('resume_type = ?');        vals.push(updates.resume_type); }
+  if (updates.duration_s         !== undefined) { fields.push('duration_s = ?');         vals.push(updates.duration_s); }
+  if (updates.current_step       !== undefined) { fields.push('current_step = ?');       vals.push(updates.current_step); }
+  if (updates.error_message      !== undefined) { fields.push('error_message = ?');      vals.push(updates.error_message); }
+  if (updates.cancelled          !== undefined) { fields.push('cancelled = ?');          vals.push(updates.cancelled ? 1 : 0); }
+  if (updates.neuron_id          !== undefined) { fields.push('neuron_id = ?');          vals.push(updates.neuron_id); }
+  if (updates.disk_bytes         !== undefined) { fields.push('disk_bytes = ?');         vals.push(updates.disk_bytes); }
+  if (updates.metadata           !== undefined) { fields.push('metadata = ?');           vals.push(JSON.stringify(updates.metadata ?? {})); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE video_jobs SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getVideoJobById(id) {
+  if (!database) return null;
+  return parseVideoJob(database.prepare('SELECT * FROM video_jobs WHERE id = ?').get(id));
+}
+
+export function getAllVideoJobs() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM video_jobs ORDER BY created_at DESC').all().map(parseVideoJob);
+}
+
+export function getActiveVideoJob() {
+  if (!database) return null;
+  const row = database.prepare(`
+    SELECT * FROM video_jobs
+    WHERE cancelled = 0 AND status NOT IN ('done', 'error', 'cancelled')
+    ORDER BY created_at DESC LIMIT 1
+  `).get();
+  return parseVideoJob(row);
+}
+
+export function deleteVideoJob(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM video_job_segments WHERE job_id = ?').run(id);
+  database.prepare('DELETE FROM video_jobs WHERE id = ?').run(id);
+}
+
+export function insertVideoJobSegment({ id, job_id, idx, start_s = null, end_s = null, audio_path = null }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO video_job_segments (id, job_id, idx, start_s, end_s, audio_path, transcript_status, summary_status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)
+  `).run(id, job_id, idx, start_s, end_s, audio_path, now, now);
+}
+
+export function updateVideoJobSegment(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals   = [];
+  if (updates.audio_path        !== undefined) { fields.push('audio_path = ?');        vals.push(updates.audio_path); }
+  if (updates.transcript        !== undefined) { fields.push('transcript = ?');        vals.push(updates.transcript); }
+  if (updates.transcript_status !== undefined) { fields.push('transcript_status = ?'); vals.push(updates.transcript_status); }
+  if (updates.summary           !== undefined) { fields.push('summary = ?');           vals.push(updates.summary); }
+  if (updates.summary_status    !== undefined) { fields.push('summary_status = ?');    vals.push(updates.summary_status); }
+  if (updates.error_message     !== undefined) { fields.push('error_message = ?');     vals.push(updates.error_message); }
+  if (updates.start_s           !== undefined) { fields.push('start_s = ?');           vals.push(updates.start_s); }
+  if (updates.end_s             !== undefined) { fields.push('end_s = ?');             vals.push(updates.end_s); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE video_job_segments SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getSegmentsByJobId(jobId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM video_job_segments WHERE job_id = ? ORDER BY idx ASC').all(jobId);
+}
+
+export function deleteSegmentsByJobId(jobId) {
+  if (!database) return;
+  database.prepare('DELETE FROM video_job_segments WHERE job_id = ?').run(jobId);
+}
+
+// ── Générateur de prompts — table dédiée, complètement isolée des neurones ────
+
+function parseGeneratedPrompt(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    unchanged:   row.unchanged === 1,
+    is_template: row.is_template === 1,
+  };
+}
+
+export function getAllGeneratedPrompts({ from, to, model, outcome, is_template } = {}) {
+  if (!database) return [];
+  const clauses = [];
+  const vals    = [];
+  if (from)        { clauses.push('created_at >= ?'); vals.push(from); }
+  if (to)           { clauses.push('created_at <= ?'); vals.push(to); }
+  if (model)        { clauses.push('(draft_model = ? OR review_model = ?)'); vals.push(model, model); }
+  if (outcome)       { clauses.push('outcome = ?'); vals.push(outcome); }
+  if (is_template !== undefined) { clauses.push('is_template = ?'); vals.push(is_template ? 1 : 0); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return database.prepare(`
+    SELECT * FROM generated_prompts ${where}
+    ORDER BY is_template DESC, created_at DESC
+  `).all(...vals).map(parseGeneratedPrompt);
+}
+
+export function getGeneratedPromptById(id) {
+  if (!database) return null;
+  return parseGeneratedPrompt(database.prepare('SELECT * FROM generated_prompts WHERE id = ?').get(id));
+}
+
+export function countGeneratedPrompts() {
+  if (!database) return 0;
+  return database.prepare('SELECT COUNT(*) as n FROM generated_prompts').get().n;
+}
+
+export function insertGeneratedPrompt({
+  id, request, draft_model, draft_provider, draft_text,
+  review_model, review_provider, reviewed_text, changes_explained,
+  unchanged = false, kept_version = null, outcome = 'untested', is_template = false,
+}) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO generated_prompts (
+      id, request, draft_model, draft_provider, draft_text,
+      review_model, review_provider, reviewed_text, changes_explained,
+      unchanged, kept_version, outcome, is_template, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, request, draft_model, draft_provider, draft_text ?? '',
+    review_model, review_provider, reviewed_text ?? '', changes_explained ?? '',
+    unchanged ? 1 : 0, kept_version, outcome, is_template ? 1 : 0, now, now,
+  );
+}
+
+export function updateGeneratedPrompt(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals   = [];
+  if (updates.draft_text         !== undefined) { fields.push('draft_text = ?');         vals.push(updates.draft_text); }
+  if (updates.reviewed_text      !== undefined) { fields.push('reviewed_text = ?');      vals.push(updates.reviewed_text); }
+  if (updates.changes_explained  !== undefined) { fields.push('changes_explained = ?');  vals.push(updates.changes_explained); }
+  if (updates.unchanged          !== undefined) { fields.push('unchanged = ?');          vals.push(updates.unchanged ? 1 : 0); }
+  if (updates.kept_version       !== undefined) { fields.push('kept_version = ?');       vals.push(updates.kept_version); }
+  if (updates.outcome            !== undefined) { fields.push('outcome = ?');            vals.push(updates.outcome); }
+  if (updates.is_template        !== undefined) { fields.push('is_template = ?');        vals.push(updates.is_template ? 1 : 0); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE generated_prompts SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function deleteGeneratedPrompt(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM generated_prompts WHERE id = ?').run(id);
+}
+
+export function searchGeneratedPrompts(query) {
+  if (!database) return [];
+  const like = `%${query}%`;
+  return database.prepare(`
+    SELECT * FROM generated_prompts
+    WHERE request LIKE ? OR draft_text LIKE ? OR reviewed_text LIKE ?
+    ORDER BY is_template DESC, created_at DESC
+  `).all(like, like, like).map(parseGeneratedPrompt);
+}
+
+// ── Générateur de prompts — réglages (meta key, pas de nouvelles colonnes) ────
+
+export function getPromptGeneratorSettings() {
+  return getMeta('prompt_generator_settings', {
+    default_draft_model:    null,
+    default_draft_provider:  null,
+    default_review_model:    null,
+    default_review_provider: null,
+  });
+}
+
+export function setPromptGeneratorSettings(updates) {
+  const current = getPromptGeneratorSettings();
+  setMeta('prompt_generator_settings', { ...current, ...updates });
 }

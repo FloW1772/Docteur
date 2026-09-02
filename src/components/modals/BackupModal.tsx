@@ -66,15 +66,16 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
       // Get neurons from LanceDB (has content as string for LLM indexing)
       const serverData = await cortexClient.backupExport();
 
-      // Build deduplicated links from IndexedDB pages (server doesn't know about synapses)
-      const seen = new Set<string>();
-      const links: Array<{ from: string; to: string }> = [];
-      for (const page of pages) {
-        for (const targetId of (page.links ?? [])) {
-          const key = [page.id, targetId].sort().join('|');
-          if (!seen.has(key)) {
-            seen.add(key);
-            links.push({ from: page.id, to: targetId });
+      // Links are now computed server-side from SQLite (backup.js).
+      // Fall back to client-side computation from in-memory pages if server didn't include them
+      // (older server versions or partial page loads).
+      let links: Array<{ from: string; to: string }> = serverData.links ?? [];
+      if (links.length === 0 && pages.length > 0) {
+        const seen = new Set<string>();
+        for (const page of pages) {
+          for (const targetId of (page.links ?? [])) {
+            const key = [page.id, targetId].sort().join('|');
+            if (!seen.has(key)) { seen.add(key); links.push({ from: page.id, to: targetId }); }
           }
         }
       }
@@ -127,9 +128,12 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
       // 2. Recreate in IndexedDB (cortex 3D + sidebar) + restore synapses
       const links = Array.isArray(data.links) ? data.links : [];
       await onRestorePages(data.neurons, links);
-      const linkMsg = links.length > 0 ? ` · ${links.length} synapses` : '';
-      const errMsg  = result.errors.length > 0 ? ` (${result.errors.length} erreurs)` : '';
-      setStatus({ ok: result.ok, message: `${result.indexed}/${result.total} neurones restaurés${linkMsg}${errMsg}` });
+      const linkMsg  = links.length > 0 ? ` · ${links.length} synapses` : '';
+      const errMsg   = result.errors.length > 0 ? ` (${result.errors.length} erreurs)` : '';
+      const reconMsg = result.reconstructedBlocks && result.reconstructedBlocks > 0
+        ? ` · ${result.reconstructedBlocks} neurone(s) d'un backup ancien reconstruit(s) depuis le texte indexé (contenu approximatif)`
+        : '';
+      setStatus({ ok: result.ok, message: `${result.indexed}/${result.total} neurones restaurés${linkMsg}${errMsg}${reconMsg}` });
     } catch (e) {
       setStatus({ ok: false, message: String((e as Error).message ?? e) });
     } finally {

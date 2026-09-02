@@ -54,6 +54,8 @@ echo    DOCTEUR - Mode PC local
 echo  ============================================
 echo.
 
+call :FREE_PORTS
+
 echo [1/3] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe" >NUL
 if "%ERRORLEVEL%"=="0" (
@@ -100,6 +102,8 @@ echo  ============================================
 echo    DOCTEUR - Mode reseau (dev, HTTP)
 echo  ============================================
 echo.
+
+call :FREE_PORTS
 
 echo [1/3] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe" >NUL
@@ -148,6 +152,8 @@ echo  ============================================
 echo    DOCTEUR - Mode mobile (production + PWA)
 echo  ============================================
 echo.
+
+call :FREE_PORTS
 
 echo [1/4] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe" >NUL
@@ -235,4 +241,20 @@ goto MENU
 REM ============================================================
 :QUITTER
 REM ============================================================
+exit /b 0
+
+REM ============================================================
+:FREE_PORTS
+REM  Tue un eventuel processus residuel occupant les ports 5173
+REM  ou 3001 (Vite/cortex-server pas correctement fermes lors
+REM  d'une session precedente). Ne cible QUE ces deux ports
+REM  precis, via leur PID exact trouve par netstat -- jamais de
+REM  taskkill par nom de process ou plage de ports.
+REM ============================================================
+for %%P in (5173 3001) do (
+    for /f "tokens=5" %%I in ('netstat -ano ^| findstr /R /C:"[:.]%%P .*LISTENING"') do (
+        echo Processus residuel detecte sur le port %%P, arret en cours...
+        taskkill /PID %%I /F >nul 2>&1
+    )
+)
 exit /b 0

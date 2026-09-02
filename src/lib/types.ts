@@ -1,5 +1,5 @@
 export type BlockType = 'h1' | 'h2' | 'paragraph' | 'todo' | 'list' | 'image';
-export type PageKind  = 'note' | 'task' | 'idea' | 'reference' | 'memory' | 'channel' | 'video' | 'link' | 'playlist' | 'question' | 'recherche' | 'cv' | 'candidature' | 'rapport' | 'prompt';
+export type PageKind  = 'note' | 'task' | 'idea' | 'reference' | 'memory' | 'channel' | 'video' | 'link' | 'playlist' | 'question' | 'recherche' | 'cv' | 'candidature' | 'rapport' | 'prompt' | 'corpus' | 'exemple-resume' | 'video_summary';
 
 export interface Block {
   id:       string;
@@ -38,6 +38,9 @@ export const KIND_META: Record<PageKind, { label: string; color: string; icon: s
   candidature: { label: 'Candidature', color: '#fbbf24', icon: '✉' },
   rapport:     { label: 'Rapport',     color: '#7dd3fc', icon: '⬟' },
   prompt:      { label: 'Prompt',      color: '#34d399', icon: '›_' },
+  corpus:      { label: 'Corpus',      color: '#84cc16', icon: '⛰' },
+  'exemple-resume': { label: 'Exemple de résumé', color: '#38bdf8', icon: '✎' },
+  video_summary:    { label: 'Résumé de vidéo',   color: '#c084fc', icon: '🎬' },
 };
 
 export const BLOCK_PLACEHOLDERS: Record<BlockType, string> = {

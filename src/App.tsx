@@ -3,16 +3,30 @@ import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload,
 import { usePages } from './hooks/usePages';
 import { useCortex } from './hooks/useCortex';
 import { useVoiceActivation } from './hooks/useVoiceActivation';
+import { useGestureCamera, getGestureSensitivity, setGestureSensitivity, getEasterEggEnabled, setEasterEggEnabled } from './hooks/useGestureCamera';
+import { useScreenShare } from './hooks/useScreenShare';
+import { speakEasterEgg } from './lib/easterEggVoice';
 import VoiceIndicator from './components/layout/VoiceIndicator';
+import GestureOverlay from './components/layout/GestureOverlay';
+import ShutdownOverlay from './components/layout/ShutdownOverlay';
+import VisionAnalyzeModal from './components/modals/VisionAnalyzeModal';
+import ConversationModal from './components/modals/ConversationModal';
+import ScreenShareOverlay from './components/layout/ScreenShareOverlay';
+import ScreenCaptureModal from './components/modals/ScreenCaptureModal';
 import SearchConsole from './components/console/SearchConsole';
 import BackupModal from './components/modals/BackupModal';
+import CorpusModal from './components/modals/CorpusModal';
+import ActivityLogModal from './components/modals/ActivityLogModal';
+import { getCorpusShowIn3D } from './lib/corpusSettings';
 import PdfExportModal from './components/modals/PdfExportModal';
 import SettingsModal from './components/modals/SettingsModal';
 import DownloadModal, { type DownloadResult } from './components/modals/DownloadModal';
 import HelpModal from './components/modals/HelpModal';
 import RoadmapModal from './components/modals/RoadmapModal';
 import AgentsModal   from './components/modals/AgentsModal';
+import VideoSummaryModal from './components/modals/VideoSummaryModal';
 import SkillsModal   from './components/modals/SkillsModal';
+import PromptGeneratorModal from './components/modals/PromptGeneratorModal';
 import TodoPanel     from './components/panels/TodoPanel';
 import BatchProgressModal, { type BatchProgressState, type QueuedJob } from './components/modals/BatchProgressModal';
 import ConfirmBatchModal from './components/modals/ConfirmBatchModal';
@@ -27,8 +41,8 @@ import CompareModal     from './components/modals/CompareModal';
 import type { Page, PageKind, Block } from './lib/types';
 import { KIND_META } from './lib/types';
 import { generateId } from './lib/generateId';
-import { cortexClient } from './lib/cortex/client';
-import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem } from './lib/cortex/client';
+import { cortexClient, onConnectionError } from './lib/cortex/client';
+import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport } from './lib/cortex/client';
 import { pageToContent } from './lib/cortex/pageToContent';
 import { savePage } from './lib/storage';
 import { useMobile } from './lib/useMobile';
@@ -955,7 +969,7 @@ function CvRewriteModal({
 
           <label style={{ fontSize: 10, color: '#7a6c9a', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={powerful} onChange={e => setPowerful(e.target.checked)} />
-            Modèle puissant (qwen2.5:14b) — résultat plus fin, plus lent
+            Modèle puissant (configurable dans Réglages) — résultat plus fin, plus lent
           </label>
 
           <button
@@ -1057,7 +1071,7 @@ function CvAdaptModal({
 
           <label style={{ fontSize: 10, color: '#7a6c9a', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={powerful} onChange={e => setPowerful(e.target.checked)} />
-            Modèle puissant (qwen2.5:14b) — résultat plus précis, plus lent
+            Modèle puissant (configurable dans Réglages) — résultat plus précis, plus lent
           </label>
 
           <button
@@ -1191,7 +1205,7 @@ function CandidatureLetterModal({
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
             <label style={{ fontSize: 10, color: '#7a6c9a', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
               <input type="checkbox" checked={powerful} onChange={e => setPowerful(e.target.checked)} />
-              Modèle puissant (qwen2.5:14b) — plus lent
+              Modèle puissant (configurable dans Réglages) — plus lent
             </label>
           </div>
 
@@ -1245,6 +1259,7 @@ function PageEditor({
   onTogglePrivate,
   onDuplicatePrompt,
   onTranscribePlaylist,
+  onAnalyzeImage,
 }: {
   page:             Page;
   allPages:         Page[];
@@ -1274,6 +1289,7 @@ function PageEditor({
   onTogglePrivate?:    () => void;
   onDuplicatePrompt?:  () => void;
   onTranscribePlaylist?: (ids: string[]) => void;
+  onAnalyzeImage?:     (imageId: string) => void;
 }) {
   const ALWAYS_READING_KEY = 'docteur.readingModeDefault';
   const [focusedBlockId, setFocusedBlockId]     = useState<string | null>(null);
@@ -1281,6 +1297,9 @@ function PageEditor({
   const [selectedVideoIds, setSelectedVideoIds] = useState<Set<string>>(() => new Set());
   const [alwaysReading, setAlwaysReading]       = useState(() => localStorage.getItem(ALWAYS_READING_KEY) === 'true');
   const [readingMode, setReadingMode]           = useState(() => localStorage.getItem(ALWAYS_READING_KEY) === 'true');
+  const [corpusSummary, setCorpusSummary]           = useState<{ text: string; model: string; truncated: boolean } | null>(null);
+  const [corpusSummarizing, setCorpusSummarizing]   = useState(false);
+  const [corpusSummaryError, setCorpusSummaryError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const menuRef  = useRef<HTMLDivElement>(null);
 
@@ -1288,12 +1307,37 @@ function PageEditor({
     // Reset reading mode when navigating to a different page
     setReadingMode(localStorage.getItem(ALWAYS_READING_KEY) === 'true');
     setFocusedBlockId(null);
+    setCorpusSummary(null);
+    setCorpusSummaryError(null);
     if (page.title === 'Nouveau neurone' && titleRef.current) {
       titleRef.current.focus();
       titleRef.current.select();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page.id]);
+
+  async function handleSummarizeCorpus() {
+    setCorpusSummarizing(true);
+    setCorpusSummaryError(null);
+    try {
+      const result = await cortexClient.corpusSummarize(page.id);
+      setCorpusSummary({ text: result.summary, model: result.model_used, truncated: result.truncated });
+    } catch (e) {
+      setCorpusSummaryError(String((e as Error).message ?? e));
+    } finally {
+      setCorpusSummarizing(false);
+    }
+  }
+
+  function handleKeepCorpusSummary() {
+    if (!corpusSummary) return;
+    const newBlock: Block = {
+      id: generateId(), type: 'paragraph',
+      content: `Résumé (${corpusSummary.model}) :\n\n${corpusSummary.text}`,
+    };
+    onUpdate(page.id, { blocks: [...page.blocks, newBlock] });
+    setCorpusSummary(null);
+  }
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -1380,7 +1424,15 @@ function PageEditor({
         <div className="flex items-center gap-2 mb-3">
           <select
             value={page.kind}
-            onChange={e => onUpdate(page.id, { kind: e.target.value as PageKind })}
+            onChange={e => {
+              const nextKind = e.target.value as PageKind;
+              // cv/candidature are always treated as private server-side
+              // (AUTO_PRIVATE_KINDS) regardless of this flag, but the flag
+              // itself should match — otherwise the DB state is misleading
+              // even though nothing actually leaks.
+              const forcePrivate = nextKind === 'cv' || nextKind === 'candidature';
+              onUpdate(page.id, forcePrivate ? { kind: nextKind, private: true } : { kind: nextKind });
+            }}
             title="Type de neurone"
             aria-label="Type de neurone"
             className="editor-kind-badge font-mono cursor-pointer border-0 outline-none appearance-none"
@@ -1443,6 +1495,30 @@ function PageEditor({
             >
               <RefreshCw size={11} />
               Régénérer le résumé
+            </button>
+          )}
+
+          {/* Résumer cet article — corpus de référence, à la demande uniquement */}
+          {page.kind === 'corpus' && (
+            <button
+              type="button"
+              title="Générer un résumé de cet article avec l'IA locale (le contenu intégral n'est jamais modifié)"
+              onClick={() => { void handleSummarizeCorpus(); }}
+              disabled={corpusSummarizing}
+              className="flex items-center gap-1.5 font-mono rounded px-2 py-1 transition-all"
+              style={{
+                fontSize: 10,
+                letterSpacing: '0.08em',
+                color: '#84cc16',
+                border: '1px solid rgba(132,204,22,0.2)',
+                background: 'transparent',
+                cursor: corpusSummarizing ? 'default' : 'pointer',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(132,204,22,0.08)'; e.currentTarget.style.borderColor = 'rgba(132,204,22,0.4)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(132,204,22,0.2)'; }}
+            >
+              <RefreshCw size={11} className={corpusSummarizing ? 'animate-spin' : undefined} />
+              {corpusSummarizing ? 'Résumé en cours…' : 'Résumer cet article'}
             </button>
           )}
 
@@ -1808,6 +1884,31 @@ function PageEditor({
         <PromptMeta page={page} onUpdate={onUpdate} />
       )}
 
+      {/* Résumé corpus — à la demande, ne remplace jamais le contenu intégral */}
+      {page.kind === 'corpus' && (corpusSummary || corpusSummaryError) && (
+        <div className="mx-8 mb-4 px-4 py-3 rounded font-mono text-xs" style={{
+          background: corpusSummaryError ? 'rgba(255,77,88,0.06)' : 'rgba(132,204,22,0.06)',
+          border: `1px solid ${corpusSummaryError ? 'rgba(255,77,88,0.2)' : 'rgba(132,204,22,0.2)'}`,
+        }}>
+          {corpusSummaryError ? (
+            <p style={{ color: '#ff4d58' }}>{corpusSummaryError}</p>
+          ) : corpusSummary && (
+            <>
+              <p style={{ color: '#c0e0a0', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{corpusSummary.text}</p>
+              <div className="flex items-center gap-3 mt-2" style={{ color: '#7a9a5a', fontSize: 10 }}>
+                <span>{corpusSummary.model} · résumé généré localement{corpusSummary.truncated ? ' · article tronqué pour le résumé (contenu intégral conservé)' : ''}</span>
+                <button type="button" onClick={handleKeepCorpusSummary} style={{ color: '#84cc16', cursor: 'pointer' }}>
+                  Ajouter au neurone
+                </button>
+                <button type="button" onClick={() => setCorpusSummary(null)} style={{ color: '#5a4a7a', cursor: 'pointer' }}>
+                  Ignorer
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Blocks — mode normal ou mode lecture */}
       {readingMode ? (
         <ReadingView
@@ -1834,6 +1935,7 @@ function PageEditor({
               onUploadImage={handleUploadImage}
               onDownloadImageUrl={handleDownloadImageUrl}
               onDeleteImage={handleDeleteImage}
+              onAnalyzeImage={onAnalyzeImage}
               transferImages={transferImages}
               onPlayVideo={onPlayVideo ? (videoId) => {
                 if (!videoId) return;
@@ -1993,7 +2095,7 @@ function PageEditor({
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const { pages, loading, writeError, isOnline, createPage, createPageFromData, updatePage, upsertPage, removePage, createLink, removeLink, flushAllSaves, reloadFromServer } = usePages();
+  const { pages, loading, writeError, isOnline, pageCounts, allMetaLoaded, pageContentLoading, createPage, createPageFromData, updatePage, upsertPage, removePage, createLink, removeLink, flushAllSaves, reloadFromServer, loadPage, loadAllMeta, loadAllPagesForReindex } = usePages();
   const offline = isOnline === false;
   const cortex  = useCortex();
   // scheduleIndex is a stable useCallback in useCortex — destructure to avoid the `cortex`
@@ -2013,6 +2115,10 @@ export default function App() {
 
   // Surface server write errors (remote mode) as toast
   useEffect(() => { if (writeError) setToast(writeError); }, [writeError]);
+
+  // Surface silent CORS/connection-refused failures (e.g. dev server bumped
+  // to a port cortex-server's CORS allowlist doesn't recognize) as a toast.
+  useEffect(() => { onConnectionError(msg => setToast(msg)); }, []);
 
   // When closing a neuron (selectedId => null), flush pending debounced saves
   useEffect(() => {
@@ -2043,12 +2149,19 @@ export default function App() {
   const [activeVideo, setActiveVideo]          = useState<{ videoId: string; title: string } | null>(null);
   const [sourceHighlights, setSourceHighlights] = useState<Set<string>>(new Set());
   const [backupOpen, setBackupOpen]            = useState(false);
+  const [corpusOpen, setCorpusOpen]            = useState(false);
+  const [activityLogOpen, setActivityLogOpen]  = useState(false);
+  const [corpusShow3D, setCorpusShow3D]        = useState(getCorpusShowIn3D());
   const [settingsOpen, setSettingsOpen]        = useState(false);
   const [captureOpen, setCaptureOpen]          = useState(false);
   const [helpOpen, setHelpOpen]                = useState(false);
   const [roadmapOpen, setRoadmapOpen]          = useState(false);
   const [agentsOpen, setAgentsOpen]            = useState(false);
+  const [videoSummaryOpen, setVideoSummaryOpen] = useState(false);
+  const [videoSummaryMinimized, setVideoSummaryMinimized] = useState(false);
+  const [strictLocalMode, setStrictLocalMode]  = useState(false);
   const [skillsOpen, setSkillsOpen]            = useState(false);
+  const [promptGeneratorOpen, setPromptGeneratorOpen] = useState(false);
   const [todoOpen, setTodoOpen]                = useState(false);
   const [todoPendingCount, setTodoPendingCount] = useState(0);
   const [pdfExportPage, setPdfExportPage]      = useState<{ pageId: string; title: string } | null>(null);
@@ -2058,10 +2171,183 @@ export default function App() {
   const [voiceSettings,      setVoiceSettings]     = useState<VoiceSettings | null>(null);
   const [voiceConsoleQuery,  setVoiceConsoleQuery]  = useState<string | null>(null);
 
+  // ── Gesture camera ──────────────────────────────────────────────────────────
+  const gestureInputRef = useRef<((rotDx: number, rotDy: number, zoomDelta: number) => void) | null>(null);
+  const [gestureSensitivity, setGestureSensitivityState] = useState<number>(() => getGestureSensitivity());
+  const [easterEggEnabled, setEasterEggEnabledState] = useState<boolean>(() => getEasterEggEnabled());
+  const [systemOffline, setSystemOffline] = useState(false);
+
+  // ── Vision (analyse d'image locale) ─────────────────────────────────────────
+  const [visionImageId, setVisionImageId] = useState<string | null>(null);
+
+  // ── Conversation mode (chat, 100% local) ────────────────────────────────────
+  const [conversationOpen, setConversationOpen] = useState(false);
+  // gesture.stop isn't defined yet at this point (useGestureCamera is called
+  // below, and needs handleEasterEgg as one of its params) — same
+  // ref-indirection pattern as gestureInputRef just above, for the same reason.
+  const gestureStopRef = useRef<() => void>(() => {});
+
+  const gestureSettings = {
+    cortex3dEnabled:   true,
+    navigationEnabled: true,
+    sensitivity:       gestureSensitivity,
+    easterEggEnabled,
+  };
+
+  // Majeur tendu → easter egg : sauvegarde forcée, voix robotique, écran de
+  // coupure. Volontairement irréversible sans rechargement (F5) — aucune
+  // donnée n'est perdue car flushAllSaves() est attendu avant l'extinction.
+  const handleEasterEgg = useCallback(() => {
+    void (async () => {
+      try { await flushAllSaves(); } catch { /* best-effort, l'écran s'affiche quand même */ }
+      speakEasterEgg();
+      gestureStopRef.current();
+      setSystemOffline(true);
+    })();
+  }, [flushAllSaves]);
+
+  const gesture = useGestureCamera({
+    settings:  gestureSettings,
+    onRotate:  useCallback((dx: number, dy: number) => {
+      // gestureInputRef.current is set by NeuralBrain's mount effect — if it's
+      // null here, the gesture is recognized (logged upstream) but has nowhere
+      // to go. Surface that loudly instead of swallowing it via `?.()`.
+      if (!gestureInputRef.current) {
+        console.warn('[gesture] onRotate fired but gestureInputRef.current is null — NeuralBrain not mounted/wired yet, rotation dropped');
+        return;
+      }
+      gestureInputRef.current(dx, dy, 0);
+    }, []),
+    onZoom:    useCallback((delta: number) => {
+      if (!gestureInputRef.current) {
+        console.warn('[gesture] onZoom fired but gestureInputRef.current is null — NeuralBrain not mounted/wired yet, zoom dropped');
+        return;
+      }
+      gestureInputRef.current(0, 0, delta);
+    }, []),
+    onNext:    useCallback(() => {
+      if (pages.length === 0) {
+        console.warn('[gesture] onNext fired but pages list is empty — nothing to select');
+        return;
+      }
+      setSelectedId(prev => {
+        const idx  = pages.findIndex(p => p.id === prev);
+        const next = pages[Math.min(idx + 1, pages.length - 1)]?.id ?? prev;
+        if (next === prev) console.info('[gesture] onNext: already at the last neuron, selection unchanged');
+        return next;
+      });
+    }, [pages]),
+    onPrev:    useCallback(() => {
+      if (pages.length === 0) {
+        console.warn('[gesture] onPrev fired but pages list is empty — nothing to select');
+        return;
+      }
+      setSelectedId(prev => {
+        const idx  = pages.findIndex(p => p.id === prev);
+        const next = pages[Math.max(idx - 1, 0)]?.id ?? prev;
+        if (next === prev) console.info('[gesture] onPrev: already at the first neuron, selection unchanged');
+        return next;
+      });
+    }, [pages]),
+    onScroll:  useCallback((direction: 1 | -1) => {
+      // Scroll the currently open neuron's content — falls back to the window
+      // when no detail panel is open (nothing selected).
+      const scrollable = document.querySelector<HTMLElement>('.flex-1.px-8.py-5');
+      if (scrollable) {
+        scrollable.scrollBy({ top: direction * 160, behavior: 'smooth' });
+      } else {
+        window.scrollBy({ top: direction * 160, behavior: 'smooth' });
+      }
+    }, []),
+    onEasterEgg: handleEasterEgg,
+  });
+  gestureStopRef.current = gesture.stop;
+
+  // ── Screen share + camera photo, sharing the same capture→crop→OCR flow ──────
+  // (ScreenCaptureModal / useScreenOcr are source-agnostic — reused as-is for
+  // both entry points, only the metadata "source" tag differs.)
+  const screenShare = useScreenShare();
+  const [screenCaptureImage, setScreenCaptureImage]   = useState<string | null>(null);
+  const [screenCaptureSource, setScreenCaptureSource] = useState<'screen_share' | 'camera_photo'>('screen_share');
+
+  function handleScreenCapture() {
+    const frame = screenShare.captureFrame();
+    if (!frame) { setToast('Capture impossible — le partage n\'est pas encore prêt'); return; }
+    setScreenCaptureSource('screen_share');
+    setScreenCaptureImage(frame);
+  }
+
+  function handleCameraPhotoCapture() {
+    const frame = gesture.capturePhoto();
+    if (!frame) { setToast('Capture impossible — la caméra n\'est pas encore prête'); return; }
+    setScreenCaptureSource('camera_photo');
+    setScreenCaptureImage(frame);
+  }
+
+  const CAPTURE_LABELS: Record<'screen_share' | 'camera_photo', string> = {
+    screen_share: 'Capture d\'écran',
+    camera_photo: 'Photo',
+  };
+
+  async function handleScreenSaveImage(dataUrl: string) {
+    const blob = await (await fetch(dataUrl)).blob();
+    const file = new File([blob], `capture-${Date.now()}.png`, { type: 'image/png' });
+    const { id: imageId } = await cortexClient.uploadImage(file);
+    const date = new Date().toLocaleDateString('fr-FR');
+    const page = await createPageFromData({
+      title: `${CAPTURE_LABELS[screenCaptureSource]} — ${date}`,
+      kind: 'note',
+      blocks: [{ id: generateId(), type: 'image', content: imageId }],
+      metadata: { source: screenCaptureSource, method: 'screenshot', capturedAt: Date.now() },
+    });
+    cortex.scheduleIndex(page);
+    setSelectedId(page.id);
+    setToast('Neurone créé avec l\'image');
+  }
+
+  async function handleScreenAnalyzeImage(dataUrl: string) {
+    const blob = await (await fetch(dataUrl)).blob();
+    const file = new File([blob], `capture-${Date.now()}.png`, { type: 'image/png' });
+    const { id: imageId } = await cortexClient.uploadImage(file);
+    setVisionImageId(imageId);
+  }
+
+  async function handleScreenSaveText(text: string, dataUrl: string | null) {
+    const date = new Date().toLocaleDateString('fr-FR');
+    const firstLine = text.split('\n').find(l => l.trim());
+    const title = firstLine ? firstLine.trim().slice(0, 60) : `${CAPTURE_LABELS[screenCaptureSource]} — ${date}`;
+    const blocks: Block[] = [];
+    if (dataUrl) {
+      const blob = await (await fetch(dataUrl)).blob();
+      const file = new File([blob], `capture-${Date.now()}.png`, { type: 'image/png' });
+      const { id: imageId } = await cortexClient.uploadImage(file);
+      blocks.push({ id: generateId(), type: 'image', content: imageId });
+    }
+    blocks.push(...createContentBlocks(text, title));
+    const page = await createPageFromData({
+      title,
+      kind: 'note',
+      blocks,
+      metadata: { source: screenCaptureSource, method: 'ocr', capturedAt: Date.now() },
+    });
+    cortex.scheduleIndex(page);
+    setSelectedId(page.id);
+    setToast('Neurone créé avec le texte extrait');
+  }
+
   // ── Voice activation ────────────────────────────────────────────────────────
   const voice = useVoiceActivation({
     settings: voiceSettings,
     onCommand: (text) => {
+      const lower = text.toLowerCase().trim();
+      if (/active.*cam[eé]ra|cam[eé]ra.*active/.test(lower)) {
+        if (gesture.gestureState === 'idle' || gesture.gestureState === 'error') gesture.toggle();
+        return;
+      }
+      if (/d[eé]sactive.*cam[eé]ra|cam[eé]ra.*d[eé]sactive/.test(lower)) {
+        if (gesture.gestureState === 'active') gesture.stop();
+        return;
+      }
       setVoiceConsoleQuery(text);
       setConsoleOpen(true);
     },
@@ -2111,7 +2397,19 @@ export default function App() {
   );
 
   const selectedPage   = pages.find(p => p.id === selectedId) ?? null;
+
+  // Lazy-load full page content (blocks) when a page is selected
+  useEffect(() => {
+    if (selectedId) void loadPage(selectedId);
+  }, [selectedId, loadPage]);
+
   const conflictResolveRef = useRef<((choice: ConflictChoice) => void) | null>(null);
+  // Shared across EVERY capture entry point (batch, simple, pasted-text, Whisper) —
+  // a per-call Map only dedupes within its own call, so a simple/paste/Whisper
+  // capture running while a batch is in flight couldn't see the batch's
+  // in-progress parent and created a duplicate. One persistent, session-long
+  // Map fixes that regardless of which entry point runs concurrently.
+  const batchParentsRef     = useRef<Map<string, string>>(new Map());
   const deepAbortRef        = useRef<AbortController | null>(null);
   const batchAbortRef       = useRef(false);
   const jobIdRef            = useRef('');
@@ -2484,7 +2782,7 @@ export default function App() {
   async function startDeepCaptureBatch(urls: string[]): Promise<void> {
     const total      = urls.length;
     const lotTotal   = Math.ceil(total / batchSize);
-    const batchParents = new Map<string, string>();
+    const batchParents = batchParentsRef.current;
     let okCount = 0, fbCount = 0;
     const startedAt  = Date.now();
 
@@ -3099,7 +3397,7 @@ export default function App() {
           );
           if (!ctrl.signal.aborted) {
             setCapturePhase(`${deepMatch.source} — Création…`);
-            await applyCapturResponse(response as unknown as CaptureResult, undefined, extraChildBlocks);
+            await applyCapturResponse(response as unknown as CaptureResult, batchParentsRef.current, extraChildBlocks);
           }
         } catch (err) {
           if ((err as Error).name !== 'AbortError') setToast('Analyse impossible');
@@ -3118,7 +3416,7 @@ export default function App() {
 
       if (total === 1) {
         // Single URL: lightweight path — keep the CaptureModal open with phase text
-        const batchParents = new Map<string, string>();
+        const batchParents = batchParentsRef.current;
         try {
           const url     = urls[0];
           const host    = (() => { try { return new URL(url).hostname; } catch { return url.slice(0, 30); } })();
@@ -3171,11 +3469,11 @@ export default function App() {
         return;
       }
 
-      // ── SIMPLE CAPTURE (comportement inchangé) ───────────────────────────────
+      // ── SIMPLE CAPTURE ────────────────────────────────────────────────────────
       setCaptureBusy(true);
       try {
         const response = await cortexClient.capture(value);
-        await applyCapturResponse(response, undefined, extraChildBlocks);
+        await applyCapturResponse(response, batchParentsRef.current, extraChildBlocks);
       } finally {
         setCaptureBusy(false);
       }
@@ -3402,14 +3700,19 @@ export default function App() {
       const cvContent = pageToContent(page);
       const result    = await cortexClient.cvAnalyze(cvContent, powerful);
       const date      = new Date().toLocaleDateString('fr-FR');
-      const reportPage = await createPage('note');
+      const reportPage = await createPage('candidature');
       const titleStr  = `Analyse CV — ${page.title} — ${date}`;
       const reportBlocks: Block[] = [
         { id: generateId(), type: 'h1',       content: titleStr },
         { id: generateId(), type: 'paragraph', content: `Modèle utilisé : ${result.model_used} · 100% local` },
         ...createContentBlocks(result.report, 'Analyse CV'),
       ];
-      handleUpdatePage(reportPage.id, { title: titleStr, blocks: reportBlocks, kind: 'note' });
+      // kind 'candidature' + private:true — this report quotes the CV verbatim
+      // (interview questions, weak points) and must get the same automatic
+      // cloud-exclusion as every other CV-derived neuron (rewrite, target-jobs,
+      // ats-keywords, master-cv, adapt-cv already did this; analyze was the
+      // one outlier, created as a plain 'note' with no privacy protection).
+      handleUpdatePage(reportPage.id, { title: titleStr, blocks: reportBlocks, kind: 'candidature', private: true });
       createLink(page.id, reportPage.id);
       setSelectedId(reportPage.id);
       setToast(`Analyse complète · ${result.model_used}`);
@@ -3612,17 +3915,36 @@ export default function App() {
   }, [handleUpdatePage, createPage, createLink]);
 
   const handleRestorePages = useCallback(async (
-    neurons: Array<{ id: string; kind: string; title: string; content: string; metadata: Record<string, unknown> }>,
+    neurons: BackupExport['neurons'],
     links: Array<{ from: string; to: string }>,
   ) => {
     for (const n of neurons) {
-      await upsertPage({ id: n.id, title: n.title, kind: n.kind as PageKind, content: n.content, metadata: n.metadata });
+      // Full-fidelity restore: use the real blocks when the backup has them
+      // (version ≥1.2), never flatten through upsertPage's single-paragraph
+      // reconstruction — that's what silently emptied the editor before.
+      const blocks = Array.isArray(n.blocks) && n.blocks.length > 0
+        ? n.blocks
+        : (n.content?.trim() ? [{ id: generateId(), type: 'paragraph' as const, content: n.content }] : []);
+
+      const exists = pages.some(p => p.id === n.id);
+      if (exists) {
+        updatePage(n.id, {
+          title: n.title, kind: n.kind as PageKind, blocks,
+          links: n.links, color: n.color, tags: n.tags, metadata: n.metadata, private: n.private,
+        });
+      } else {
+        await createPageFromData({
+          id: n.id, title: n.title, kind: n.kind as PageKind, blocks,
+          createdAt: n.createdAt, updatedAt: n.updatedAt,
+          links: n.links, color: n.color, tags: n.tags, metadata: n.metadata, private: n.private,
+        });
+      }
     }
     // Recreate synapses — createLink is idempotent (deduplicates internally)
     for (const link of links) {
       createLink(link.from, link.to);
     }
-  }, [upsertPage, createLink]);
+  }, [pages, createPageFromData, updatePage, createLink]);
 
   // ── Whisper transcription ─────────────────────────────────────────────────
 
@@ -3643,8 +3965,7 @@ export default function App() {
         return;
       }
       if (!result.child) { setToast('Résultat vide'); return; }
-      const batchParents = new Map<string, string>();
-      await applyCapturResponse(result as unknown as CaptureResult, batchParents);
+      await applyCapturResponse(result as unknown as CaptureResult, batchParentsRef.current);
       setToast(`Transcription Whisper ${provider === 'groq' ? 'Groq ' : provider === 'auto' ? '(auto) ' : ''}terminée`);
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
@@ -3868,17 +4189,19 @@ export default function App() {
   const handleConfirmReindex = useCallback(async () => {
     setReindexRunning(true);
     setReindexProgress(0);
-    const count = await cortex.triggerReindexAll(pages, (n) => setReindexProgress(n));
+    // Ensure all pages have full blocks before reindex (lazy stubs have blocks: [])
+    const allFull = await loadAllPagesForReindex();
+    const count = await cortex.triggerReindexAll(allFull, (n) => setReindexProgress(n));
     setReindexRunning(false);
     setShowReindex(false);
     setToast(`${count} neurone${count > 1 ? 's' : ''} ré-indexé${count > 1 ? 's' : ''}`);
-  }, [cortex, pages]);
+  }, [cortex, loadAllPagesForReindex]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const anyModalOpen = captureOpen || backupOpen || settingsOpen || helpOpen || !!pendingDeleteId || !!linkPickerForId || showReindex || !!conflictRequest || consoleOpen || !!downloadUrl || !!playlistChoice || !!playlistImport || !!batchProgress || !!confirmBatch;
+      const anyModalOpen = captureOpen || backupOpen || corpusOpen || activityLogOpen || settingsOpen || helpOpen || !!pendingDeleteId || !!linkPickerForId || showReindex || !!conflictRequest || consoleOpen || !!downloadUrl || !!playlistChoice || !!playlistImport || !!batchProgress || !!confirmBatch || !!screenCaptureImage || (videoSummaryOpen && !videoSummaryMinimized);
 
       // Escape → close editor panel (only when no modal/overlay is open)
       if (e.key === 'Escape' && !anyModalOpen && selectedId) {
@@ -3927,7 +4250,13 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, consoleOpen, captureOpen, backupOpen, settingsOpen, helpOpen, pendingDeleteId, linkPickerForId, showReindex, conflictRequest, downloadUrl, playlistChoice, playlistImport]);
+  }, [selectedId, consoleOpen, captureOpen, backupOpen, corpusOpen, activityLogOpen, settingsOpen, helpOpen, pendingDeleteId, linkPickerForId, showReindex, conflictRequest, downloadUrl, playlistChoice, playlistImport, screenCaptureImage]);
+
+  useEffect(() => {
+    function onCorpus3DChanged() { setCorpusShow3D(getCorpusShowIn3D()); }
+    window.addEventListener('docteur-corpus-3d-changed', onCorpus3DChanged);
+    return () => window.removeEventListener('docteur-corpus-3d-changed', onCorpus3DChanged);
+  }, []);
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
@@ -3946,19 +4275,20 @@ export default function App() {
     <div className={`docteur-shell${isMobile && showMobileBrain ? ' mobile-brain-visible' : ''}`}>
       {(!isMobile || showMobileBrain) && (
         <NeuralBrain
-          pages={pages}
+          pages={corpusShow3D ? pages : pages.filter(p => p.kind !== 'corpus')}
           selectedPageId={selectedId}
           compact={isMobile}
           className="brain-stage"
           onNodeSelect={setSelectedId}
           indexingIds={cortex.indexing}
           highlightedIds={sourceHighlights}
+          gestureInputRef={gestureInputRef}
         />
       )}
 
       <div className="shell-topbar">
         <TopBar
-          pageCount={pages.length}
+          pageCount={pageCounts.total || pages.length}
           cortexAvailable={cortex.available}
           cortexBusy={cortexBusy}
           cortexQueueSize={cortex.queueSize}
@@ -3967,16 +4297,28 @@ export default function App() {
           onSearchOpen={() => setConsoleOpen(true)}
           onCaptureOpen={() => setCaptureOpen(true)}
           onBackupOpen={() => setBackupOpen(true)}
+          onCorpusOpen={() => setCorpusOpen(true)}
+          onActivityLogOpen={() => setActivityLogOpen(true)}
           onSettingsOpen={() => setSettingsOpen(true)}
           onHelpOpen={() => setHelpOpen(true)}
           onRoadmapOpen={() => setRoadmapOpen(true)}
           onAgentsOpen={() => setAgentsOpen(true)}
+          onVideoSummaryOpen={() => {
+            setVideoSummaryOpen(true);
+            setVideoSummaryMinimized(false);
+            void cortexClient.routerSettings().then(s => setStrictLocalMode(!!s.strict_local_mode)).catch(() => {});
+          }}
           onSkillsOpen={() => setSkillsOpen(true)}
+          onPromptGeneratorOpen={() => setPromptGeneratorOpen(true)}
           onTodoOpen={() => setTodoOpen(true)}
           todoPendingCount={todoPendingCount}
           voiceEnabled={voiceSettings?.enabled ?? false}
           voiceState={voice.state}
           onVoiceClick={voice.triggerManual}
+          gestureState={gesture.gestureState}
+          onCameraClick={gesture.toggle}
+          screenShareState={screenShare.state}
+          onScreenShareClick={screenShare.toggle}
           activeBatch={batchMinimized ? batchProgress : null}
           batchQueueLength={batchMinimized ? batchQueue.length : 0}
           onBatchClick={() => setBatchMinimized(false)}
@@ -3985,24 +4327,52 @@ export default function App() {
 
       {/* Sidebar : hidden on mobile when editor is open */}
       <div className={`shell-sidebar${isMobile && selectedId ? ' mobile-hidden' : ''}`}>
-        <Sidebar
-          pages={pages}
-          selectedPageId={selectedId}
-          loading={loading}
-          cortexAvailable={cortex.available}
-          onSelectPage={setSelectedId}
-          onNewPage={handleNewPage}
-          onDeletePage={handleRequestDelete}
-          onRequestReindex={() => { setReindexProgress(0); setShowReindex(true); }}
-          showHomeScreen={showHomeScreen}
-          onToggleHomeScreen={setShowHomeScreen}
-          onCaptureOpen={() => setCaptureOpen(true)}
-          onSearchOpen={() => setConsoleOpen(true)}
-        />
+        <div style={{ pointerEvents: 'auto' }}>
+          <Sidebar
+            pages={pages}
+            selectedPageId={selectedId}
+            loading={loading}
+            cortexAvailable={cortex.available}
+            onSelectPage={setSelectedId}
+            onNewPage={handleNewPage}
+            onDeletePage={handleRequestDelete}
+            onRequestReindex={() => { setReindexProgress(0); setShowReindex(true); }}
+            showHomeScreen={showHomeScreen}
+            onToggleHomeScreen={setShowHomeScreen}
+            onCaptureOpen={() => setCaptureOpen(true)}
+            onSearchOpen={() => setConsoleOpen(true)}
+            pageCounts={pageCounts}
+            allMetaLoaded={allMetaLoaded}
+            onLoadAllPages={loadAllMeta}
+          />
+        </div>
       </div>
 
       {selectedPage && (
-        <div className="shell-editor">
+        <div 
+          className="shell-editor" 
+          style={{ 
+            position: 'fixed',
+            top: 0,
+            right: 20,
+            bottom: 36,
+            width: 420,
+            height: '100vh',
+            maxHeight: '100vh',
+            overflowY: 'auto',
+            zIndex: 50,
+          }}
+          ref={(el) => {}}
+        >
+          {pageContentLoading && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 10,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(10,8,20,0.6)', backdropFilter: 'blur(4px)',
+            }}>
+              <div className="neural-dot" />
+            </div>
+          )}
           <PageEditor
             key={selectedPage.id}
             page={selectedPage}
@@ -4058,7 +4428,40 @@ export default function App() {
               }
               : undefined
             }
+            onAnalyzeImage={setVisionImageId}
           />
+        </div>
+      )}
+
+      {/* Selected neuron not found in memory after an on-demand fetch attempt —
+          e.g. it was deleted, or the fetch failed. Never leave the click silent. */}
+      {selectedId && !selectedPage && (
+        <div
+          className="flex items-center justify-center"
+          style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'rgba(10,8,20,0.85)', pointerEvents: pageContentLoading ? 'none' : 'auto' }}
+          onClick={() => { if (!pageContentLoading) setSelectedId(null); }}
+        >
+          <div
+            className="font-mono text-sm flex flex-col items-center gap-3"
+            style={{ color: pageContentLoading ? '#7a6c9a' : '#ff8b3d' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {pageContentLoading ? (
+              <>Chargement du neurone…</>
+            ) : (
+              <>
+                <span>Neurone introuvable — il a peut-être été supprimé.</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="rounded px-3 py-1.5"
+                  style={{ border: '1px solid rgba(255,139,61,0.3)', background: 'rgba(255,139,61,0.08)', color: '#ff8b3d', cursor: 'pointer' }}
+                >
+                  Fermer
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
@@ -4177,6 +4580,10 @@ export default function App() {
 
       {backupOpen && <BackupModal pages={pages} onClose={() => setBackupOpen(false)} onRestorePages={handleRestorePages} />}
 
+      {corpusOpen && <CorpusModal onClose={() => setCorpusOpen(false)} onReload={reloadFromServer} />}
+
+      {activityLogOpen && <ActivityLogModal onClose={() => setActivityLogOpen(false)} />}
+
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
 
       <RoadmapModal isOpen={roadmapOpen} onClose={() => setRoadmapOpen(false)} />
@@ -4185,6 +4592,15 @@ export default function App() {
         <AgentsModal
           onClose={() => setAgentsOpen(false)}
           onAgentOutput={async (output) => { await handleAgentOutput(output); }}
+        />
+      )}
+
+      {videoSummaryOpen && !videoSummaryMinimized && (
+        <VideoSummaryModal
+          onClose={() => setVideoSummaryOpen(false)}
+          onMinimize={() => setVideoSummaryMinimized(true)}
+          strictLocalMode={strictLocalMode}
+          onDone={() => { void reloadFromServer(); }}
         />
       )}
 
@@ -4224,6 +4640,13 @@ export default function App() {
           cortex.scheduleIndex(page);
         }}
       />
+
+      {promptGeneratorOpen && (
+        <PromptGeneratorModal
+          onClose={() => setPromptGeneratorOpen(false)}
+          strictLocalMode={strictLocalMode}
+        />
+      )}
 
       {/* ── Playlist choice (video with &list= param) ──────────────────────── */}
       {playlistChoice && (
@@ -4650,6 +5073,11 @@ export default function App() {
             // Re-check Groq availability in case keys were saved/removed
             cortexClient.getCloudKeys().then(k => setGroqActive(k.groq_active)).catch(() => {});
           }}
+          corpusCount={pageCounts.byKind.corpus ?? 0}
+          gestureSensitivity={gestureSensitivity}
+          onGestureSensitivityChange={(v) => { setGestureSensitivityState(v); setGestureSensitivity(v); }}
+          easterEggEnabled={easterEggEnabled}
+          onEasterEggEnabledChange={(v) => { setEasterEggEnabledState(v); setEasterEggEnabled(v); }}
           onMergeDuplicates={mergeDuplicateParents}
           downloadFolder={downloadFolder}
           onDownloadFolderChange={(f) => { setDownloadFolder(f); localStorage.setItem('docteur.downloadFolder', f); }}
@@ -4776,6 +5204,8 @@ export default function App() {
         onCreatePage={() => { handleNewPage(); setConsoleOpen(false); }}
         onHighlightSources={(ids) => setSourceHighlights(new Set(ids))}
         onClearHighlights={() => setSourceHighlights(new Set())}
+        onAnalyzeImage={setVisionImageId}
+        onOpenConversation={() => { setConsoleOpen(false); setConversationOpen(true); }}
         isOnline={isOnline}
         customShortcuts={customShortcuts}
         pages={pages}
@@ -5141,6 +5571,89 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Gesture camera overlay ───────────────────────────────────────────── */}
+      <GestureOverlay
+        gestureState={gesture.gestureState}
+        lastGesture={gesture.lastGesture}
+        error={gesture.error}
+        videoRef={gesture.videoRef}
+        onToggle={gesture.toggle}
+        debugEnabled={gesture.debugEnabled}
+        onToggleDebug={gesture.toggleDebug}
+        debugInfo={gesture.debugInfo}
+        mode={gesture.mode}
+        onModeChange={gesture.setCameraMode}
+        onCapturePhoto={handleCameraPhotoCapture}
+      />
+
+      {systemOffline && <ShutdownOverlay />}
+
+      {conversationOpen && (
+        <ConversationModal
+          onClose={() => setConversationOpen(false)}
+          onSaveConversation={(messages) => {
+            void (async () => {
+              const date = new Date().toLocaleDateString('fr-FR');
+              const firstUserMsg = messages.find(m => m.role === 'user')?.content ?? 'Conversation';
+              const content = messages
+                .map(m => `**${m.role === 'user' ? 'Moi' : 'Docteur'} :** ${m.content}`)
+                .join('\n\n');
+              const page = await createPageFromData({
+                title:   firstUserMsg.slice(0, 60),
+                kind:    'note',
+                blocks:  createContentBlocks(`${content}\n\n---\n**Date :** ${date}`, firstUserMsg),
+                private: true,
+              });
+              setToast('Conversation sauvegardée dans un neurone privé');
+              setSelectedId(page.id);
+            })();
+          }}
+        />
+      )}
+
+      {visionImageId && (
+        <VisionAnalyzeModal
+          imageId={visionImageId}
+          onClose={() => setVisionImageId(null)}
+          onSave={(question, resultText, engine, modelUsed) => {
+            void (async () => {
+              const date       = new Date().toLocaleDateString('fr-FR');
+              const engineLabel = engine === 'ocr' ? `OCR (${modelUsed})` : `vision (${modelUsed})`;
+              const resultLabel = engine === 'ocr' ? 'Texte extrait' : 'Réponse';
+              const content = `**${resultLabel} :**\n${resultText}\n\n---\n**Moteur :** ${engineLabel}\n**Date :** ${date}\n**Analyse locale — résultat indicatif, à vérifier.**`;
+              const page = await createPageFromData({
+                title:  question || 'Analyse d\'image',
+                kind:   'question',
+                blocks: [
+                  { id: generateId(), type: 'image', content: visionImageId },
+                  ...createContentBlocks(content, question || 'Analyse d\'image'),
+                ],
+              });
+              cortex.scheduleIndex(page);
+            })();
+          }}
+        />
+      )}
+
+      {/* ── Screen share overlay ─────────────────────────────────────────────── */}
+      <ScreenShareOverlay
+        state={screenShare.state}
+        error={screenShare.error}
+        videoRef={screenShare.videoRef}
+        onCapture={handleScreenCapture}
+        onStop={screenShare.stop}
+      />
+
+      {screenCaptureImage && (
+        <ScreenCaptureModal
+          imageDataUrl={screenCaptureImage}
+          onClose={() => setScreenCaptureImage(null)}
+          onSaveImage={handleScreenSaveImage}
+          onSaveText={handleScreenSaveText}
+          onAnalyzeImage={handleScreenAnalyzeImage}
+        />
       )}
 
       {/* ── Voice indicator (floating, when enabled) ─────────────────────────── */}

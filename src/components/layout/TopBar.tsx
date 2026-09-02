@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Cog, HardDrive, HelpCircle, Map, Search, Upload, Mic, MicOff, Zap, ListTodo } from 'lucide-react';
+import { Bot, Clapperboard, Cog, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2 } from 'lucide-react';
 import type { VoiceState } from '../../hooks/useVoiceActivation';
+import type { GestureState } from '../../hooks/useGestureCamera';
+import type { ScreenShareState } from '../../hooks/useScreenShare';
 import type { BatchProgressState } from '../modals/BatchProgressModal';
 
 interface Props {
@@ -13,16 +15,24 @@ interface Props {
   readonly onSearchOpen:     () => void;
   readonly onCaptureOpen:    () => void;
   readonly onBackupOpen:     () => void;
+  readonly onCorpusOpen:     () => void;
+  readonly onActivityLogOpen: () => void;
   readonly onSettingsOpen:   () => void;
   readonly onHelpOpen:       () => void;
   readonly onRoadmapOpen:    () => void;
   readonly onAgentsOpen:     () => void;
+  readonly onVideoSummaryOpen?: () => void;
   readonly onSkillsOpen:     () => void;
+  readonly onPromptGeneratorOpen: () => void;
   readonly onTodoOpen:       () => void;
   readonly todoPendingCount?: number;
   readonly voiceEnabled?:    boolean;
   readonly voiceState?:      VoiceState;
   readonly onVoiceClick?:    () => void;
+  readonly gestureState?:    GestureState;
+  readonly onCameraClick?:   () => void;
+  readonly screenShareState?: ScreenShareState;
+  readonly onScreenShareClick?: () => void;
   readonly activeBatch?:     BatchProgressState | null;
   readonly batchQueueLength?: number;
   readonly onBatchClick?:    () => void;
@@ -40,16 +50,24 @@ export default function TopBar({
   onSearchOpen,
   onCaptureOpen,
   onBackupOpen,
+  onCorpusOpen,
+  onActivityLogOpen,
   onSettingsOpen,
   onHelpOpen,
   onRoadmapOpen,
   onAgentsOpen,
+  onVideoSummaryOpen,
   onSkillsOpen,
+  onPromptGeneratorOpen,
   onTodoOpen,
   todoPendingCount = 0,
   voiceEnabled = false,
   voiceState   = 'idle',
   onVoiceClick,
+  gestureState = 'idle',
+  onCameraClick,
+  screenShareState = 'idle',
+  onScreenShareClick,
   activeBatch,
   batchQueueLength = 0,
   onBatchClick,
@@ -221,6 +239,58 @@ export default function TopBar({
           {pad(time.getSeconds())}
         </div>
 
+        {/* Camera gesture button */}
+        {onCameraClick && (() => {
+          const CAM_TITLES: Partial<Record<GestureState, string>> = {
+            idle:    'Activer la caméra gestuelle (Alt+C)',
+            loading: 'Chargement du modèle…',
+            active:  'Caméra active — cliquer pour désactiver (Alt+C)',
+            error:   'Erreur caméra — cliquer pour réessayer (Alt+C)',
+          };
+          const CAM_COLORS: Partial<Record<GestureState, string>> = {
+            active:  '#3dffaa',
+            loading: '#ffb547',
+            error:   '#ff4d58',
+          };
+          const camColor = CAM_COLORS[gestureState];
+          return (
+            <button
+              type="button"
+              className={`topbar-action topbar-action--icon${gestureState === 'active' ? ' topbar-action--recording' : ''}`}
+              title={CAM_TITLES[gestureState] ?? ''}
+              onClick={onCameraClick}
+              style={camColor ? { color: camColor } : undefined}
+            >
+              {gestureState === 'active' ? <Camera size={12} /> : <CameraOff size={12} />}
+            </button>
+          );
+        })()}
+
+        {/* Screen share button */}
+        {onScreenShareClick && (() => {
+          const SCREEN_TITLES: Partial<Record<ScreenShareState, string>> = {
+            idle:   'Partager l\'écran (Alt+S)',
+            active: 'Partage actif — cliquer pour désactiver (Alt+S)',
+            error:  'Erreur de partage — cliquer pour réessayer (Alt+S)',
+          };
+          const SCREEN_COLORS: Partial<Record<ScreenShareState, string>> = {
+            active: '#5ee7ff',
+            error:  '#ff4d58',
+          };
+          const screenColor = SCREEN_COLORS[screenShareState];
+          return (
+            <button
+              type="button"
+              className={`topbar-action topbar-action--icon${screenShareState === 'active' ? ' topbar-action--recording' : ''}`}
+              title={SCREEN_TITLES[screenShareState] ?? ''}
+              onClick={onScreenShareClick}
+              style={screenColor ? { color: screenColor } : undefined}
+            >
+              {screenShareState === 'active' ? <Monitor size={12} /> : <MonitorOff size={12} />}
+            </button>
+          );
+        })()}
+
         {voiceEnabled && (() => {
           const VOICE_TITLES: Record<string, string> = {
             idle:           'Activer le micro (Alt+M)',
@@ -263,12 +333,30 @@ export default function TopBar({
           <HardDrive size={12} />
         </button>
 
+        <button className="topbar-action topbar-action--icon" type="button" title="Corpus de référence (survie, premiers secours…)" onClick={onCorpusOpen}>
+          <Mountain size={12} />
+        </button>
+
+        <button className="topbar-action topbar-action--icon" type="button" title="Journal d'activité" onClick={onActivityLogOpen}>
+          <ScrollText size={12} />
+        </button>
+
         <button className="topbar-action topbar-action--icon" type="button" title="Agents automatiques" onClick={onAgentsOpen}>
           <Bot size={12} />
         </button>
 
+        {onVideoSummaryOpen && (
+          <button className="topbar-action topbar-action--icon" type="button" title="Résumé de vidéo longue" onClick={onVideoSummaryOpen}>
+            <Clapperboard size={12} />
+          </button>
+        )}
+
         <button className="topbar-action topbar-action--icon" type="button" title="Compétences à la demande" onClick={onSkillsOpen}>
           <Zap size={12} />
+        </button>
+
+        <button className="topbar-action topbar-action--icon" type="button" title="Générateur de prompts" onClick={onPromptGeneratorOpen}>
+          <Wand2 size={12} />
         </button>
 
         <button

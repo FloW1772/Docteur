@@ -108,10 +108,13 @@ body {
 }
 
 .shell-sidebar {
+  position: fixed;
   top: 40px;
   left: 0;
   bottom: 24px;
   width: 220px;
+  z-index: 20;
+  pointer-events: none;
 }
 
 .shell-editor {

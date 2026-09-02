@@ -10,7 +10,7 @@ import {
   setGeminiRpm,
   DEFAULT_MODEL,
 } from '../lib/providers/gemini.js';
-import { getCloudKeys, getRouterSettings, getMeta, setMeta } from '../lib/sqlite.js';
+import { getCloudKeys, getRouterSettings, getMeta, setMeta, insertActivityLog } from '../lib/sqlite.js';
 
 // ── Grounding quota tracker (daily counter in SQLite) ─────────────────────────
 
@@ -139,9 +139,11 @@ export function createResearchRoute({ logger, fallbackChat }) {
           logger,
         });
         logger?.info({ subject, model: result.model, mode }, 'research synthese done');
+        insertActivityLog({ opType: 'veille', item: subject, result: 'success', modelUsed: result.model });
         return c.json({ content: result.text, model: result.model, mode, sources: [] });
       } catch (err) {
         logger?.warn({ subject, err: err.message }, 'research synthese failed');
+        insertActivityLog({ opType: 'veille', item: subject, result: 'failure', reason: err.message });
         if (err.isQuota) {
           return c.json({
             error: 'Quota Gemini épuisé pour aujourd\'hui. Réessaie demain ou vérifie tes limites dans Paramètres.',
@@ -166,6 +168,7 @@ export function createResearchRoute({ logger, fallbackChat }) {
           ? 'Aucune source web récupérée par le grounding — les informations peuvent ne pas être à jour.'
           : null;
         logger?.info({ subject, model, sources: result.sources.length, mode }, 'research actualite done');
+        insertActivityLog({ opType: 'veille', item: subject, result: 'success', modelUsed: model });
         return c.json({
           content: result.text,
           model,
@@ -185,6 +188,7 @@ export function createResearchRoute({ logger, fallbackChat }) {
 
     // All grounding models failed
     logger?.warn({ subject, err: lastErr?.message }, 'all grounding models failed');
+    insertActivityLog({ opType: 'veille', item: subject, result: 'failure', reason: lastErr?.message ?? 'grounding indisponible' });
     return c.json({
       error: 'Le grounding Google Search est indisponible sur ton quota gratuit actuel. ' +
              'Utilise le mode "Synthèse de fond" pour une réponse sans recherche web.',

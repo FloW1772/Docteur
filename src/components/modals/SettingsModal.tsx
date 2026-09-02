@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { exportAllToServer } from '../../lib/storage';
 import { cortexClient } from '../../lib/cortex/client';
-import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats } from '../../lib/cortex/client';
-import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName } from '../../lib/ollamaModels';
+import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats } from '../../lib/cortex/client';
+import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
 type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files';
 
@@ -45,6 +45,11 @@ interface Props {
   onDeleteShortcut?:         (name: string) => Promise<void>;
   onInboxImport?:            (result: InboxCheckResult) => void;
   onRepairDone?:             () => Promise<void>;
+  corpusCount?:              number;
+  gestureSensitivity?:          number;
+  onGestureSensitivityChange?:  (value: number) => void;
+  easterEggEnabled?:            boolean;
+  onEasterEggEnabledChange?:    (v: boolean) => void;
 }
 
 const LEVEL_COLORS: Record<number, string> = {
@@ -79,6 +84,11 @@ export default function SettingsModal({
   customShortcuts = {}, onSetShortcut, onDeleteShortcut,
   onInboxImport,
   onRepairDone,
+  corpusCount = 0,
+  gestureSensitivity = 5,
+  onGestureSensitivityChange,
+  easterEggEnabled = true,
+  onEasterEggEnabledChange,
 }: Props) {
   const [tab, setTab] = useState<Tab>('models');
   const [imageStats, setImageStats] = useState<{ count: number; totalMb: number } | null>(null);
@@ -92,6 +102,11 @@ export default function SettingsModal({
   const [ppnUploading,       setPpnUploading]         = useState(false);
   const ppnInputRef = useRef<HTMLInputElement>(null);
   const [personaSettings, setPersonaSettings] = useState<PersonaSettings | null>(null);
+  const [preferenceFacts, setPreferenceFacts] = useState<PreferenceFact[]>([]);
+  const [editingFactId,   setEditingFactId]   = useState<string | null>(null);
+  const [editingFactText, setEditingFactText] = useState('');
+  const [newFactText,     setNewFactText]     = useState('');
+  const [factError,       setFactError]       = useState<string | null>(null);
   const [inboxSettings,   setInboxSettings]   = useState<InboxSettings | null>(null);
   const [inboxSaving,     setInboxSaving]     = useState(false);
   const [inboxChecking,   setInboxChecking]   = useState(false);
@@ -139,6 +154,8 @@ export default function SettingsModal({
     paying_apis_enabled: false,
     cloud_preference: 'local',
     groq_model:       'openai/gpt-oss-120b',
+    powerful_model:   'qwen2.5:14b-instruct-q3_K_M',
+    chat_model:       'mistral-nemo:12b-instruct-2407-q4_K_M',
   });
   const [stats, setStats]             = useState<RouterStat[]>([]);
   const [cloudMonth, setCloudMonth]   = useState<CloudMonthStat[]>([]);
@@ -390,7 +407,52 @@ export default function SettingsModal({
 
   useEffect(() => {
     cortexClient.getPersonaSettings().then(setPersonaSettings).catch(() => {});
+    cortexClient.listPreferenceFacts().then(setPreferenceFacts).catch(() => {});
   }, []);
+
+  async function handleAddFact() {
+    const text = newFactText.trim();
+    if (!text) return;
+    setFactError(null);
+    try {
+      const created = await cortexClient.addPreferenceFact(text);
+      setPreferenceFacts(prev => [...prev, created]);
+      setNewFactText('');
+    } catch (e) {
+      setFactError(e instanceof Error ? e.message : 'Erreur');
+    }
+  }
+
+  async function handleSaveFactEdit(id: string) {
+    const text = editingFactText.trim();
+    if (!text) return;
+    try {
+      await cortexClient.updatePreferenceFact(id, text);
+      setPreferenceFacts(prev => prev.map(f => f.id === id ? { ...f, fact: text } : f));
+      setEditingFactId(null);
+    } catch (e) {
+      setFactError(e instanceof Error ? e.message : 'Erreur');
+    }
+  }
+
+  async function handleDeleteFact(id: string) {
+    try {
+      await cortexClient.deletePreferenceFact(id);
+      setPreferenceFacts(prev => prev.filter(f => f.id !== id));
+    } catch (e) {
+      setFactError(e instanceof Error ? e.message : 'Erreur');
+    }
+  }
+
+  async function handleClearAllFacts() {
+    if (!window.confirm('Effacer tous les faits retenus ?')) return;
+    try {
+      await cortexClient.clearPreferenceFacts();
+      setPreferenceFacts([]);
+    } catch (e) {
+      setFactError(e instanceof Error ? e.message : 'Erreur');
+    }
+  }
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -425,6 +487,26 @@ export default function SettingsModal({
     setSaving(true);
     try {
       const res = await cortexClient.updateRouterSettings({ fallback_model: model });
+      setSettings(res.settings);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handlePowerfulModelChange(model: string) {
+    setSaving(true);
+    try {
+      const res = await cortexClient.updateRouterSettings({ powerful_model: model });
+      setSettings(res.settings);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleChatModelChange(model: string) {
+    setSaving(true);
+    try {
+      const res = await cortexClient.updateRouterSettings({ chat_model: model });
       setSettings(res.settings);
     } finally {
       setSaving(false);
@@ -619,6 +701,67 @@ export default function SettingsModal({
                 </div>
               )}
 
+              {/* Mémoire des préférences — mode Discussion */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-mono" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>
+                    MÉMOIRE ({preferenceFacts.length}/50)
+                  </p>
+                  {preferenceFacts.length > 0 && (
+                    <button type="button" onClick={() => void handleClearAllFacts()} className="font-mono text-[10px]" style={{ color: '#ff4d58', background: 'none', border: 'none', cursor: 'pointer' }}>
+                      Tout effacer
+                    </button>
+                  )}
+                </div>
+                <p className="font-mono text-[10px] mb-2" style={{ color: '#5a4a7a' }}>
+                  Faits que Docteur retient sur toi en mode Discussion (jamais un historique complet — seulement ce que tu confirmes).
+                </p>
+                {preferenceFacts.length === 0 && (
+                  <p className="font-mono text-xs" style={{ color: '#3d3060' }}>Aucun fait retenu pour l'instant.</p>
+                )}
+                <div className="flex flex-col gap-1.5">
+                  {preferenceFacts.map(f => (
+                    <div key={f.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      {editingFactId === f.id ? (
+                        <>
+                          <input
+                            type="text" value={editingFactText} maxLength={300}
+                            onChange={e => setEditingFactText(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') void handleSaveFactEdit(f.id); if (e.key === 'Escape') setEditingFactId(null); }}
+                            className="font-mono text-xs flex-1 bg-transparent border-0 outline-none"
+                            style={{ color: '#f0eaff' }}
+                            autoFocus
+                          />
+                          <button type="button" onClick={() => void handleSaveFactEdit(f.id)} className="font-mono text-[10px]" style={{ color: '#3dffaa', background: 'none', border: 'none', cursor: 'pointer' }}>OK</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-mono text-xs flex-1" style={{ color: '#c0b0e0' }}>{f.fact}</span>
+                          <button type="button" onClick={() => { setEditingFactId(f.id); setEditingFactText(f.fact); }} className="font-mono text-[10px]" style={{ color: '#5ee7ff', background: 'none', border: 'none', cursor: 'pointer' }}>Modifier</button>
+                          <button type="button" onClick={() => void handleDeleteFact(f.id)} className="font-mono text-[10px]" style={{ color: '#ff4d58', background: 'none', border: 'none', cursor: 'pointer' }}>Suppr.</button>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {preferenceFacts.length < 50 && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="text" value={newFactText} maxLength={300}
+                      onChange={e => setNewFactText(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') void handleAddFact(); }}
+                      placeholder="Ajouter un fait manuellement…"
+                      className="font-mono text-xs flex-1 px-2.5 py-1.5 rounded"
+                      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', color: '#f0eaff' }}
+                    />
+                    <button type="button" onClick={() => void handleAddFact()} className="font-mono text-[10px] px-2.5 py-1.5 rounded" style={{ background: 'rgba(61,255,170,0.1)', border: '1px solid rgba(61,255,170,0.25)', color: '#3dffaa', cursor: 'pointer' }}>
+                      Ajouter
+                    </button>
+                  </div>
+                )}
+                {factError && <p className="font-mono text-[10px] mt-1" style={{ color: '#ff4d58' }}>{factError}</p>}
+              </div>
+
               {/* Ollama status */}
               <div className="flex items-center gap-2">
                 <div style={{
@@ -729,6 +872,68 @@ export default function SettingsModal({
                   </select>
                 </div>
               )}
+
+              {/* Powerful mode model ("puissant [question]", CV, résumés) */}
+              <div className="px-4 py-3 rounded" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <p className="font-mono text-xs mb-1" style={{ color: '#7a6c9a' }}>MODÈLE "PUISSANT" (mode "puissant [question]", CV, résumés)</p>
+                <select
+                  value={settings.powerful_model ?? 'qwen2.5:14b-instruct-q3_K_M'}
+                  onChange={e => handlePowerfulModelChange(e.target.value)}
+                  className="font-mono text-xs w-full bg-transparent border-0 outline-none"
+                  style={{ color: '#c0b0e0', cursor: 'pointer' }}
+                >
+                  {Array.from(new Set([
+                    settings.powerful_model ?? 'qwen2.5:14b-instruct-q3_K_M',
+                    ...installedOllamaModels.map(model => model.name),
+                    'qwen2.5:14b', 'qwen2.5:14b-instruct-q3_K_M', 'mistral-nemo:12b-instruct-2407-q4_K_M',
+                  ])).map(name => {
+                    const installedEntry = installedOllamaModels.find(m => sameOllamaModelGroup(m.name, name));
+                    const recommended    = OLLAMA_RECOMMENDED_MODELS.find(m => m.name === name);
+                    const sizeBytes      = installedEntry?.size ?? recommended?.approxSizeBytes ?? null;
+                    const fits           = sizeBytes !== null ? fitsVramBudget(sizeBytes) : true;
+                    const sizeLabel      = sizeBytes !== null ? ` — ${formatBytes(sizeBytes)}${fits ? '' : ` (dépasse votre VRAM, plus lent)`}` : '';
+                    return (
+                      <option key={name} value={name} style={{ background: '#0f0b1e' }}>
+                        {name}{installedModelNames.has(name) ? ' (installé)' : ' (non installé)'}{sizeLabel}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="font-mono text-[10px] mt-1" style={{ color: '#5a4a7a' }}>
+                  Change immédiatement, sans relancer un prompt. Un modèle quantisé (q3_K_M, q4_K_M…) tient dans moins de VRAM que sa version complète.
+                </p>
+              </div>
+
+              {/* Conversation mode model */}
+              <div className="px-4 py-3 rounded" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <p className="font-mono text-xs mb-1" style={{ color: '#7a6c9a' }}>MODÈLE DE CONVERSATION (mode Discussion)</p>
+                <select
+                  value={settings.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M'}
+                  onChange={e => handleChatModelChange(e.target.value)}
+                  className="font-mono text-xs w-full bg-transparent border-0 outline-none"
+                  style={{ color: '#c0b0e0', cursor: 'pointer' }}
+                >
+                  {Array.from(new Set([
+                    settings.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M',
+                    ...installedOllamaModels.map(model => model.name),
+                    'mistral-nemo:12b-instruct-2407-q4_K_M', 'qwen2.5:14b-instruct-q3_K_M',
+                  ])).map(name => {
+                    const installedEntry = installedOllamaModels.find(m => sameOllamaModelGroup(m.name, name));
+                    const recommended    = OLLAMA_RECOMMENDED_MODELS.find(m => m.name === name);
+                    const sizeBytes      = installedEntry?.size ?? recommended?.approxSizeBytes ?? null;
+                    const fits           = sizeBytes !== null ? fitsVramBudget(sizeBytes) : true;
+                    const sizeLabel      = sizeBytes !== null ? ` — ${formatBytes(sizeBytes)}${fits ? '' : ` (dépasse votre VRAM, plus lent)`}` : '';
+                    return (
+                      <option key={name} value={name} style={{ background: '#0f0b1e' }}>
+                        {name}{installedModelNames.has(name) ? ' (installé)' : ' (non installé)'}{sizeLabel}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="font-mono text-[10px] mt-1" style={{ color: '#5a4a7a' }}>
+                  Un modèle de conversation et qwen2.5:7b ne tiennent pas ensemble en VRAM — chargement géré comme le mode puissant.
+                </p>
+              </div>
 
               {/* Ollama model management */}
               <div className="px-4 py-3 rounded flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -894,12 +1099,17 @@ export default function SettingsModal({
                       <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>AUTRES MODÈLES INSTALLÉS</p>
                       {extraInstalledModels.map((model) => {
                         const protectedModel = ollamaModels?.guarded_models?.some((guarded) => sameOllamaModelGroup(guarded, model.name)) ?? false;
+                        const fitsVram = fitsVramBudget(model.size);
                         return (
                           <div key={model.name} className="flex items-center gap-3 px-3 py-2.5 rounded" style={{ background: 'rgba(61,255,170,0.03)', border: '1px solid rgba(61,255,170,0.08)' }}>
                             <CheckCircle size={13} style={{ color: '#3dffaa', flexShrink: 0 }} />
                             <div className="flex-1 min-w-0">
                               <p className="font-mono text-xs" style={{ color: '#c0b0e0' }}>{model.name}</p>
-                              <p className="font-mono" style={{ fontSize: 10, color: '#3d3060' }}>{formatBytes(model.size)}</p>
+                              <p className="font-mono" style={{ fontSize: 10, color: '#3d3060' }}>
+                                {formatBytes(model.size)}
+                                {' · '}
+                                <span style={{ color: fitsVram ? '#3dffaa' : '#f59e0b' }}>{fitsVram ? `tient dans ${VRAM_BUDGET_GIB} Go` : `déborde de ${VRAM_BUDGET_GIB} Go`}</span>
+                              </p>
                             </div>
                             {protectedModel && <span className="font-mono text-[10px] px-2 py-1 rounded" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.18)', color: '#f59e0b' }}>Protégé</span>}
                             <button type="button" disabled={!canManageModels || modelBusy !== null || protectedModel} onClick={() => handleDeleteModel(model.name)} className="font-mono text-xs px-3 py-1.5 rounded flex items-center gap-1.5" style={{ background: 'rgba(255,77,88,0.08)', border: '1px solid rgba(255,77,88,0.18)', color: '#ff4d58', cursor: !canManageModels || modelBusy !== null || protectedModel ? 'default' : 'pointer', opacity: !canManageModels || modelBusy !== null || protectedModel ? 0.55 : 1 }}>
@@ -1518,6 +1728,66 @@ export default function SettingsModal({
                 </button>
               </div>
 
+              {/* Corpus de référence — volume monitor */}
+              <div style={{ paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <p className="font-mono text-xs" style={{ color: '#c0b0e0' }}>Neurones "corpus" (référence)</p>
+                  <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
+                    Importés (fichiers) + capturés (recherche ciblée) — exclus du cortex 3D par défaut
+                  </p>
+                </div>
+                <span className="font-mono font-semibold" style={{ color: '#84cc16', fontSize: 20, flexShrink: 0 }}>{corpusCount}</span>
+              </div>
+
+              {/* Gesture control sensitivity */}
+              <div style={{ paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="flex items-center justify-between">
+                  <p className="font-mono text-xs" style={{ color: '#c0b0e0' }}>Sensibilité du contrôle gestuel (Alt+C)</p>
+                  <span className="font-mono font-semibold" style={{ color: '#3dffaa', fontSize: 14 }}>{gestureSensitivity}</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={gestureSensitivity}
+                  onChange={e => onGestureSensitivityChange?.(Number(e.target.value))}
+                  style={{ width: '100%', accentColor: '#3dffaa' }}
+                />
+                <p className="font-mono text-xs" style={{ color: '#7a6c9a' }}>
+                  1 = mouvements amples nécessaires · 10 = très réactif. Effectif immédiatement, sans relancer la caméra.
+                </p>
+              </div>
+
+              {/* Easter egg — doigt d'honneur */}
+              <div style={{ paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <div>
+                  <p className="font-mono text-xs" style={{ color: '#c0b0e0' }}>Easter egg caméra (majeur tendu)</p>
+                  <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
+                    Effet surprise déclenché en mode gestes. Aucune donnée perdue, aucun réglage modifié — visuel et sonore uniquement.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onEasterEggEnabledChange?.(!easterEggEnabled)}
+                  style={{
+                    flexShrink: 0,
+                    width: 36, height: 20, borderRadius: 10,
+                    background: easterEggEnabled ? '#3dffaa' : 'rgba(255,255,255,0.1)',
+                    border: `1px solid ${easterEggEnabled ? '#3dffaa' : 'rgba(255,255,255,0.15)'}`,
+                    position: 'relative', cursor: 'pointer', transition: 'all 0.2s',
+                  }}
+                  title={easterEggEnabled ? 'Désactiver' : 'Activer'}
+                >
+                  <span style={{
+                    position: 'absolute', top: 2, left: easterEggEnabled ? 18 : 2,
+                    width: 14, height: 14, borderRadius: 7,
+                    background: easterEggEnabled ? '#0a0014' : '#5a4a7a',
+                    transition: 'left 0.2s',
+                  }} />
+                </button>
+              </div>
+
               {/* Site shortcuts */}
               <div style={{ paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div className="flex items-center gap-2 mb-1">
@@ -1527,7 +1797,7 @@ export default function SettingsModal({
                   </p>
                 </div>
                 <p className="font-mono text-xs" style={{ color: '#7a6c9a' }}>
-                  Tapez <span style={{ color: '#c0b0e0' }}>ouvre [nom]</span> pour ouvrir directement un site. Vos raccourcis ont priorité sur les sites intégrés.
+                  Tapez <span style={{ color: '#c0b0e0' }}>ouvre [nom]</span> pour ouvrir directement un site (à l'écrit ou à la voix). Vos raccourcis personnalisés ont priorité sur les sites intégrés (ex : <span style={{ color: '#c0b0e0' }}>nomad</span> → <span style={{ color: '#c0b0e0' }}>http://localhost:8080</span> pour une instance locale).
                 </p>
 
                 {/* Custom shortcuts list */}

@@ -124,6 +124,7 @@ interface Props {
   onPerformance?: (payload: { fps: number; bloomActive: boolean }) => void;
   indexingIds?: Set<string>;    // IDs currently being indexed by the cortex server
   highlightedIds?: Set<string>; // IDs of search result sources to highlight
+  gestureInputRef?: React.MutableRefObject<((rotDx: number, rotDy: number, zoomDelta: number) => void) | null>;
 }
 
 // ── Visual control panel ──────────────────────────────────────────────────────
@@ -1414,6 +1415,28 @@ class OrbitalBrain {
     this.zoomTarget = this.compact ? 5 : 5.5;
   };
 
+  applyGestureInput(rotDx: number, rotDy: number, zoomDelta: number): void {
+    let debug = false;
+    try { debug = localStorage.getItem('docteur-gesture-debug') === 'true'; } catch { /* ignore */ }
+    const before = debug ? { x: this.dragTargetRotation.x, y: this.dragTargetRotation.y, zoom: this.zoomTarget } : null;
+
+    this.dragTargetRotation.x = THREE.MathUtils.clamp(
+      this.dragTargetRotation.x + rotDy, -Math.PI / 2, Math.PI / 2,
+    );
+    this.dragTargetRotation.y += rotDx;
+    if (zoomDelta !== 0) {
+      this.zoomTarget = THREE.MathUtils.clamp(this.zoomTarget + zoomDelta, 4.5, 6.6);
+    }
+
+    if (debug && before) {
+      console.info('[gesture] applyGestureInput', {
+        input: { rotDx, rotDy, zoomDelta },
+        before,
+        after: { x: this.dragTargetRotation.x, y: this.dragTargetRotation.y, zoom: this.zoomTarget },
+      });
+    }
+  }
+
   setIndexingIds(ids: Set<string>): void {
     this.indexingIds = ids;
   }
@@ -1922,6 +1945,7 @@ function NeuralBrain({
   bloomEnabled = true,
   indexingIds,
   highlightedIds,
+  gestureInputRef,
 }: Props) {
   const canvasRef        = useRef<HTMLCanvasElement>(null);
   const tooltipRef       = useRef<HTMLDivElement>(null);
@@ -1977,7 +2001,7 @@ function NeuralBrain({
   const channels = pages.filter(p => p.kind === 'channel');
   const performanceMode = !settings.flowParticles && !settings.bgAnimations;
 
-  const ALL_KINDS = ['channel', 'link', 'video', 'note', 'task', 'idea', 'reference', 'memory', 'rapport', 'prompt'] as const;
+  const ALL_KINDS = ['channel', 'link', 'video', 'note', 'task', 'idea', 'reference', 'memory', 'rapport', 'prompt', 'corpus'] as const;
   const KIND_LABELS: Record<string, string> = { channel: 'Sources', link: 'Articles', video: 'Vidéos', note: 'Notes', task: 'Tâches', idea: 'Idées', reference: 'Réfs', memory: 'Mémoires', rapport: 'Rapports', prompt: 'Prompts' };
   const usedKinds = ALL_KINDS.filter(k => pages.some(p => p.kind === k));
 
@@ -2013,7 +2037,25 @@ function NeuralBrain({
     canvasRef.current.addEventListener('click', brain['handleClick'] as EventListener);
     canvasRef.current.addEventListener('dblclick', brain['handleDoubleClick'] as EventListener);
 
+    // Expose gesture input method via ref (called from useGestureCamera hook)
+    if (gestureInputRef) {
+      gestureInputRef.current = (rotDx, rotDy, zoomDelta) => brain.applyGestureInput(rotDx, rotDy, zoomDelta);
+      try {
+        if (localStorage.getItem('docteur-gesture-debug') === 'true') {
+          console.info('[gesture] gestureInputRef wired to a live OrbitalBrain instance');
+        }
+      } catch { /* ignore */ }
+    }
+
     return () => {
+      if (gestureInputRef) {
+        gestureInputRef.current = null;
+        try {
+          if (localStorage.getItem('docteur-gesture-debug') === 'true') {
+            console.info('[gesture] gestureInputRef cleared — OrbitalBrain instance disposed (unmount or effect re-run)');
+          }
+        } catch { /* ignore */ }
+      }
       observer.disconnect();
       brain.dispose();
       brainRef.current = null;

@@ -221,6 +221,7 @@ function HistoryPanel({ agent, onBack }: { agent: Agent; onBack: () => void }) {
             <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 2 }}>{formatDate(run.started_at)}</div>
             {run.output_title && <div style={{ fontSize: 12, color: '#e2e8f0' }}>{run.output_title}</div>}
             {run.error_message && <div style={{ fontSize: 11, color: '#ff4d58', marginTop: 4 }}>{run.error_message}</div>}
+            {run.similarity_note && <div style={{ fontSize: 11, color: '#ffb547', marginTop: 4 }}>⚠ {run.similarity_note}</div>}
           </div>
         ))}
       </div>
@@ -320,8 +321,16 @@ export default function AgentsModal({ onClose, onAgentOutput }: Props) {
     setError(null);
     try {
       const result = await cortexClient.runAgent(agent.id);
-      await onAgentOutput(result);
-      showToast(`Exécution terminée — neurone "${result.title}" créé.`);
+      if (result.skipped) {
+        showToast(result.similarity_note ?? 'Résultat similaire à la veille précédente — neurone non créé.');
+      } else {
+        await onAgentOutput(result);
+        showToast(
+          result.similarity_note
+            ? `Neurone "${result.title}" créé — ${result.similarity_note}`
+            : `Exécution terminée — neurone "${result.title}" créé.`,
+        );
+      }
       // Refresh runs implicitly (user can open history)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur exécution';

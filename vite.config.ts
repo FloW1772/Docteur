@@ -16,9 +16,33 @@ const httpsOptions = existsSync(`${certsDir}/key.pem`)
   ? { key: readFileSync(`${certsDir}/key.pem`), cert: readFileSync(`${certsDir}/cert.pem`) }
   : undefined;
 
+// Binding a single Node socket to '127.0.0.1' only accepts IPv4 — on this
+// machine (and many Windows setups) the browser resolves "localhost" to the
+// IPv6 loopback (::1) first, which no one is listening on, hence
+// ERR_CONNECTION_REFUSED. Binding to '::' instead makes Node listen dual-stack
+// (both ::1 and 127.0.0.1 accept connections), but '::' also accepts LAN
+// traffic on Windows — unacceptable for normal dev mode. This plugin closes
+// any connection whose remote address isn't a loopback address, so the dual
+// stack bind behaves as loopback-only in practice. Only applied outside
+// LOCAL_NETWORK mode, which deliberately keeps its existing LAN-exposing
+// host:true behavior for mobile testing.
+function loopbackOnlyPlugin() {
+  return {
+    name: 'loopback-only',
+    configureServer(server) {
+      server.httpServer?.on('connection', (socket) => {
+        const addr = socket.remoteAddress;
+        const isLoopback = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+        if (!isLoopback) socket.destroy();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
+    ...(localNetwork ? [] : [loopbackOnlyPlugin()]),
     VitePWA({
       registerType: 'autoUpdate',
       // Disable the SW entirely in dev mode — it must never intercept Vite's
@@ -50,10 +74,11 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,ico,png,woff,woff2}'],
         // Porcupine WASM (~3.35 MB) is packaged as esm-*.js by Vite.
-        // Wake-word detection only works when the cortex-server is running,
-        // so precaching it for offline use serves no purpose and wastes 3+ MB
-        // on first mobile SW registration.
-        globIgnores: ['**/esm-*.js'],
+        // MediaPipe WASM + model (~12 MB) are served from /mediapipe/ on demand.
+        // Tesseract.js worker + WASM core + fra/eng traineddata (~7.5 MB) are
+        // served from /tesseract/ on demand, loaded only on first OCR use.
+        // None of these should bloat the SW precache.
+        globIgnores: ['**/esm-*.js', 'mediapipe/**', 'tesseract/**'],
 
         // SPA: any navigation that is not an API call falls back to index.html.
         navigateFallback: 'index.html',
@@ -91,13 +116,26 @@ export default defineConfig({
   ],
 
   optimizeDeps: {
-    // Porcupine uses Web Workers + WASM — Vite must not pre-bundle them
-    exclude: ['@picovoice/porcupine-web', '@picovoice/web-voice-processor'],
+    // Porcupine + MediaPipe + Tesseract use Web Workers + WASM — Vite must not pre-bundle them
+    exclude: [
+      '@picovoice/porcupine-web',
+      '@picovoice/web-voice-processor',
+      '@mediapipe/tasks-vision',
+      'tesseract.js',
+    ],
   },
 
   server: {
     port: 5173,
-    host: localNetwork ? true : '127.0.0.1',
+    // If 5173 is already taken (e.g. a leftover Vite process), fail loudly
+    // instead of silently moving to 5174/5175 — a silent port change breaks
+    // cortex-server's CORS allowlist (locked to 5173) with no visible error.
+    strictPort: true,
+    // Dual-stack bind so both http://localhost:5173 (-> ::1 on this machine)
+    // and http://127.0.0.1:5173 work. Outside LOCAL_NETWORK mode the
+    // loopback-only plugin above rejects any non-loopback connection, so
+    // this does not expose the server to the LAN.
+    host: localNetwork ? true : '::',
     // No HTTPS here — dev stays on http://localhost:5173 to preserve IDB origin.
   },
 

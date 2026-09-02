@@ -97,7 +97,13 @@ export function createCvImportRoute({ logger } = {}) {
     }
 
     // ── Scanned / image PDF detection ─────────────────────────────────────────
-    const rawText  = textResult.text ?? '';
+    // Built from textResult.pages, NOT textResult.text — pdf-parse v2's
+    // concatenated .text field injects a literal "-- N of M --" separator
+    // between every page, which would otherwise end up baked into the CV
+    // content itself (and from there into every analyze/rewrite/ATS prompt).
+    const rawText  = Array.isArray(textResult.pages)
+      ? textResult.pages.map(p => p.text ?? '').join('\n\n')
+      : (textResult.text ?? '');
     const minChars = MIN_TEXT_CHARS_PER_PAGE * pageCount;
 
     if (rawText.trim().length < minChars) {

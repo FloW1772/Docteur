@@ -1,6 +1,8 @@
 import { get, set, del, entries, setMany, createStore } from 'idb-keyval';
 import type { Page } from './types';
 
+export type PageMeta = Omit<Page, 'blocks'>;
+
 const store = createStore('docteur-db', 'pages');
 
 // Use the same protocol as the page so there is no mixed-content issue:
@@ -141,6 +143,38 @@ export async function syncPageToServer(id: string): Promise<void> {
   const page = await getPage(id);
   if (!page) return;
   await serverPut(page);
+}
+
+// ── Lazy-load server endpoints ────────────────────────────────────────────────
+// Returns metadata stubs (no blocks) — used for fast startup and "Tous les neurones".
+
+export async function getRecentPagesFromServer(limit = 50): Promise<Page[]> {
+  const res  = await fetch(`${API_BASE}/api/neurons/recent?limit=${limit}`);
+  if (!res.ok) throw new Error(`GET /api/neurons/recent → ${res.status}`);
+  const json = await res.json() as { pages: PageMeta[] };
+  return (json.pages ?? []).map(p => ({ ...p, blocks: [] }));
+}
+
+export async function getAllPagesMetaFromServer(): Promise<Page[]> {
+  const res  = await fetch(`${API_BASE}/api/neurons/all-meta`);
+  if (!res.ok) throw new Error(`GET /api/neurons/all-meta → ${res.status}`);
+  const json = await res.json() as { pages: PageMeta[] };
+  return (json.pages ?? []).map(p => ({ ...p, blocks: [] }));
+}
+
+export async function getPageCountsFromServer(): Promise<{ total: number; byKind: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/api/neurons/counts`);
+  if (!res.ok) throw new Error(`GET /api/neurons/counts → ${res.status}`);
+  const json = await res.json() as { total: number; byKind: Record<string, number> };
+  return { total: json.total ?? 0, byKind: json.byKind ?? {} };
+}
+
+export async function getPageFromServer(id: string): Promise<Page | null> {
+  const res = await fetch(`${API_BASE}/api/neuron/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GET /api/neuron/${id} → ${res.status}`);
+  const json = await res.json() as { page: Page };
+  return json.page ?? null;
 }
 
 export async function hasLocalSnapshot(): Promise<boolean> {

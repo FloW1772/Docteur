@@ -8,15 +8,18 @@
     "dev:local": "cross-env LOCAL_NETWORK=true vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "preview:mobile": "vite preview --host --port 5173"
+    "preview:mobile": "vite preview --host --port 5173",
+    "postinstall": "node scripts/copy-mediapipe-wasm.mjs && node scripts/copy-tesseract-assets.mjs"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@picovoice/porcupine-web": "^4.0.1",
     "@picovoice/web-voice-processor": "^4.0.10",
     "idb-keyval": "^6.2.1",
     "lucide-react": "^0.462.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "tesseract.js": "^5.1.1",
     "three": "^0.170.0"
   },
   "devDependencies": {

@@ -211,6 +211,7 @@ interface Props {
   onUploadImage?:        (file: File) => Promise<string>;
   onDownloadImageUrl?:   (url: string) => Promise<string>;
   onDeleteImage?:        (imageId: string) => void;
+  onAnalyzeImage?:       (imageId: string) => void;
   transferImages?:       boolean;
 }
 
@@ -227,6 +228,7 @@ function ImageBlock({
   onUploadImage,
   onDownloadImageUrl,
   onDeleteImage,
+  onAnalyzeImage,
   transferImages = false,
 }: {
   block:                Block;
@@ -235,6 +237,7 @@ function ImageBlock({
   onUploadImage?:       (file: File) => Promise<string>;
   onDownloadImageUrl?:  (url: string) => Promise<string>;
   onDeleteImage?:       (imageId: string) => void;
+  onAnalyzeImage?:      (imageId: string) => void;
   transferImages?:      boolean;
 }) {
   const [urlInput,   setUrlInput]   = useState('');
@@ -342,6 +345,32 @@ function ImageBlock({
             }}
             onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
           />
+          {onAnalyzeImage && (
+            <button
+              type="button"
+              title="Analyser cette image (vision locale)"
+              onClick={e => { e.stopPropagation(); onAnalyzeImage(block.content); }}
+              style={{
+                position:   'absolute',
+                top:        4,
+                right:      30,
+                width:      22,
+                height:     22,
+                borderRadius: '50%',
+                border:     'none',
+                background: 'rgba(20,10,40,0.85)',
+                color:      '#5ee7ff',
+                fontSize:   12,
+                lineHeight: 1,
+                cursor:     'pointer',
+                display:    'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              👁
+            </button>
+          )}
           <button
             type="button"
             title="Supprimer l'image"
@@ -515,7 +544,7 @@ function ImageBlock({
   }
 }
 
-function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPlayVideo, onUploadImage, onDownloadImageUrl, onDeleteImage, transferImages = false }: Props) {
+function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPlayVideo, onUploadImage, onDownloadImageUrl, onDeleteImage, onAnalyzeImage, transferImages = false }: Props) {
   const [showMenu, setShowMenu] = useState(false);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -630,6 +659,7 @@ function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPla
             onUploadImage={onUploadImage}
             onDownloadImageUrl={onDownloadImageUrl}
             onDeleteImage={onDeleteImage}
+            onAnalyzeImage={onAnalyzeImage}
             transferImages={transferImages}
           />
         ) : block.type === 'todo' ? (

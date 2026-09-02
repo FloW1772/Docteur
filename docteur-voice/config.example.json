@@ -1,0 +1,10 @@
+{
+  "inbox_dir": "C:\\dev\\Docteur\\cortex-server\\data\\inbox",
+  "docteur_url": "http://localhost:5173",
+  "api_base": "http://127.0.0.1:3001",
+  "hotkey": "Ctrl+Alt+D",
+  "whisper_cli_path": "C:\\whisper\\whisper-cli.exe",
+  "whisper_model_path": "C:\\whisper\\ggml-base.bin",
+  "language": "fr",
+  "launch_at_startup": false
+}

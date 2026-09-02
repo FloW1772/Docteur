@@ -235,7 +235,7 @@ export default function ResummariseModal({ page, onClose, onDone, onRetranscribe
                 {usePowerful ? <Zap size={12} style={{ color: '#a78bfa' }} /> : <Cpu size={12} style={{ color: '#5a4a7a' }} />}
                 <div>
                   <div style={{ fontSize: 11, color: usePowerful ? '#a78bfa' : '#c0b0e0' }}>
-                    {usePowerful ? 'qwen2.5:14b — meilleure qualité' : 'Modèle local standard'}
+                    {usePowerful ? 'Modèle puissant — meilleure qualité' : 'Modèle local standard'}
                   </div>
                   {usePowerful && (
                     <div style={{ fontSize: 10, color: '#7a6c9a', marginTop: 2 }}>

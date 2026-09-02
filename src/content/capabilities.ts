@@ -31,7 +31,7 @@ export const CAPABILITIES: CapabilitySection[] = [
       { text: 'Mode Recherche — chercher dans tes neurones par sens (pas seulement les mots exacts)', shortcut: 'Ctrl+L' },
       { text: 'Mode Question — poser une question en français, Docteur répond avec tes neurones comme sources (RAG)' },
       { text: '"local [question]" ou "privé [question]" → forcer le modèle local, aucun appel cloud' },
-      { text: '"puissant [question]" → utiliser qwen2.5:14b (plus puissant et plus lent que le modèle par défaut)' },
+      { text: '"puissant [question]" → utiliser le modèle puissant configuré (par défaut un 14B quantisé, plus lent que le modèle par défaut)' },
       { text: 'Bouton 🔒 Local puissant dans la console → activer le mode local pour toutes les questions de la session' },
       { text: 'Filtrer par type de neurone (Sources, Articles, Vidéos, Playlists, Notes, Questions, Recherches)' },
     ],
@@ -105,4 +105,38 @@ export const SHORTCUTS: Array<{ keys: string; desc: string }> = [
   { keys: 'F1 / Ctrl+H',     desc: 'Cette aide' },
   { keys: 'Escape',          desc: 'Fermer le panneau de détail / les modales' },
   { keys: 'Del / Backspace',  desc: 'Supprimer le neurone sélectionné (hors zone de texte)' },
+  { keys: 'Alt+C',           desc: 'Activer / désactiver le contrôle gestuel par caméra' },
+  { keys: 'Alt+M',           desc: 'Déclencher une commande vocale' },
+  { keys: 'Alt+S',           desc: 'Activer / désactiver le partage d\'écran (capture + OCR local)' },
+];
+
+// Gestes basés sur un COMPTAGE DE DOIGTS LEVÉS (0 à 5) — invariant au mouvement
+// de la main, contrairement aux anciennes formes (pincement, index seul en
+// mouvement) qui se perdaient dès que la main bougeait.
+export const GESTURES: Array<{ gesture: string; how: string; action: string }> = [
+  {
+    gesture: '🖐️ 5 doigts levés, main qui se déplace',
+    how:     'Main grande ouverte (pouce inclus), tous les doigts bien écartés du poignet, déplacement lent dans le cadre',
+    action:  'Fait tourner le cortex 3D (haut/bas/gauche/droite)',
+  },
+  {
+    gesture: '✌️ 2 doigts levés (index + majeur), déplacement vertical',
+    how:     'Seuls l\'index et le majeur tendus, les autres repliés — comme un signe de victoire — puis main qui monte ou descend',
+    action:  'Zoom avant (main qui monte) / zoom arrière (main qui descend)',
+  },
+  {
+    gesture: '☝️ 1 seul doigt levé (index), déplacement horizontal',
+    how:     'Seul l\'index est tendu, mouvement net vers la gauche ou la droite',
+    action:  'Neurone précédent / suivant — s\'ouvre réellement, comme un clic',
+  },
+  {
+    gesture: '🤟 3 doigts levés, déplacement vertical',
+    how:     'Trois doigts tendus (index, majeur, annulaire), mouvement net vers le haut ou le bas',
+    action:  'Fait défiler le contenu du neurone ouvert',
+  },
+  {
+    gesture: '✊ Poing fermé (0 doigt)',
+    how:     'Tous les doigts repliés, aucun tendu',
+    action:  'Relâche le contrôle — le cortex arrête de bouger',
+  },
 ];

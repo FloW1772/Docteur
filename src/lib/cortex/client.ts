@@ -54,12 +54,83 @@ export interface SearchResult {
 
 export interface AnswerResult {
   answer: string;
-  sources: Array<{ id: string; title: string; score: number }>;
+  sources: Array<{ id: string; title: string; score: number; kind?: string }>;
   latency_ms: number;
   model_used: string | null;
   router_level?: number | null;
   routing_reason?: string | null;
   has_private_sources?: boolean;
+}
+
+export type CorpusScope = 'all' | 'personal' | 'reference';
+
+export interface CorpusScanResult {
+  ok: boolean;
+  totalFound: number;
+  matchedCount: number;
+  willImportCount: number;
+  truncated: boolean;
+  rejectedExt: number;
+  rejectedSize: number;
+  estimatedSizeBytes: number;
+  sampleTitles: string[];
+  limit: number;
+}
+
+export interface CorpusImportResult {
+  ok: boolean;
+  corpusId: string;
+  jobId: string;
+  matched: number;
+}
+
+export interface CorpusJobStatus {
+  id: string;
+  done: number;
+  total: number;
+  status: 'running' | 'done' | 'error';
+  errors: Array<{ name: string; error: string }>;
+}
+
+export interface CorpusSource {
+  id: string;
+  name: string;
+  article_count: number;
+  size_bytes: number;
+  keywords: string;
+  status: string;
+  error_count: number;
+  created_at: string;
+}
+
+export interface CorpusFilters {
+  keywords?: string;
+  minSize?: number;
+  maxSize?: number;
+  limit?: number;
+}
+
+// ── Journal d'activité ────────────────────────────────────────────────────
+
+export interface ActivityLogEntry {
+  id:           number;
+  timestamp:    string;
+  op_type:      string;
+  item:         string;
+  result:       'success' | 'failure';
+  reason:       string | null;
+  duration_ms:  number | null;
+  model_used:   string | null;
+}
+
+export interface ActivityLogFilters {
+  opType?: string;
+  result?: 'success' | 'failure';
+  from?:   string;
+  to?:     string;
+  q?:      string;
+  limit?:  number;
+  offset?: number;
 }
 
 export interface ClarifyQuestion {
@@ -185,6 +256,8 @@ export interface RouterSettings {
   cloud_preference?: 'local' | 'balanced' | 'quality';
   strict_local_mode?: boolean;
   groq_model?: string;
+  powerful_model?: string;
+  chat_model?: string;
 }
 
 export interface RouterStatus {
@@ -443,15 +516,86 @@ export interface AgentRun {
   output_neuron_id: string | null;
   output_title:     string | null;
   error_message:    string | null;
+  similarity_note:  string | null;
   triggered_by:     string;
 }
 
 export interface AgentRunOutput {
-  ok:      boolean;
-  run_id:  string;
-  title:   string;
-  content: string;
-  kind:    string;
+  ok:               boolean;
+  run_id:           string;
+  title:            string;
+  content:          string;
+  kind:             string;
+  skipped?:         boolean;
+  similarity_note?: string | null;
+}
+
+// ── Résumé de vidéo longue ──────────────────────────────────────────────────
+
+export interface VideoEstimate {
+  ok:                              boolean;
+  error?:                          string;
+  duration_s:                      number;
+  duration_label:                  string;
+  chunk_count_estimate:            number;
+  transcription_minutes_local:     number;
+  transcription_minutes_groq:      number | null;
+  summarization_minutes_estimate:  number;
+  total_minutes_estimate_local:    number;
+  groq_available:                  boolean;
+  requires_confirmation:           boolean;
+  confirmation_message:            string | null;
+}
+
+export type VideoJobStatus =
+  | 'pending' | 'estimating' | 'downloading' | 'transcribing' | 'chunking'
+  | 'summarizing' | 'synthesizing' | 'done' | 'error' | 'cancelled';
+
+export interface VideoJob {
+  id:                  string;
+  url:                 string;
+  title:               string | null;
+  status:              VideoJobStatus;
+  provider_whisper:    string;
+  provider_synthesis:  string;
+  resume_type:         string;
+  duration_s:          number | null;
+  current_step:        string;
+  created_at:          string;
+  updated_at:          string;
+  error_message:       string | null;
+  cancelled:            number | boolean;
+  private:             number | boolean;
+  neuron_id:           string | null;
+  disk_bytes:          number;
+  metadata:            Record<string, unknown>;
+}
+
+export interface VideoJobSegment {
+  id:                 string;
+  idx:                number;
+  start_s:            number | null;
+  end_s:              number | null;
+  transcript_status:  string;
+  summary_status:     string;
+  error_message:      string | null;
+  has_transcript:     boolean;
+  has_summary:        boolean;
+}
+
+export interface VideoJobDetail {
+  job:      VideoJob;
+  segments: VideoJobSegment[];
+}
+
+export interface VideoSummaryCreate {
+  url:                string;
+  resumeType?:        string;
+  whisperProvider?:   string;
+  synthesisProvider?: string;
+  private?:           boolean;
+  title?:             string;
+  duration_s?:        number;
 }
 
 export interface AgentOutput {
@@ -560,6 +704,49 @@ export interface SkillGenerateResult {
   model_used:     string;
 }
 
+// ── Générateur de prompts (indépendant des neurones) ──────────────────────────
+
+export type PromptOutcome = 'untested' | 'worked' | 'half' | 'broken';
+export type PromptKeptVersion = 'draft' | 'reviewed' | null;
+
+export interface GeneratedPrompt {
+  id:                 string;
+  request:            string;
+  draft_model:        string;
+  draft_provider:     string;
+  draft_text:         string;
+  review_model:       string;
+  review_provider:    string;
+  reviewed_text:      string;
+  changes_explained:  string;
+  unchanged:           boolean;
+  kept_version:        PromptKeptVersion;
+  outcome:             PromptOutcome;
+  is_template:         boolean;
+  created_at:          string;
+  updated_at:          string;
+}
+
+export interface PromptGeneratorModelOption {
+  id:    string;
+  provider: string;
+  label: string;
+  level_label?: string;
+}
+
+export interface PromptGeneratorModelsResult {
+  local:  PromptGeneratorModelOption[];
+  cloud:  PromptGeneratorModelOption[];
+  strict_local_mode: boolean;
+}
+
+export interface PromptGeneratorSettings {
+  default_draft_model:     string | null;
+  default_draft_provider:  string | null;
+  default_review_model:    string | null;
+  default_review_provider: string | null;
+}
+
 export interface FileOriginalSummary {
   id: string;
   original_name: string;
@@ -648,7 +835,11 @@ export interface BackupExport {
   version: string;
   exported_at: string;
   neurons_count: number;
-  neurons: Array<{ id: string; kind: string; title: string; content: string; metadata: Record<string, unknown> }>;
+  neurons: Array<{
+    id: string; kind: string; title: string; content: string; metadata: Record<string, unknown>;
+    blocks?: Block[];
+    createdAt?: number; updatedAt?: number; links?: string[]; color?: string; tags?: string[]; private?: boolean;
+  }>;
   links?: Array<{ from: string; to: string }>;
 }
 
@@ -670,6 +861,7 @@ export interface ImportResult {
   ok: boolean;
   indexed: number;
   total: number;
+  reconstructedBlocks?: number;
   errors: Array<{ id: string; title: string; error: string }>;
 }
 
@@ -683,6 +875,23 @@ export interface CaptureResult {
 
 let _available  = false;
 let _lastCheck: Date | null = null;
+
+// ── Connection-error notifier ───────────────────────────────────────────────
+// The browser throws a plain TypeError ("Failed to fetch") for both a
+// connection-refused (nothing listening on the port) and a CORS rejection —
+// there is no server response to inspect. Without this, those failures were
+// silent unless the calling code happened to catch-and-toast itself (e.g. a
+// leftover Vite process bumping the dev server to a port cortex-server's CORS
+// allowlist doesn't recognize). Registered once by the UI (App.tsx) so every
+// call funnelled through apiFetch surfaces a visible message for free.
+type ConnErrorListener = (message: string) => void;
+let _onConnError: ConnErrorListener | null = null;
+export function onConnectionError(cb: ConnErrorListener): void {
+  _onConnError = cb;
+}
+function isNetworkError(e: unknown): boolean {
+  return e instanceof TypeError;
+}
 
 // ── Internal fetch helpers ─────────────────────────────────────────────────
 
@@ -712,6 +921,9 @@ async function apiFetch(path: string, opts: RequestInit = {}, timeoutMs = TIMEOU
       if (e instanceof Error && e.name === 'AbortError') throw e;
     }
   }
+  if (isNetworkError(lastErr)) {
+    _onConnError?.('Connexion au serveur refusée. Vérifie que Docteur est lancé sur le bon port.');
+  }
   throw lastErr;
 }
 
@@ -732,6 +944,73 @@ function parseWhisperSseChunks(parts: string[], onProgress: (p: WhisperProgress)
 // ── Image URL helper (absolute, points to cortex-server on port 3001) ────────
 export function getImageUrl(id: string): string {
   return `${BASE}/api/image/${encodeURIComponent(id)}`;
+}
+
+// ── Vision (image analysis, 100% local) ──────────────────────────────────────
+
+export interface VisionStatus {
+  model:     string;
+  installed: boolean;
+  gpu_busy?: boolean;
+}
+
+export interface VisionAnalyzeResult {
+  ok:                 boolean;
+  answer?:            string;
+  model_used?:        string;
+  latency_ms?:        number;
+  error?:             string;
+  model_installed?:   boolean;
+  gpu_busy?:           boolean;
+  fallback_suggested?: boolean;
+}
+
+// ── Conversation mode (chat, 100% local) ─────────────────────────────────────
+
+export interface ChatConversation {
+  id:         string;
+  title:      string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id:              string;
+  conversation_id: string;
+  role:            'user' | 'assistant';
+  content:         string;
+  created_at:      string;
+}
+
+export interface ChatSource {
+  id:      string;
+  title:   string;
+  kind:    string;
+  private: boolean;
+}
+
+export interface ChatStatus {
+  model:     string;
+  installed: boolean;
+  gpu_busy:  boolean;
+}
+
+export interface ChatSendResult {
+  ok:              boolean;
+  answer?:         string;
+  suggested_fact?: string | null;
+  model_used?:     string;
+  sources?:        ChatSource[];
+  latency_ms?:     number;
+  error?:          string;
+  model_installed?: boolean;
+  gpu_busy?:        boolean;
+}
+
+export interface PreferenceFact {
+  id:         string;
+  fact:       string;
+  created_at: string;
 }
 
 // ── Singleton client ───────────────────────────────────────────────────────
@@ -1244,6 +1523,108 @@ export const cortexClient = {
     await apiFetch(`/api/image/${encodeURIComponent(id)}`, { method: 'DELETE' });
   },
 
+  // ── Vision (analyse d'image 100% locale — jamais de bascule cloud) ──────────
+
+  async visionStatus(): Promise<VisionStatus> {
+    const res = await fetchTimeout(`${BASE}/api/vision/status`, { method: 'GET' }, 5_000);
+    if (!res.ok) return { model: '', installed: false };
+    return res.json() as Promise<VisionStatus>;
+  },
+
+  async analyzeImage(imageId: string, question: string): Promise<VisionAnalyzeResult> {
+    // Model load + inference can be slow on a 7B vision model — generous timeout.
+    const res = await apiFetch('/api/vision/analyze', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ imageId, question }),
+    }, 120_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Analyse image HTTP ${res.status}`);
+    }
+    return res.json() as Promise<VisionAnalyzeResult>;
+  },
+
+  // ── Conversation mode (chat, 100% local — never reaches a cloud provider) ───
+
+  async chatStatus(): Promise<ChatStatus> {
+    const res = await fetchTimeout(`${BASE}/api/chat/status`, { method: 'GET' }, 5_000);
+    if (!res.ok) return { model: '', installed: false, gpu_busy: false };
+    return res.json() as Promise<ChatStatus>;
+  },
+
+  async listConversations(): Promise<ChatConversation[]> {
+    const res = await apiFetch('/api/chat/conversations', { method: 'GET' });
+    if (!res.ok) return [];
+    return res.json() as Promise<ChatConversation[]>;
+  },
+
+  async createConversation(): Promise<{ id: string }> {
+    const res = await apiFetch('/api/chat/conversations', { method: 'POST' });
+    if (!res.ok) throw new Error(`Create conversation HTTP ${res.status}`);
+    return res.json() as Promise<{ id: string }>;
+  },
+
+  async getConversationMessages(id: string): Promise<ChatMessage[]> {
+    const res = await apiFetch(`/api/chat/conversations/${encodeURIComponent(id)}/messages`, { method: 'GET' });
+    if (!res.ok) return [];
+    return res.json() as Promise<ChatMessage[]>;
+  },
+
+  async deleteConversation(id: string): Promise<void> {
+    await apiFetch(`/api/chat/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async sendChatMessage(conversationId: string, message: string): Promise<ChatSendResult> {
+    // Model load + inference on a 12B model can be slow, especially cold.
+    const res = await apiFetch('/api/chat/message', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ conversationId, message }),
+    }, 120_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Chat HTTP ${res.status}`);
+    }
+    return res.json() as Promise<ChatSendResult>;
+  },
+
+  async listPreferenceFacts(): Promise<PreferenceFact[]> {
+    const res = await apiFetch('/api/chat/preferences', { method: 'GET' });
+    if (!res.ok) return [];
+    return res.json() as Promise<PreferenceFact[]>;
+  },
+
+  async addPreferenceFact(fact: string): Promise<PreferenceFact> {
+    const res = await apiFetch('/api/chat/preferences', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ fact }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Add preference HTTP ${res.status}`);
+    }
+    return res.json() as Promise<PreferenceFact>;
+  },
+
+  async updatePreferenceFact(id: string, fact: string): Promise<void> {
+    const res = await apiFetch(`/api/chat/preferences/${encodeURIComponent(id)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ fact }),
+    });
+    if (!res.ok) throw new Error(`Update preference HTTP ${res.status}`);
+  },
+
+  async deletePreferenceFact(id: string): Promise<void> {
+    await apiFetch(`/api/chat/preferences/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async clearPreferenceFacts(): Promise<void> {
+    await apiFetch('/api/chat/preferences', { method: 'DELETE' });
+  },
+
   // ── Candidature (100% local — personal CV data never sent to cloud) ─────────
 
   async cvAnalyze(cvContent: string, powerful = false): Promise<{ report: string; model_used: string }> {
@@ -1456,6 +1837,59 @@ export const cortexClient = {
     if (!res.ok) throw new Error(`Consume output HTTP ${res.status}`);
   },
 
+  // ── Résumé de vidéo longue ───────────────────────────────────────────────────
+
+  async estimateVideoSummary(url: string): Promise<VideoEstimate> {
+    const res = await apiFetch('/api/video-summary/estimate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ url }),
+    }, 30_000);
+    const data = await res.json() as VideoEstimate & { error?: string };
+    if (!res.ok) throw new Error(data.error ?? `Estimate HTTP ${res.status}`);
+    return data;
+  },
+
+  async createVideoSummaryJob(data: VideoSummaryCreate): Promise<{ jobId: string }> {
+    const res = await apiFetch('/api/video-summary/jobs', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Video summary job HTTP ${res.status}`);
+    return body as { jobId: string };
+  },
+
+  async listVideoSummaryJobs(): Promise<VideoJob[]> {
+    const res = await apiFetch('/api/video-summary/jobs', { method: 'GET' });
+    if (!res.ok) throw new Error(`Video summary jobs HTTP ${res.status}`);
+    const data = await res.json() as { jobs: VideoJob[] };
+    return data.jobs;
+  },
+
+  async getVideoSummaryJob(id: string): Promise<VideoJobDetail> {
+    const res = await apiFetch(`/api/video-summary/jobs/${id}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Video summary job HTTP ${res.status}`);
+    return res.json() as Promise<VideoJobDetail>;
+  },
+
+  async resumeVideoSummaryJob(id: string): Promise<void> {
+    const res = await apiFetch(`/api/video-summary/jobs/${id}/resume`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Resume HTTP ${res.status}`);
+  },
+
+  async cancelVideoSummaryJob(id: string): Promise<void> {
+    const res = await apiFetch(`/api/video-summary/jobs/${id}/cancel`, { method: 'POST' });
+    if (!res.ok) throw new Error(`Cancel HTTP ${res.status}`);
+  },
+
+  async deleteVideoSummaryJob(id: string): Promise<void> {
+    const res = await apiFetch(`/api/video-summary/jobs/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Delete HTTP ${res.status}`);
+  },
+
   // ── Persona ───────────────────────────────────────────────────────────────────
 
   async getPersonaSettings(): Promise<PersonaSettings> {
@@ -1538,6 +1972,141 @@ export const cortexClient = {
     });
     if (!res.ok) throw new Error(`Backup import HTTP ${res.status}`);
     return res.json() as Promise<ImportResult>;
+  },
+
+  // ── Corpus de référence ──────────────────────────────────────────────────
+
+  async corpusScan(files: File[], filters: CorpusFilters): Promise<CorpusScanResult> {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    if (filters.keywords) fd.append('keywords', filters.keywords);
+    if (filters.minSize !== undefined) fd.append('minSize', String(filters.minSize));
+    if (filters.maxSize !== undefined) fd.append('maxSize', String(filters.maxSize));
+    if (filters.limit   !== undefined) fd.append('limit', String(filters.limit));
+    const res = await apiFetch('/api/corpus/scan', { method: 'POST', body: fd }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Corpus scan HTTP ${res.status}`);
+    }
+    return res.json() as Promise<CorpusScanResult>;
+  },
+
+  async corpusImport(files: File[], corpusName: string, filters: CorpusFilters): Promise<CorpusImportResult> {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    fd.append('corpusName', corpusName);
+    if (filters.keywords) fd.append('keywords', filters.keywords);
+    if (filters.minSize !== undefined) fd.append('minSize', String(filters.minSize));
+    if (filters.maxSize !== undefined) fd.append('maxSize', String(filters.maxSize));
+    if (filters.limit   !== undefined) fd.append('limit', String(filters.limit));
+    const res = await apiFetch('/api/corpus/import', { method: 'POST', body: fd }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Corpus import HTTP ${res.status}`);
+    }
+    return res.json() as Promise<CorpusImportResult>;
+  },
+
+  async corpusSearchCapture(subject: string, urls: string[]): Promise<CorpusImportResult> {
+    const res = await apiFetch('/api/corpus/search-capture', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ subject, urls }),
+    }, 30_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Corpus search-capture HTTP ${res.status}`);
+    }
+    return res.json() as Promise<CorpusImportResult>;
+  },
+
+  async corpusJobStatus(jobId: string): Promise<CorpusJobStatus> {
+    const res = await apiFetch(`/api/corpus/jobs/${jobId}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Corpus job HTTP ${res.status}`);
+    return res.json() as Promise<CorpusJobStatus>;
+  },
+
+  async corpusList(): Promise<{ corpora: CorpusSource[] }> {
+    const res = await apiFetch('/api/corpus/list', { method: 'GET' });
+    if (!res.ok) throw new Error(`Corpus list HTTP ${res.status}`);
+    return res.json() as Promise<{ corpora: CorpusSource[] }>;
+  },
+
+  async corpusSummarize(neuronId: string): Promise<{ ok: boolean; summary: string; model_used: string; truncated: boolean }> {
+    const res = await apiFetch(`/api/corpus/summarize/${neuronId}`, { method: 'POST' }, 90_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Corpus summarize HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ ok: boolean; summary: string; model_used: string; truncated: boolean }>;
+  },
+
+  async corpusDelete(id: string): Promise<{ ok: boolean; deleted: number }> {
+    const res = await apiFetch(`/api/corpus/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Corpus delete HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ ok: boolean; deleted: number }>;
+  },
+
+  // ── Journal d'activité — 100% local, jamais synchronisé ni exporté avec le backup ──
+
+  async activityLog(filters: ActivityLogFilters = {}): Promise<{ rows: ActivityLogEntry[]; total: number }> {
+    const params = new URLSearchParams();
+    if (filters.opType) params.set('opType', filters.opType);
+    if (filters.result) params.set('result', filters.result);
+    if (filters.from)   params.set('from', filters.from);
+    if (filters.to)     params.set('to', filters.to);
+    if (filters.q)      params.set('q', filters.q);
+    params.set('limit',  String(filters.limit  ?? 50));
+    params.set('offset', String(filters.offset ?? 0));
+    const res = await apiFetch(`/api/activity/log?${params.toString()}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Activity log HTTP ${res.status}`);
+    return res.json() as Promise<{ rows: ActivityLogEntry[]; total: number }>;
+  },
+
+  async activityOpTypes(): Promise<string[]> {
+    const res = await apiFetch('/api/activity/op-types', { method: 'GET' });
+    if (!res.ok) return [];
+    const data = await res.json() as { opTypes: string[] };
+    return data.opTypes ?? [];
+  },
+
+  async activityStats(): Promise<{ count: number; sizeBytes: number; retentionDays: number }> {
+    const res = await apiFetch('/api/activity/stats', { method: 'GET' });
+    if (!res.ok) throw new Error(`Activity stats HTTP ${res.status}`);
+    return res.json() as Promise<{ count: number; sizeBytes: number; retentionDays: number }>;
+  },
+
+  async setActivityRetention(days: number): Promise<{ ok: boolean; retentionDays: number; purged: number }> {
+    const res = await apiFetch('/api/activity/retention', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ days }),
+    });
+    if (!res.ok) throw new Error(`Activity retention HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; retentionDays: number; purged: number }>;
+  },
+
+  async clearActivityLog(): Promise<{ ok: boolean; deleted: number }> {
+    const res = await apiFetch('/api/activity/log', {
+      method:  'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ confirm: true }),
+    });
+    if (!res.ok) throw new Error(`Activity clear HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; deleted: number }>;
+  },
+
+  async exportActivityLog(): Promise<{ exported_at: string; count: number; warning: string; entries: ActivityLogEntry[] }> {
+    const res = await apiFetch('/api/activity/export', { method: 'GET' }, 30_000);
+    if (!res.ok) throw new Error(`Activity export HTTP ${res.status}`);
+    return res.json() as Promise<{ exported_at: string; count: number; warning: string; entries: ActivityLogEntry[] }>;
   },
 
   async reviewResearch(content: string): Promise<{ review: string; model: string }> {
@@ -1748,6 +2317,7 @@ export const cortexClient = {
       max_context?:           number;
       force_local_powerful?:  boolean;
       clarification_context?: Array<{ question: string; answer: string }>;
+      scope?:                 CorpusScope;
     } = {},
   ): Promise<AnswerResult> {
     const timeout = opts.force_local_powerful ? 180_000 : TIMEOUT_ANSWER;
@@ -2056,6 +2626,87 @@ export const cortexClient = {
 
   getSkillExportUrl(id: string): string {
     return `${BASE}/api/skills/export/${id}`;
+  },
+
+  // ── Générateur de prompts ────────────────────────────────────────────────
+
+  async getPromptGeneratorModels(): Promise<PromptGeneratorModelsResult> {
+    const res = await apiFetch('/api/prompt-generator/models', { method: 'GET' });
+    return await res.json() as PromptGeneratorModelsResult;
+  },
+
+  async getPromptGeneratorSettings(): Promise<PromptGeneratorSettings> {
+    const res = await apiFetch('/api/prompt-generator/settings', { method: 'GET' });
+    return await res.json() as PromptGeneratorSettings;
+  },
+
+  async setPromptGeneratorSettings(data: Partial<PromptGeneratorSettings>): Promise<PromptGeneratorSettings> {
+    const res = await apiFetch('/api/prompt-generator/settings', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    return await res.json() as PromptGeneratorSettings;
+  },
+
+  async listGeneratedPrompts(filters?: { from?: string; to?: string; model?: string; outcome?: string; q?: string; templatesOnly?: boolean }): Promise<{ prompts: GeneratedPrompt[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filters?.from) params.set('from', filters.from);
+    if (filters?.to) params.set('to', filters.to);
+    if (filters?.model) params.set('model', filters.model);
+    if (filters?.outcome) params.set('outcome', filters.outcome);
+    if (filters?.q) params.set('q', filters.q);
+    if (filters?.templatesOnly) params.set('templates', '1');
+    const qs  = params.toString();
+    const res = await apiFetch(`/api/prompt-generator${qs ? `?${qs}` : ''}`, { method: 'GET' });
+    return await res.json() as { prompts: GeneratedPrompt[]; count: number };
+  },
+
+  async generatePrompt(data: { request: string; draft_model: string; draft_provider: string; review_model: string; review_provider: string }): Promise<GeneratedPrompt> {
+    const res = await apiFetch('/api/prompt-generator/generate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    }, 120_000);
+    const d = await res.json() as { prompt: GeneratedPrompt };
+    return d.prompt;
+  },
+
+  async regeneratePrompt(id: string, data?: { draft_model?: string; draft_provider?: string; review_model?: string; review_provider?: string }): Promise<GeneratedPrompt> {
+    const res = await apiFetch(`/api/prompt-generator/${id}/regenerate`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data ?? {}),
+    }, 120_000);
+    const d = await res.json() as { prompt: GeneratedPrompt };
+    return d.prompt;
+  },
+
+  async updateGeneratedPrompt(id: string, data: Partial<Pick<GeneratedPrompt, 'kept_version' | 'outcome' | 'is_template'>>): Promise<GeneratedPrompt> {
+    const res = await apiFetch(`/api/prompt-generator/${id}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    const d = await res.json() as { prompt: GeneratedPrompt };
+    return d.prompt;
+  },
+
+  async deleteGeneratedPrompt(id: string): Promise<void> {
+    await apiFetch(`/api/prompt-generator/${id}`, { method: 'DELETE' });
+  },
+
+  async importGeneratedPrompts(data: Record<string, unknown>): Promise<{ ok: boolean; imported: number; total: number }> {
+    const res = await apiFetch('/api/prompt-generator/import', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    return await res.json() as { ok: boolean; imported: number; total: number };
+  },
+
+  getPromptGeneratorExportUrl(): string {
+    return `${BASE}/api/prompt-generator/export/all`;
   },
 
   // ── Job tracking (survives Console close; enables TopBar indicator + reload) ─

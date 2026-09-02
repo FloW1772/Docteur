@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import fs from 'node:fs';
 import { getInboxSettings, updateInboxSettings, runInboxCheck } from '../lib/inbox-watcher.js';
-import { getInboxPending, markInboxConsumed } from '../lib/sqlite.js';
+import { getInboxPending, markInboxConsumed, insertActivityLog } from '../lib/sqlite.js';
 
 export function createInboxRoute({ defaultDir, logger } = {}) {
   const route = new Hono();
@@ -33,8 +33,16 @@ export function createInboxRoute({ defaultDir, logger } = {}) {
     try {
       fs.mkdirSync(dir, { recursive: true });
       const result = await runInboxCheck({ inboxDir: dir, logger });
+      if (result.processed > 0 || result.errors > 0) {
+        insertActivityLog({
+          opType: 'inbox_import', item: `${result.processed} fichier(s)`,
+          result: result.errors === 0 ? 'success' : 'failure',
+          reason: result.errors > 0 ? `${result.errors} fichier(s) en échec` : null,
+        });
+      }
       return c.json(result);
     } catch (err) {
+      insertActivityLog({ opType: 'inbox_import', item: dir, result: 'failure', reason: err.message ?? 'Erreur' });
       return c.json({ error: err.message ?? 'Erreur' }, 500);
     }
   });

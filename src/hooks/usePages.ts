@@ -3,7 +3,9 @@ import type { Page, PageKind, Block, BlockType } from '../lib/types';
 import {
   getAllPages, getAllPagesFromServer, mergeServerPagesLocal,
   isRemoteAccess, savePage, deletePage as deletePageStorage,
-  saveSnapshotLocally,
+  saveSnapshotLocally, getPage,
+  getRecentPagesFromServer, getAllPagesMetaFromServer,
+  getPageCountsFromServer, getPageFromServer,
 } from '../lib/storage';
 import { generateId } from '../lib/generateId';
 import { useConnectivity } from './useConnectivity';
@@ -37,20 +39,22 @@ function makePageFromData(data: Partial<Page> & { title: string; kind?: PageKind
     color:     data.color,
     tags:      data.tags,
     metadata:  data.metadata,
+    private:   data.private,
   };
 }
 
-// ── Module-level load guards ──────────────────────────────────────────────────
-// useRef(false) would reset to false on StrictMode's unmount→remount cycle,
-// letting the heavy loads (IDB read, brain build, server merge) run twice in dev.
-// Module-level variables survive the cycle and reset only on a full page reload.
+// ── Module-level guards (survive StrictMode unmount/remount) ──────────────────
 let _localLoadStarted  = false;
 let _remoteLoadStarted = false;
 
-// ── Module-level load helpers (extracted to avoid deep nesting in useEffect) ──
+// Pages loaded as metadata stubs (blocks: []) — need on-demand fetch when opened
+const _lazyIds = new Set<string>();
+
+// ── Type helpers ──────────────────────────────────────────────────────────────
 
 type SetPages   = (value: Page[] | ((prev: Page[]) => Page[])) => void;
 type SetLoading = (value: boolean) => void;
+type SetCounts  = (value: { total: number; byKind: Record<string, number> }) => void;
 
 function mergeAdded(added: Page[]): (prev: Page[]) => Page[] {
   return (prev) => {
@@ -61,42 +65,75 @@ function mergeAdded(added: Page[]): (prev: Page[]) => Page[] {
   };
 }
 
-// Remote + online: load from server, show UI immediately, write IDB in background.
-// Previously awaited saveSnapshotLocally before setLoading(false) — for 900 pages
-// this could block the UI for seconds while IDB batches were written.
-async function loadRemoteAndCache(setPages: SetPages, setLoading: SetLoading): Promise<void> {
+// ── Lazy startup — server-first, IDB as offline fallback ─────────────────────
+// Loads recent N stubs instantly, then syncs IDB in background for offline use.
+
+const INITIAL_LOAD_LIMIT = 50;
+
+async function loadLazy(
+  setPages: SetPages,
+  setPageCounts: SetCounts,
+  setLoading: SetLoading,
+): Promise<void> {
   try {
-    const t0 = performance.now();
-    const ps = await getAllPagesFromServer();
-    console.log(`[startup] remote fetch: ${ps.length} pages in ${Math.trunc(performance.now() - t0)}ms`);
-    setPages(ps);
-    setLoading(false); // show UI immediately — don't wait for IDB write
-    saveSnapshotLocally(ps).catch(() => {}); // write offline cache in background
+    const [pages, counts] = await Promise.all([
+      getRecentPagesFromServer(INITIAL_LOAD_LIMIT),
+      getPageCountsFromServer(),
+    ]);
+    for (const p of pages) _lazyIds.add(p.id);
+    setPages(pages);
+    setPageCounts(counts);
+    setLoading(false);
+    // Background: sync ALL pages to IDB so mobile works offline
+    mergeServerPagesLocal().catch(() => {});
   } catch {
-    // Server unreachable — fall back to local snapshot
+    // Server unreachable — fall back to full IDB load (offline mode)
+    await loadOfflineFallback(setPages, setLoading);
+    try {
+      const counts = await getPageCountsFromServer();
+      setPageCounts(counts);
+    } catch { /* server truly offline */ }
+  }
+}
+
+async function loadOfflineFallback(setPages: SetPages, setLoading: SetLoading): Promise<void> {
+  const ps = await getAllPages();
+  setPages(ps);
+  setLoading(false);
+}
+
+// Remote + online: load recent stubs immediately, full snapshot in background.
+async function loadRemoteLazy(
+  setPages: SetPages,
+  setPageCounts: SetCounts,
+  setLoading: SetLoading,
+): Promise<void> {
+  try {
+    const [pages, counts] = await Promise.all([
+      getRecentPagesFromServer(INITIAL_LOAD_LIMIT),
+      getPageCountsFromServer(),
+    ]);
+    for (const p of pages) _lazyIds.add(p.id);
+    setPages(pages);
+    setPageCounts(counts);
+    setLoading(false);
+    // Background: fetch ALL pages and save to IDB for offline use on mobile
+    getAllPagesFromServer()
+      .then(all => saveSnapshotLocally(all))
+      .catch(() => {});
+  } catch {
+    // Server unreachable: serve local IDB snapshot
     const ps = await getAllPages();
     setPages(ps);
     setLoading(false);
   }
 }
 
-// Remote + offline: serve local snapshot saved during last online visit.
+// Remote + offline: serve IDB snapshot from last online visit.
 async function loadOffline(setPages: SetPages, setLoading: SetLoading): Promise<void> {
   const ps = await getAllPages();
   setPages(ps);
   setLoading(false);
-}
-
-async function loadLocal(setPages: SetPages, setLoading: SetLoading): Promise<void> {
-  const t0 = performance.now();
-  const ps = await getAllPages();
-  console.log(`[startup] IDB local read: ${ps.length} pages in ${Math.trunc(performance.now() - t0)}ms`);
-  setPages(ps);
-  setLoading(false); // UI visible — background merge runs after
-  try {
-    const added = await mergeServerPagesLocal();
-    if (added.length > 0) setPages(mergeAdded(added));
-  } catch { /* server offline — that's fine */ }
 }
 
 function buildUpserted(prev: Page[], data: { id: string; title: string; kind?: PageKind; content?: string; metadata?: Record<string, unknown> }): Page {
@@ -126,20 +163,24 @@ export function usePages() {
   const [pages, setPages]           = useState<Page[]>([]);
   const [loading, setLoading]       = useState(true);
   const [writeError, setWriteError] = useState<string | null>(null);
-  const remote    = useRef(isRemoteAccess()).current;
-  const isOnline  = useConnectivity(remote);
+  const [pageCounts, setPageCounts] = useState<{ total: number; byKind: Record<string, number> }>({ total: 0, byKind: {} });
+  const [allMetaLoaded, setAllMetaLoaded] = useState(false);
+  const [pageContentLoading, setPageContentLoading] = useState(false);
+
+  const remote     = useRef(isRemoteAccess()).current;
+  const isOnline   = useConnectivity(remote);
   const prevOnlineRef = useRef<boolean | null>(null);
 
-  // ── Local mode: load from IDB + background server merge ─────────────────────
+  // ── Local mode: lazy-load from server (server is local), IDB for offline ────
 
   useEffect(() => {
     if (remote) return;
     if (_localLoadStarted) return;
     _localLoadStarted = true;
-    loadLocal(setPages, setLoading);
+    loadLazy(setPages, setPageCounts, setLoading);
   }, [remote]);
 
-  // ── Remote mode: load based on connectivity; react to transitions ────────────
+  // ── Remote mode: lazy-load from server, fall back to IDB offline ─────────────
 
   useEffect(() => {
     if (!remote) return;
@@ -149,11 +190,11 @@ export function usePages() {
     if (isOnline === null) return; // first check still in progress
 
     if (prev === null) {
-      // Initial load — first time we know connectivity status
-      if (_remoteLoadStarted) return; // StrictMode guard
+      // Initial load
+      if (_remoteLoadStarted) return;
       _remoteLoadStarted = true;
       if (isOnline) {
-        loadRemoteAndCache(setPages, setLoading);
+        loadRemoteLazy(setPages, setPageCounts, setLoading);
       } else {
         loadOffline(setPages, setLoading);
       }
@@ -161,11 +202,83 @@ export function usePages() {
     }
 
     if (prev === false && isOnline === true) {
-      // Came back online: reload from server and refresh local snapshot
-      loadRemoteAndCache(setPages, setLoading);
+      // Came back online
+      loadRemoteLazy(setPages, setPageCounts, setLoading);
     }
-    // online → offline: keep pages in state, writes blocked via save() below
   }, [remote, isOnline]);
+
+  // ── loadPage — fetch full content (blocks) on demand ─────────────────────────
+  // No-ops only if the page is ALREADY present in state and fully loaded.
+  // Previously this bailed out whenever `id` wasn't a tracked lazy stub — but
+  // only the first 50 recent pages ever get registered as stubs at startup,
+  // so clicking a link to any older neuron (never referenced, not even as a
+  // stub) matched neither condition and silently did nothing: the neuron was
+  // absent from `pages`, so nothing could be found to open, and this bailed
+  // before ever fetching it.
+
+  const loadPage = useCallback(async (id: string): Promise<void> => {
+    const known = pages.find(p => p.id === id);
+    if (known && !_lazyIds.has(id) && known.blocks?.length > 0) return; // already fully loaded — nothing to do
+    setPageContentLoading(true);
+    try {
+      let full: Page | null = null;
+      // Try server first, IDB as fallback for offline mobile
+      if (isOnline !== false) {
+        full = await getPageFromServer(id);
+      }
+      if (!full) {
+        full = await getPage(id) ?? null;
+      }
+      if (full) {
+        _lazyIds.delete(id);
+        setPages(prev => {
+          if (prev.some(p => p.id === id)) return prev.map(p => p.id === id ? full! : p);
+          return [full!, ...prev];
+        });
+      }
+    } catch (e) {
+      console.error('[loadPage] error:', e);
+    } finally {
+      setPageContentLoading(false);
+    }
+  }, [isOnline, pages]);
+
+  // ── loadAllMeta — load all pages metadata (no blocks) for "Tous les neurones" ─
+
+  const loadAllMeta = useCallback(async (): Promise<void> => {
+    if (allMetaLoaded) return;
+    try {
+      const all = await getAllPagesMetaFromServer();
+      setPages(prev => {
+        const fullyLoaded = new Map(prev.filter(p => !_lazyIds.has(p.id)).map(p => [p.id, p]));
+        const result = all.map(meta => {
+          const existing = fullyLoaded.get(meta.id);
+          if (existing) return existing;
+          _lazyIds.add(meta.id);
+          return meta; // already has blocks: []
+        });
+        return result;
+      });
+      // Update counts from the actual list
+      const byKind: Record<string, number> = {};
+      for (const p of all) byKind[p.kind] = (byKind[p.kind] ?? 0) + 1;
+      setPageCounts({ total: all.length, byKind });
+      setAllMetaLoaded(true);
+    } catch { /* server offline — keep current state */ }
+  }, [allMetaLoaded]);
+
+  // ── loadAllPagesForReindex — loads full pages with blocks (for reindex) ───────
+
+  const loadAllPagesForReindex = useCallback(async (): Promise<Page[]> => {
+    const all = await getAllPagesFromServer(); // full content
+    _lazyIds.clear();
+    setPages(all);
+    const byKind: Record<string, number> = {};
+    for (const p of all) byKind[p.kind] = (byKind[p.kind] ?? 0) + 1;
+    setPageCounts({ total: all.length, byKind });
+    setAllMetaLoaded(true);
+    return all;
+  }, []);
 
   // ── Helper: save a page and surface server errors ────────────────────────────
 
@@ -177,11 +290,10 @@ export function usePages() {
     }
     return savePage(page).catch(err => {
       setWriteError((err as Error).message ?? 'Erreur de sauvegarde');
-      throw err; // re-throw so callers can abort their state update if needed
+      throw err;
     });
   }, [remote, isOnline]);
 
-  // Debounced save helpers to avoid saving on every keystroke
   const pendingSavesRef = useRef<Map<string, { page: Page; timer: ReturnType<typeof setTimeout> }>>(new Map());
   const SAVE_DEBOUNCE_MS = 800;
 
@@ -222,6 +334,7 @@ export function usePages() {
     const page = makePage(kind);
     await save(page);
     setPages(prev => [page, ...prev]);
+    setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [page.kind]: (c.byKind[page.kind] ?? 0) + 1 } }));
     return page;
   }, [save]);
 
@@ -231,34 +344,46 @@ export function usePages() {
     const page = makePageFromData(data);
     await save(page);
     setPages(prev => [page, ...prev]);
+    setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [page.kind]: (c.byKind[page.kind] ?? 0) + 1 } }));
     return page;
   }, [save]);
 
   // ── updatePage ───────────────────────────────────────────────────────────────
-  // Optimistic update: update React state immediately, then persist.
-  // On remote mode, if the server fails the user sees an error toast — the
-  // optimistic state stays (page is at least in local IDB on the phone).
 
   const updatePage = useCallback((id: string, updates: Partial<Omit<Page, 'id' | 'createdAt'>>) => {
     let updated: Page | null = null;
+    let oldKind: PageKind | null = null;
     setPages(prev =>
       prev.map(p => {
         if (p.id !== id) return p;
+        oldKind = p.kind;
         updated = { ...p, ...updates, updatedAt: Date.now() };
         return updated;
       })
     );
-    // updated is assigned synchronously inside the map above
     if (updated) {
-      // Schedule debounced save instead of immediate save to avoid excessive writes
       scheduleSave(updated as Page);
+      // Update counts if kind changed
+      const newKind = (updates as Partial<Page>).kind;
+      if (newKind && oldKind && newKind !== oldKind) {
+        setPageCounts(c => ({
+          total: c.total,
+          byKind: {
+            ...c.byKind,
+            [oldKind!]: Math.max(0, (c.byKind[oldKind!] ?? 0) - 1),
+            [newKind]: (c.byKind[newKind] ?? 0) + 1,
+          },
+        }));
+      }
     }
   }, [scheduleSave]);
 
   // ── removePage ───────────────────────────────────────────────────────────────
 
   const removePage = useCallback(async (id: string) => {
+    const target = pages.find(p => p.id === id);
     await deletePageStorage(id);
+    _lazyIds.delete(id);
     setPages(prev => {
       const result: Page[] = [];
       for (const p of prev) {
@@ -273,7 +398,10 @@ export function usePages() {
       }
       return result;
     });
-  }, [save]);
+    if (target) {
+      setPageCounts(c => ({ total: Math.max(0, c.total - 1), byKind: { ...c.byKind, [target.kind]: Math.max(0, (c.byKind[target.kind] ?? 0) - 1) } }));
+    }
+  }, [pages, save]);
 
   // ── createLink ───────────────────────────────────────────────────────────────
 
@@ -322,18 +450,17 @@ export function usePages() {
   }, [save]);
 
   // ── upsertPage ───────────────────────────────────────────────────────────────
-  // For existing pages: update title/kind/metadata (preserve blocks & links).
-  // For new pages: create with a paragraph block containing `content`.
 
   const upsertPage = useCallback(async (data: {
     id: string; title: string; kind?: PageKind;
     content?: string; metadata?: Record<string, unknown>;
   }) => {
-    // Compute the page to save (read pages snapshot without mutating state yet)
     let toSave: Page | null = null;
+    let isNew = false;
     setPages(prev => {
+      isNew = !prev.some(p => p.id === data.id);
       toSave = buildUpserted(prev, data);
-      return prev; // state update happens after save (remote) or optimistically (local)
+      return prev;
     });
     if (!toSave) return;
     if (remote) {
@@ -343,21 +470,31 @@ export function usePages() {
       setPages(prev => applyUpserted(prev, toSave as Page));
       save(toSave).catch(() => {});
     }
+    if (isNew) {
+      const kind = (toSave as Page).kind;
+      setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [kind]: (c.byKind[kind] ?? 0) + 1 } }));
+    }
   }, [save, remote]);
 
   const reloadFromServer = useCallback(async () => {
     try {
       const ps = await getAllPagesFromServer();
       setPages(ps);
+      _lazyIds.clear();
+      setAllMetaLoaded(true);
+      const byKind: Record<string, number> = {};
+      for (const p of ps) byKind[p.kind] = (byKind[p.kind] ?? 0) + 1;
+      setPageCounts({ total: ps.length, byKind });
       saveSnapshotLocally(ps).catch(() => {});
     } catch { /* server offline — keep current state */ }
   }, []);
 
   return {
     pages, loading, writeError, isOnline,
+    pageCounts, allMetaLoaded, pageContentLoading,
     createPage, createPageFromData, updatePage, upsertPage, removePage, createLink, removeLink,
-    // Flush helpers: force-save pending debounced saves
     flushSave, flushAllSaves,
     reloadFromServer,
+    loadPage, loadAllMeta, loadAllPagesForReindex,
   };
 }

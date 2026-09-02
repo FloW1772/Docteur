@@ -6,6 +6,7 @@
 // Personal CV data must stay on device at all times.
 
 import { Hono } from 'hono';
+import { insertActivityLog } from '../lib/sqlite.js';
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -428,6 +429,7 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
     if (!cvContent) return c.json({ error: 'cv_content requis' }, 400);
 
     c.set('requestPayload', { cv_length: cvContent.length, powerful });
+    const started = Date.now();
 
     try {
       await ensureOllamaAvailableOrThrow();
@@ -442,9 +444,12 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
 
       c.set('modelUsed', model);
       if (logger) logger.info({ cv_length: cvContent.length, model, powerful }, 'CV_ANALYZE_DONE');
+      // Journal : jamais le contenu du CV, uniquement le fait que l'opération a eu lieu.
+      insertActivityLog({ opType: 'cv_analyze', item: 'Analyse CV', result: 'success', durationMs: Date.now() - started, modelUsed: model });
       return c.json({ report, model_used: model }, 200);
     } catch (err) {
       if (logger) logger.error({ error_message: err.message }, 'CV_ANALYZE_ERROR');
+      insertActivityLog({ opType: 'cv_analyze', item: 'Analyse CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
       return c.json({ error: err.message }, 500);
     }
   });
@@ -460,6 +465,7 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
     if (!cvContent) return c.json({ error: 'cv_content requis' }, 400);
 
     c.set('requestPayload', { cv_length: cvContent.length, target_job: targetJob, powerful });
+    const started = Date.now();
 
     try {
       await ensureOllamaAvailableOrThrow();
@@ -490,9 +496,11 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
 
       c.set('modelUsed', model);
       if (logger) logger.info({ cv_length: cvContent.length, model, target_job: targetJob, targeted: !!(targetJob || jobOffer) }, 'CV_REWRITE_DONE');
+      insertActivityLog({ opType: 'cv_rewrite', item: 'Réécriture CV', result: 'success', durationMs: Date.now() - started, modelUsed: model });
       return c.json({ rewritten_cv: rewrittenCv, changes, model_used: model }, 200);
     } catch (err) {
       if (logger) logger.error({ error_message: err.message }, 'CV_REWRITE_ERROR');
+      insertActivityLog({ opType: 'cv_rewrite', item: 'Réécriture CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
       return c.json({ error: err.message }, 500);
     }
   });

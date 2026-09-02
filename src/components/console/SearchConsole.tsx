@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Search, Plus, RefreshCw, Bookmark, BookmarkCheck, Globe, BookOpen } from 'lucide-react';
+import { X, Search, Plus, RefreshCw, Bookmark, BookmarkCheck, Globe, BookOpen, Mountain, CheckCircle, AlertTriangle } from 'lucide-react';
 import { MarkdownContent } from '../../lib/renderMd';
 import { generateId } from '../../lib/generateId';
 import { cortexClient } from '../../lib/cortex/client';
 import type { SearchHit, AnswerResult, ClarifyQuestion, ResearchQuota, DeepResearchOptions, WebAnswerSource, WebSearchResult, WebDeepSource, WebDeepEvent } from '../../lib/cortex/client';
 import type { Page, PageKind } from '../../lib/types';
 import { KIND_META } from '../../lib/types';
+import { getCorpusTrustedSites } from '../../lib/corpusSettings';
 
 const RESEARCH_RE          = /^(?:veille|recherche)\s+(.+)$/iu;
 const MULTI_SOURCE_RE      = /^veille\+\+\s+(.+)$/iu;
@@ -17,6 +18,8 @@ const PDF_RE       = /^pdf\s+(.+)$/iu;
 const COMPARE_RE   = /^comparer?\s+(.+)$/iu;
 const WEB_RE       = /^web\s+(.+)$/iu;
 const CHERCHE_RE   = /^cherche\s+(.+)$/iu;
+const CORPUS_RE    = /^corpus\s+(.+)$/iu;
+const CORPUS_MAX_SELECT = 20;
 
 // ── Default site shortcuts ────────────────────────────────────────────────────
 
@@ -26,7 +29,8 @@ const DEFAULT_SHORTCUTS: Record<string, string> = {
   wikipedia: 'https://fr.wikipedia.org',
   github:    'https://github.com',
   gmail:     'https://mail.google.com',
-  maps:      'https://maps.google.com',
+  maps:      'https://www.openstreetmap.org',
+  gmaps:     'https://maps.google.com',
   drive:     'https://drive.google.com',
   twitch:    'https://www.twitch.tv',
   reddit:    'https://www.reddit.com',
@@ -43,6 +47,37 @@ const DEFAULT_SHORTCUTS: Record<string, string> = {
 
 function normalizeShortcutName(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+}
+
+// Simple Levenshtein distance — used only to suggest "did you mean X?" for an
+// unrecognized shortcut name (typo, or voice mis-transcription of a known one).
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+// Returns the closest known shortcut name if it's a plausible typo/mis-hearing
+// of `name` (distance <= 2, or <= 1 for very short names), else null.
+function closestShortcutName(name: string, allShortcuts: Record<string, string>): string | null {
+  const target = normalizeShortcutName(name);
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const key of Object.keys(allShortcuts)) {
+    const d = levenshtein(target, key);
+    if (d < bestDist) { bestDist = d; best = key; }
+  }
+  const threshold = target.length <= 4 ? 1 : 2;
+  return best && bestDist <= threshold && bestDist > 0 ? best : null;
 }
 
 // ── Clarification types ───────────────────────────────────────────────────────
@@ -125,7 +160,7 @@ type VideoHit = { page: Page; videoId: string };
 type OuvreHit = { page: Page; sourceUrl: string };
 type CommandState =
   | { type: 'lis';   keywords: string; results: VideoHit[] }
-  | { type: 'ouvre'; arg: string; url: string | null; hits: OuvreHit[] }
+  | { type: 'ouvre'; arg: string; url: string | null; hits: OuvreHit[]; suggestion?: string; suggestionUrl?: string }
   | null;
 
 interface WebAnswerState {
@@ -150,6 +185,16 @@ interface ExploreState {
   error?:        string;
 }
 
+interface CorpusSearchState {
+  subject:  string;
+  phase:    'loading' | 'results' | 'error' | 'capturing' | 'done';
+  results:  WebSearchResult[];
+  selected: Set<string>; // urls
+  error?:   string;
+  progress?: { done: number; total: number };
+  summary?: { ok: number; total: number; failures: Array<{ name: string; error: string }> };
+}
+
 interface ChatEntry {
   id:                     string;
   query:                  string;
@@ -168,6 +213,8 @@ interface Props {
   onHighlightSources: (ids: string[]) => void;
   onClearHighlights:  () => void;
   onSaveQR:           (question: string, answer: AnswerResult, clarificationContext?: ClarifyAnswer[]) => Promise<void>;
+  onAnalyzeImage?:    (imageId: string) => void;
+  onOpenConversation?: () => void;
   onResearch:             (subject: string, mode: 'synthese' | 'actualite') => Promise<void>;
   onDeepResearch:         (subject: string, options: DeepResearchOptions) => Promise<void>;
   onMultiSourceResearch:  (subject: string, angles: number) => Promise<void>;
@@ -212,8 +259,26 @@ function hexRgb(hex: string): string {
 }
 
 export default function SearchConsole({
-  isOpen, onClose, onNavigate, onCreatePage, onHighlightSources, onClearHighlights, onSaveQR, onResearch, onDeepResearch, onMultiSourceResearch, onPlayVideo, onPdfSubject, onCompare, onSaveWebAnswer, onCreateWebResultsNeuron, onCreateWebDeepNeuron, customShortcuts, pages, isOnline, initialQuery,
+  isOpen, onClose, onNavigate, onCreatePage, onHighlightSources, onClearHighlights, onSaveQR, onResearch, onDeepResearch, onMultiSourceResearch, onPlayVideo, onPdfSubject, onCompare, onSaveWebAnswer, onCreateWebResultsNeuron, onCreateWebDeepNeuron, onAnalyzeImage, onOpenConversation, customShortcuts, pages, isOnline, initialQuery,
 }: Props) {
+  const [imagePasting, setImagePasting] = useState(false);
+
+  async function handleImagePaste(e: React.ClipboardEvent<HTMLInputElement>) {
+    if (!onAnalyzeImage) return;
+    const items   = Array.from(e.clipboardData.items);
+    const imgItem = items.find(it => it.kind === 'file' && it.type.startsWith('image/'));
+    if (!imgItem) return;
+    e.preventDefault();
+    const file = imgItem.getAsFile();
+    if (!file) return;
+    setImagePasting(true);
+    try {
+      const { id } = await cortexClient.uploadImage(file);
+      onAnalyzeImage(id);
+    } catch { /* upload failed — silently skip, no image to analyze */ }
+    finally { setImagePasting(false); }
+  }
+
   const offline = isOnline === false;
   const [mode, setMode]                   = useState<Mode>('search');
   const [query, setQuery]                 = useState('');
@@ -227,11 +292,14 @@ export default function SearchConsole({
   const [historyIdx, setHistoryIdx]       = useState(-1);
   const [savedEntries, setSavedEntries]       = useState<Set<string>>(new Set());
   const [savingEntry, setSavingEntry]         = useState<string | null>(null);
+  const [corpusSearch, setCorpusSearch]                     = useState<CorpusSearchState | null>(null);
+  const corpusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [researchSubject, setResearchSubject]               = useState<string | null>(null);
   const [researchLoading, setResearchLoading]               = useState(false);
   const [deepResearchSubject, setDeepResearchSubject]       = useState<string | null>(null);
   const [multiSourceSubject, setMultiSourceSubject]         = useState<string | null>(null);
   const [localMode, setLocalMode]             = useState(false);
+  const [answerScope, setAnswerScope]         = useState<'all' | 'personal' | 'reference'>('all');
   const [commandState, setCommandState]       = useState<CommandState>(null);
   const [exploreSubject, setExploreSubject]   = useState<string | null>(null);
   const [exploreState, setExploreState]       = useState<ExploreState | null>(null);
@@ -244,12 +312,23 @@ export default function SearchConsole({
   const chatBottomRef      = useRef<HTMLDivElement>(null);
   const typingIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const highlightTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Holds the latest handleQuestion — lets the open/close effect (declared before
+  // handleQuestion) trigger it for voice-originated queries without a TDZ issue.
+  const handleQuestionRef  = useRef<(overrideQuery?: string) => void>(() => {});
 
   // ── Focus & reset on open/close ──────────────────────────────────────────
 
   useEffect(() => {
     if (isOpen) {
-      if (initialQuery) setQuery(initialQuery);
+      if (initialQuery) {
+        setQuery(initialQuery);
+        // "ouvre X" via voice must trigger the exact same shortcut/neuron-open behavior
+        // as typing it — auto-run it through the normal handler. Other voice-originated
+        // queries (questions, research, etc.) still just prefill for the user to confirm.
+        if (OUVRE_RE.test(initialQuery.trim())) {
+          handleQuestionRef.current(initialQuery);
+        }
+      }
       requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
     } else {
       setQuery('');
@@ -343,6 +422,7 @@ export default function SearchConsole({
     try {
       const result = await cortexClient.answer(q, {
         max_context: 5,
+        scope: answerScope,
         ...(forceLocal ? { force_local_powerful: true } : {}),
         ...(clarCtx.length > 0 ? { clarification_context: clarCtx } : {}),
       });
@@ -374,7 +454,7 @@ export default function SearchConsole({
       setIsLoading(false);
       setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
-  }, [onHighlightSources, onClearHighlights]);
+  }, [onHighlightSources, onClearHighlights, answerScope]);
 
   // ── Web quick answer ─────────────────────────────────────────────────────
 
@@ -488,6 +568,90 @@ export default function SearchConsole({
     setExploreState(null);
   }, []);
 
+  // ── "corpus [sujet]" — recherche ciblée + capture manuelle sélective ────────
+
+  const startCorpusSearch = useCallback(async (subject: string) => {
+    setCorpusSearch({ subject, phase: 'loading', results: [], selected: new Set() });
+    try {
+      const trustedSites = getCorpusTrustedSites();
+      let results: WebSearchResult[];
+      if (trustedSites.length > 0) {
+        const perSite = await Promise.all(
+          trustedSites.map(site => cortexClient.webResults(`site:${site} ${subject}`, 25).then(r => r.results).catch(() => [])),
+        );
+        const seen = new Set<string>();
+        results = perSite.flat().filter(r => {
+          if (seen.has(r.url)) return false;
+          seen.add(r.url);
+          return true;
+        }).slice(0, 25);
+      } else {
+        const r = await cortexClient.webResults(subject, 25);
+        results = r.results;
+      }
+      setCorpusSearch({ subject, phase: 'results', results, selected: new Set() });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erreur réseau';
+      setCorpusSearch({ subject, phase: 'error', results: [], selected: new Set(), error: msg });
+    }
+  }, []);
+
+  const toggleCorpusResult = useCallback((url: string) => {
+    setCorpusSearch(prev => {
+      if (!prev) return prev;
+      const next = new Set(prev.selected);
+      if (next.has(url)) next.delete(url); else next.add(url);
+      return { ...prev, selected: next };
+    });
+  }, []);
+
+  const setCorpusSelectAll = useCallback((all: boolean) => {
+    setCorpusSearch(prev => {
+      if (!prev) return prev;
+      return { ...prev, selected: all ? new Set(prev.results.slice(0, CORPUS_MAX_SELECT).map(r => r.url)) : new Set() };
+    });
+  }, []);
+
+  const confirmCorpusCapture = useCallback(async () => {
+    if (!corpusSearch || corpusSearch.selected.size === 0) return;
+    const subject = corpusSearch.subject;
+    const urls    = [...corpusSearch.selected];
+    setCorpusSearch(prev => prev ? { ...prev, phase: 'capturing', progress: { done: 0, total: urls.length } } : prev);
+
+    try {
+      const result = await cortexClient.corpusSearchCapture(subject, urls);
+      corpusPollRef.current = setInterval(async () => {
+        try {
+          const job = await cortexClient.corpusJobStatus(result.jobId);
+          setCorpusSearch(p => p ? { ...p, progress: { done: job.done, total: job.total } } : p);
+          if (job.status !== 'running') {
+            if (corpusPollRef.current) clearInterval(corpusPollRef.current);
+            corpusPollRef.current = null;
+            setCorpusSearch(p => p ? {
+              ...p, phase: 'done',
+              summary: { ok: job.total - job.errors.length, total: job.total, failures: job.errors },
+            } : p);
+          }
+        } catch {
+          if (corpusPollRef.current) clearInterval(corpusPollRef.current);
+          corpusPollRef.current = null;
+          setCorpusSearch(p => p ? { ...p, phase: 'error', error: 'Suivi de progression perdu' } : p);
+        }
+      }, 1000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erreur réseau';
+      setCorpusSearch(p => p ? { ...p, phase: 'error', error: msg } : p);
+    }
+  }, [corpusSearch]);
+
+  const cancelCorpusSearch = useCallback(() => {
+    if (corpusPollRef.current) clearInterval(corpusPollRef.current);
+    corpusPollRef.current = null;
+    setCorpusSearch(null);
+  }, []);
+
+  useEffect(() => () => { if (corpusPollRef.current) clearInterval(corpusPollRef.current); }, []);
+
   // ── Question submit (mode QUESTION) ──────────────────────────────────────
 
   const handleResearchMode = useCallback((mode: 'synthese' | 'actualite') => {
@@ -515,8 +679,8 @@ export default function SearchConsole({
     void onMultiSourceResearch(subject, angles);
   }, [multiSourceSubject, onMultiSourceResearch, onClose]);
 
-  const handleQuestion = useCallback(async () => {
-    let q = query.trim();
+  const handleQuestion = useCallback(async (overrideQuery?: string) => {
+    let q = (overrideQuery ?? query).trim();
     if (!q || isLoading || clarifyLoading) return;
 
     setCommandState(null);
@@ -535,6 +699,14 @@ export default function SearchConsole({
       setQuery('');
       setExploreSubject(chercheMatch[1].trim());
       setExploreState({ phase: 'choosing', pages: [], pageIndex: 0, pageTotal: 0, msg: '' });
+      return;
+    }
+
+    // ── "corpus [sujet]" — recherche ciblée + sélection manuelle pour le corpus de référence ──
+    const corpusMatch = CORPUS_RE.exec(q);
+    if (corpusMatch) {
+      setQuery('');
+      void startCorpusSearch(corpusMatch[1].trim());
       return;
     }
 
@@ -615,7 +787,11 @@ export default function SearchConsole({
         .slice(0, 6);
 
       if (hits.length === 0) {
-        setCommandState({ type: 'ouvre', arg, url: null, hits: [] });
+        const suggestion = closestShortcutName(arg, allShortcuts) ?? undefined;
+        setCommandState({
+          type: 'ouvre', arg, url: null, hits: [],
+          suggestion, suggestionUrl: suggestion ? allShortcuts[suggestion] : undefined,
+        });
       } else if (hits.length === 1) {
         const win = window.open(hits[0].sourceUrl, '_blank', 'noopener,noreferrer');
         if (win) { onClose(); return; }
@@ -696,7 +872,9 @@ export default function SearchConsole({
     setQuery('');
     void submitDirectAnswer(q, forceLocal, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, isLoading, clarifyLoading, localMode, offline, pages, onNavigate, onClose, onPlayVideo, onHighlightSources, onClearHighlights, submitDirectAnswer]);
+  }, [query, isLoading, clarifyLoading, localMode, offline, pages, onNavigate, onClose, onPlayVideo, onHighlightSources, onClearHighlights, submitDirectAnswer, startCorpusSearch]);
+
+  handleQuestionRef.current = handleQuestion;
 
   // ── Called when user answers the last clarification question ────────────────
 
@@ -841,6 +1019,27 @@ export default function SearchConsole({
                 {m === 'search' ? '⌕ RECHERCHE' : '◎ QUESTION'}
               </button>
             ))}
+            {onOpenConversation && (
+              <button
+                type="button"
+                onClick={onOpenConversation}
+                className="font-mono"
+                title="Discuter avec Docteur — conversation avec mémoire de contexte"
+                style={{
+                  fontSize:   10,
+                  letterSpacing: '0.1em',
+                  padding:    '4px 12px',
+                  borderRadius: 5,
+                  border:      'none',
+                  cursor:      'pointer',
+                  background:  'transparent',
+                  color:       '#4a3a6a',
+                  transition:  'all 0.14s',
+                }}
+              >
+                ◈ DISCUSSION
+              </button>
+            )}
           </div>
 
           <span className="font-mono" style={{ fontSize: 9, color: '#2a2040', marginLeft: 'auto', letterSpacing: '0.08em' }}>
@@ -876,7 +1075,9 @@ export default function SearchConsole({
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={e => void handleImagePaste(e)}
               placeholder={
+                imagePasting ? 'Import de l\'image…' :
                 mode === 'search'
                   ? 'Rechercher dans tes neurones…'
                   : localMode
@@ -1042,16 +1243,41 @@ export default function SearchConsole({
                 <button
                   type="button"
                   onClick={() => setLocalMode(v => !v)}
-                  title="Force qwen2.5:14b — aucun appel cloud, garanti privé"
+                  title="Force le modèle puissant (configurable dans Réglages) — aucun appel cloud, garanti privé"
                   className={`font-mono console-local-toggle${localMode ? ' console-local-toggle--active' : ''}`}
                 >
                   🔒 Local puissant {localMode ? '(actif)' : ''}
                 </button>
                 {localMode && (
                   <span className="font-mono console-local-hint">
-                    qwen2.5:14b · aucun cloud · préfixe "local" aussi accepté
+                    modèle puissant · aucun cloud · préfixe "local" aussi accepté
                   </span>
                 )}
+              </div>
+
+              {/* RAG scope selector — mes neurones / références / les deux */}
+              <div className="font-mono" style={{ display: 'flex', gap: 4, padding: '0 4px 8px' }}>
+                {([
+                  { v: 'all',       label: 'Tout' },
+                  { v: 'personal',  label: 'Mes neurones' },
+                  { v: 'reference', label: 'Références' },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.v}
+                    type="button"
+                    onClick={() => setAnswerScope(opt.v)}
+                    title="Portée de la recherche RAG"
+                    style={{
+                      fontSize: 10, padding: '3px 9px', borderRadius: 20,
+                      border: `1px solid ${answerScope === opt.v ? 'rgba(132,204,22,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                      background: answerScope === opt.v ? 'rgba(132,204,22,0.12)' : 'transparent',
+                      color: answerScope === opt.v ? '#84cc16' : '#7a6c9a',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
               </div>
 
               {/* Clarification loading */}
@@ -1138,6 +1364,19 @@ export default function SearchConsole({
                 />
               )}
 
+              {corpusSearch && (
+                <CorpusSearchPanel
+                  state={corpusSearch}
+                  pages={pages}
+                  onToggle={toggleCorpusResult}
+                  onSelectAll={() => setCorpusSelectAll(true)}
+                  onSelectNone={() => setCorpusSelectAll(false)}
+                  onConfirm={() => { void confirmCorpusCapture(); }}
+                  onCancel={cancelCorpusSearch}
+                  onRetry={() => { void startCorpusSearch(corpusSearch.subject); }}
+                />
+              )}
+
               {commandState && (
                 <CommandResultPanel
                   state={commandState}
@@ -1159,7 +1398,7 @@ export default function SearchConsole({
                       "cherche [sujet]" → 🔍 recherche web approfondie<br />
                       "veille stockage d'énergie" → synthèse IA<br />
                       "pdf [sujet]" → 📄 export PDF du sujet<br />
-                      "puissant [question]" → 🔒 qwen2.5:14b<br />
+                      "puissant [question]" → 🔒 modèle puissant (configurable)<br />
                       "lis [titre]" → ▶ lecteur vidéo intégré<br />
                       "ouvre youtube" → raccourci site<br />
                       "ouvre [url ou neurone]" → ouvrir dans un onglet
@@ -1349,7 +1588,8 @@ export default function SearchConsole({
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
                               {entry.answer.sources.map((src, si) => {
                                 const pg   = pages.find(p => p.id === src.id || p.title === src.title);
-                                const meta = pg ? KIND_META[pg.kind] : KIND_META.note;
+                                const kind = pg?.kind ?? (src.kind as PageKind | undefined) ?? 'note';
+                                const meta = KIND_META[kind] ?? KIND_META.note;
                                 return (
                                   <button
                                     key={si}
@@ -2053,9 +2293,27 @@ function CommandResultPanel({
 
       {/* Aucun résultat */}
       {!state.url && !blockedUrl && state.hits.length === 0 && (
-        <p className="font-mono" style={{ color: '#4a3a6a', fontSize: 12 }}>
-          Aucun neurone avec une URL source trouvé pour «&nbsp;{state.arg}&nbsp;».
-        </p>
+        <div>
+          <p className="font-mono" style={{ color: '#4a3a6a', fontSize: 12 }}>
+            Aucun raccourci ni neurone avec une URL source trouvé pour «&nbsp;{state.arg}&nbsp;».
+          </p>
+          {state.suggestion && state.suggestionUrl && (
+            <button
+              type="button"
+              className="font-mono"
+              onClick={() => {
+                const win = window.open(state.suggestionUrl, '_blank', 'noopener,noreferrer');
+                if (win) onClose();
+              }}
+              style={{
+                marginTop: 8, fontSize: 11, color: '#5ee7ff', cursor: 'pointer',
+                background: 'transparent', border: '1px solid rgba(94,231,255,0.25)', borderRadius: 6, padding: '5px 10px',
+              }}
+            >
+              Vouliez-vous dire «&nbsp;{state.suggestion}&nbsp;» ?
+            </button>
+          )}
+        </div>
       )}
 
       {/* Choix multiple */}
@@ -2499,6 +2757,211 @@ function ExplorePanel({ subject, state, onModeA, onModeB, onCancel, onSaveA, onS
           </p>
           <button type="button" onClick={onCancel} className="font-mono"
             style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(255,77,88,0.3)', background: 'transparent', color: '#ff4d58', cursor: 'pointer' }}>
+            Fermer
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface CorpusSearchPanelProps {
+  state:        CorpusSearchState;
+  pages:        Page[];
+  onToggle:     (url: string) => void;
+  onSelectAll:  () => void;
+  onSelectNone: () => void;
+  onConfirm:    () => void;
+  onCancel:     () => void;
+  onRetry:      () => void;
+}
+
+function CorpusSearchPanel({ state, pages, onToggle, onSelectAll, onSelectNone, onConfirm, onCancel, onRetry }: CorpusSearchPanelProps) {
+  const existingDomains = new Set(
+    pages
+      .map(p => { const u = p.metadata?.url; return typeof u === 'string' ? u : null; })
+      .filter((u): u is string => !!u)
+      .map(u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return null; } })
+      .filter((h): h is string => !!h),
+  );
+
+  const overLimit = state.selected.size > CORPUS_MAX_SELECT;
+
+  return (
+    <div style={{
+      margin: '16px 0', padding: '18px 20px',
+      background: 'rgba(132,204,22,0.03)', border: '1px solid rgba(132,204,22,0.18)',
+      borderRadius: 10,
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div>
+          <p className="font-mono" style={{ color: '#84cc16', fontSize: 10, letterSpacing: '0.14em', marginBottom: 4 }}>
+            <Mountain size={10} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
+            CORPUS DE RÉFÉRENCE
+          </p>
+          <p className="font-grotesk font-semibold" style={{ color: '#f0eaff', fontSize: 13, maxWidth: 460 }}>
+            {state.subject}
+          </p>
+        </div>
+        {state.phase !== 'capturing' && (
+          <button type="button" onClick={onCancel} style={{ color: '#3d3060', cursor: 'pointer', padding: 2 }}>
+            <X size={13} />
+          </button>
+        )}
+      </div>
+
+      {/* ── Loading ── */}
+      {state.phase === 'loading' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="neural-dot" style={{ width: 5, height: 5 }} />
+          <span className="font-mono" style={{ color: '#5a4a7a', fontSize: 12 }}>Recherche DuckDuckGo…</span>
+        </div>
+      )}
+
+      {/* ── Error ── */}
+      {state.phase === 'error' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <p className="font-mono" style={{ color: '#ff4d58', fontSize: 12 }}>{state.error ?? 'Erreur inconnue'}</p>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={onRetry} className="font-mono"
+              style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(94,231,255,0.3)', background: 'transparent', color: '#5ee7ff', cursor: 'pointer' }}>
+              Réessayer
+            </button>
+            <button type="button" onClick={onCancel} className="font-mono"
+              style={{ fontSize: 10, padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(255,77,88,0.3)', background: 'transparent', color: '#ff4d58', cursor: 'pointer' }}>
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Results — checkbox selection ── */}
+      {state.phase === 'results' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <p className="font-mono" style={{ color: '#5a8020', fontSize: 10, letterSpacing: '0.08em' }}>
+              {state.results.length} RÉSULTAT{state.results.length > 1 ? 'S' : ''} · {state.selected.size} SÉLECTIONNÉ{state.selected.size > 1 ? 'S' : ''}
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={onSelectAll} className="font-mono" style={{ fontSize: 10, color: '#5ee7ff', cursor: 'pointer' }}>
+                Tout sélectionner
+              </button>
+              <button type="button" onClick={onSelectNone} className="font-mono" style={{ fontSize: 10, color: '#5a4a7a', cursor: 'pointer' }}>
+                Tout désélectionner
+              </button>
+            </div>
+          </div>
+
+          {state.results.length === 0 ? (
+            <p className="font-mono" style={{ color: '#4a3a6a', fontSize: 12 }}>Aucun résultat.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
+              {state.results.map((r, i) => {
+                const isDup = existingDomains.has(r.domain.replace(/^www\./, ''));
+                const checked = state.selected.has(r.url);
+                return (
+                  <label
+                    key={i}
+                    className="font-mono"
+                    style={{
+                      display: 'flex', gap: 8, padding: '7px 10px', borderRadius: 6, cursor: 'pointer',
+                      border: `1px solid ${checked ? 'rgba(132,204,22,0.4)' : 'rgba(255,255,255,0.06)'}`,
+                      background: checked ? 'rgba(132,204,22,0.07)' : 'rgba(255,255,255,0.02)',
+                    }}
+                  >
+                    <input type="checkbox" checked={checked} onChange={() => onToggle(r.url)} style={{ marginTop: 3, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ color: '#c8b8e8', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        <span style={{ color: '#5a8020', fontSize: 10 }}>{r.domain}</span>
+                        {isDup && (
+                          <span style={{ color: '#f59e0b', fontSize: 9, border: '1px solid rgba(245,158,11,0.3)', borderRadius: 10, padding: '0 5px' }}>
+                            déjà dans le cortex
+                          </span>
+                        )}
+                      </div>
+                      {r.snippet && (
+                        <div style={{ color: '#4a3a6a', fontSize: 10, marginTop: 2, lineHeight: 1.4, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          {r.snippet}
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          {overLimit && (
+            <p className="font-mono" style={{ color: '#ff4d58', fontSize: 11, marginBottom: 8 }}>
+              {state.selected.size} sélectionnés — maximum {CORPUS_MAX_SELECT} par opération. Désélectionnez-en {state.selected.size - CORPUS_MAX_SELECT}.
+            </p>
+          )}
+
+          <button
+            type="button"
+            disabled={state.selected.size === 0 || overLimit}
+            onClick={onConfirm}
+            className="font-mono"
+            style={{
+              fontSize: 11, padding: '7px 16px', borderRadius: 7, width: '100%',
+              border: '1px solid rgba(132,204,22,0.35)',
+              background: state.selected.size === 0 || overLimit ? 'rgba(132,204,22,0.04)' : 'rgba(132,204,22,0.12)',
+              color: state.selected.size === 0 || overLimit ? '#4a5a2a' : '#84cc16',
+              cursor: state.selected.size === 0 || overLimit ? 'default' : 'pointer',
+            }}
+          >
+            Capturer {state.selected.size > 0 ? `${state.selected.size} page${state.selected.size > 1 ? 's' : ''}` : 'la sélection'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Capturing ── */}
+      {state.phase === 'capturing' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <div className="neural-dot" style={{ width: 5, height: 5 }} />
+            <span className="font-mono" style={{ color: '#5a4a7a', fontSize: 12 }}>
+              Capture en cours (extraction Readability, aucun résumé IA)…
+            </span>
+          </div>
+          {state.progress && (
+            <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${state.progress.total ? (state.progress.done / state.progress.total) * 100 : 0}%`,
+                background: '#84cc16', transition: 'width 0.3s',
+              }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Done — recap with per-page failures ── */}
+      {state.phase === 'done' && state.summary && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <CheckCircle size={13} style={{ color: '#3dffaa', flexShrink: 0 }} />
+            <p className="font-mono" style={{ color: '#c0e0a0', fontSize: 12 }}>
+              {state.summary.ok}/{state.summary.total} pages capturées dans le corpus
+            </p>
+          </div>
+          {state.summary.failures.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 140, overflowY: 'auto', padding: '8px 10px', borderRadius: 6, background: 'rgba(255,77,88,0.05)', border: '1px solid rgba(255,77,88,0.15)' }}>
+              <p className="font-mono" style={{ color: '#ff8a90', fontSize: 10 }}>
+                <AlertTriangle size={10} style={{ display: 'inline', marginRight: 4, verticalAlign: -1 }} />
+                {state.summary.failures.length} échec{state.summary.failures.length > 1 ? 's' : ''} :
+              </p>
+              {state.summary.failures.map((f, i) => (
+                <p key={i} className="font-mono" style={{ color: '#c98a8e', fontSize: 10, lineHeight: 1.4 }}>
+                  {f.name} — {f.error}
+                </p>
+              ))}
+            </div>
+          )}
+          <button type="button" onClick={onCancel} className="font-mono"
+            style={{ fontSize: 10, padding: '5px 12px', borderRadius: 6, border: '1px solid rgba(132,204,22,0.3)', background: 'transparent', color: '#84cc16', cursor: 'pointer', alignSelf: 'flex-start' }}>
             Fermer
           </button>
         </div>

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { X, HelpCircle } from 'lucide-react';
-import { CAPABILITIES, LIMITATIONS, SHORTCUTS } from '../../content/capabilities';
+import { CAPABILITIES, LIMITATIONS, SHORTCUTS, GESTURES } from '../../content/capabilities';
 
 interface Props {
   onClose: () => void;
@@ -147,6 +147,30 @@ export default function HelpModal({ onClose }: Props) {
                 </div>
               ))}
             </div>
+          </div>
+
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', margin: '0 20px' }} />
+
+          {/* Gesture control */}
+          <div className="px-5 py-4">
+            <p
+              className="font-mono text-xs mb-2"
+              style={{ color: '#3dffaa', letterSpacing: '0.15em' }}
+            >
+              🖐️ CONTRÔLE GESTUEL (Alt+C pour activer la caméra)
+            </p>
+            <div className="flex flex-col gap-3">
+              {GESTURES.map((g, i) => (
+                <div key={i} className="flex flex-col gap-0.5">
+                  <span className="font-mono text-xs font-semibold" style={{ color: '#3dffaa' }}>{g.gesture}</span>
+                  <span className="font-mono text-xs" style={{ color: '#8070a8', lineHeight: 1.5 }}>Comment : {g.how}</span>
+                  <span className="font-mono text-xs" style={{ color: '#c0b0e0', lineHeight: 1.5 }}>→ {g.action}</span>
+                </div>
+              ))}
+            </div>
+            <p className="font-mono text-xs mt-3" style={{ color: '#5a4a7a', lineHeight: 1.5 }}>
+              Réglage de sensibilité dans Paramètres. Le bouton 🐛 sur l'aperçu caméra active un panneau de débogage (geste brut, déplacement mesuré, seuils).
+            </p>
           </div>
 
           {/* Footer hint */}

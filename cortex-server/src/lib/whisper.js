@@ -162,6 +162,66 @@ export async function transcribeAudioFile(audioPath, model = 'small', { signal }
 }
 
 /**
+ * Like transcribeAudioFile but also requests segment-level timestamps
+ * (faster-whisper's natural speech-pause boundaries) — used by the long
+ * video pipeline to cut transcript chunks on natural breaks.
+ * Returns { text, language, duration_s, segments: [{start,end,text}] }
+ */
+export async function transcribeAudioFileWithSegments(audioPath, model = 'small', { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [WHISPER_SCRIPT, audioPath, model, '--segments'];
+    const proc = spawn(PYTHON_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+
+    if (signal) {
+      signal.addEventListener('abort', () => { try { proc.kill(); } catch { /* ignore */ } }, { once: true });
+    }
+
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    proc.on('error', err => reject(err));
+    proc.on('close', code => {
+      if (signal?.aborted) { const e = new Error('Annulé'); e.name = 'AbortError'; return reject(e); }
+      if (code !== 0) return reject(new Error(stderr.trim() || 'Transcription échouée'));
+      try {
+        const result = JSON.parse(stdout.split('\n').findLast(l => l.startsWith('{')) ?? '{}');
+        resolve(result);
+      } catch {
+        reject(new Error('Résultat de transcription invalide'));
+      }
+    });
+  });
+}
+
+/**
+ * Découpe un fichier audio en morceaux de durée fixe via ffmpeg (copie sans
+ * réencodage). Utilisé pour rester sous la limite 100 MB de Groq et pour
+ * borner l'empreinte mémoire de la transcription locale sur de très longues
+ * vidéos. Retourne la liste des chemins créés dans outDir.
+ */
+export function splitAudioFile(audioPath, outDir, segmentSeconds) {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(outDir, { recursive: true });
+    const pattern = path.join(outDir, 'chunk_%04d.wav');
+    const args = ['-i', audioPath, '-f', 'segment', '-segment_time', String(segmentSeconds), '-c', 'copy', '-reset_timestamps', '1', pattern, '-y'];
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+    proc.on('error', err => reject(err.code === 'ENOENT' ? new Error('ffmpeg introuvable') : err));
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error(stderr.trim() || 'Découpage audio échoué'));
+      const files = fs.readdirSync(outDir)
+        .filter(f => f.startsWith('chunk_') && f.endsWith('.wav'))
+        .sort()
+        .map(f => path.join(outDir, f));
+      resolve(files);
+    });
+  });
+}
+
+/**
  * Full pipeline: assertSafeUrl → download audio → transcribe → delete audio
  * VRAM note: caller must ensure Ollama is NOT running a request simultaneously.
  * Returns { text, language, duration_s }

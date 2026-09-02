@@ -30,6 +30,7 @@ import {
   deleteFileResult,
   updateFileOriginalTreatments,
   getFileResults,
+  insertActivityLog,
 } from '../lib/sqlite.js';
 
 function fileExists(filePath) {
@@ -235,9 +236,12 @@ export function createFilesRoute({ rootDir, logger } = {}) {
       const parsed = await parseOriginalFile(buffer, file.name);
       const { original } = await writeOriginalRecord(rootDir, file, buffer, parsed);
       if (logger) logger.info({ originalId: original.id, name: original.original_name, size: original.size_bytes }, 'file uploaded');
+      insertActivityLog({ opType: 'file_import', item: original.original_name, result: 'success' });
       return c.json({ ok: true, original, preview_kind: parsed.kind, detail_url: `/api/files/originals/${encodeURIComponent(original.id)}` }, 201);
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : String(error) }, 422);
+      const message = error instanceof Error ? error.message : String(error);
+      insertActivityLog({ opType: 'file_import', item: file.name, result: 'failure', reason: message });
+      return c.json({ error: message }, 422);
     }
   });
 

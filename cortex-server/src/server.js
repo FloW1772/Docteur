@@ -10,7 +10,7 @@ import dotenv from 'dotenv';
 import { createLogger } from './lib/logger.js';
 import { createOllamaClient, embedText, chatCompletion, chatCompletionPowerful, unloadModel, getInstalledModels, verifyModelAvailability } from './lib/ollama.js';
 import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
-import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats } from './lib/sqlite.js';
+import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan } from './lib/sqlite.js';
 import { routedCompletion } from './lib/router.js';
 import { completeWithCascade as geminiCascade } from './lib/providers/gemini.js';
 import * as groqProvider       from './lib/providers/groq.js';
@@ -23,11 +23,15 @@ import { createSearchRoute } from './routes/search.js';
 import { createAnswerRoute } from './routes/answer.js';
 import { createNeuronRoute } from './routes/neuron.js';
 import { createBackupRoute } from './routes/backup.js';
+import { createCorpusRoute } from './routes/corpus.js';
+import { createActivityRoute } from './routes/activity.js';
 import { createRouterRoute } from './routes/router.js';
 import { createOllamaRoute } from './routes/ollama.js';
 import { createDownloadRoute } from './routes/download.js';
 import { createResearchRoute } from './routes/research.js';
 import { createImageRoute } from './routes/image.js';
+import { createVisionRoute } from './routes/vision.js';
+import { createChatRoute } from './routes/chat.js';
 import { ensureImageDir } from './lib/image.js';
 import { createFilesRoute } from './routes/files.js';
 import { createClarifyRoute } from './routes/clarify.js';
@@ -35,6 +39,7 @@ import { createPdfRoute }       from './routes/pdf.js';
 import { createCandidatureRoute } from './routes/candidature.js';
 import { createCvImportRoute }    from './routes/cv-import.js';
 import { createAgentsRoute }      from './routes/agents.js';
+import { createVideoSummaryRoute } from './routes/video-summary.js';
 import { startAgentScheduler }    from './lib/agent-runner.js';
 import { createInboxRoute }       from './routes/inbox.js';
 import { startInboxWatcher }      from './lib/inbox-watcher.js';
@@ -46,6 +51,7 @@ import { createCompareRoute }      from './routes/compare.js';
 import { createWebAnswerRoute }    from './routes/web-answer.js';
 import { createWebExploreRoute }   from './routes/web-explore.js';
 import { createSkillsRoute }       from './routes/skills.js';
+import { createPromptGeneratorRoute } from './routes/prompt-generator.js';
 import { createTodoRoute }         from './routes/todo.js';
 import { checkYtDlp } from './lib/ytdlp.js';
 import { scheduleDailyBackup } from './lib/backup.js';
@@ -105,8 +111,36 @@ cleanTmpDir(); // remove leftover audio files from previous run
 ensureImageDir();
 
 const logger = createLogger({ level: env.LOG_LEVEL, logFile: env.LOG_FILE });
+
+// ── Global crash safety net ───────────────────────────────────────────────────
+// Route handlers and background jobs (corpus import, inbox watcher, agent
+// scheduler) already catch their own errors, but any promise rejection that
+// slips past all of those would otherwise crash the whole process silently.
+// unhandledRejection: log with the full stack and keep running — an isolated
+// async failure somewhere shouldn't take down neurons, RAG, and everything
+// else along with it.
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error({ err: err.message, stack: err.stack }, 'unhandled promise rejection — process kept alive');
+});
+
+// uncaughtException: Node's own state may be inconsistent past this point, so
+// exiting is the safer choice — but always with a clear, loud trace first so
+// it's never a silent/mysterious crash.
+process.on('uncaughtException', (err) => {
+  logger.error({ err: err.message, stack: err.stack }, 'uncaught exception — process terminating');
+  process.exit(1);
+});
+
 initSqlite(env.SQLITE_PATH);
 setMeta('boot_at', new Date().toISOString());
+
+// Purge activity log entries past the retention window (default 90 days) on every boot.
+{
+  const retentionDays = getActivityLogRetentionDays();
+  const purged = purgeActivityLogOlderThan(retentionDays);
+  if (purged > 0) logger.info({ purged, retentionDays }, 'activity log: old entries purged');
+}
 
 const ollamaClient = createOllamaClient(env.OLLAMA_URL);
 const startedAt = Date.now();
@@ -346,12 +380,15 @@ Tu réponds en t'appuyant uniquement sur les neurones fournis. Si l'information 
 
 function buildContextMessages(question, sources, clarificationContext = []) {
   const context = sources
-    .map((source, index) => `Source ${index + 1}\nTitre: ${source.title}\nType: ${source.kind}\nContenu: ${source.content}`)
+    .map((source, index) => {
+      const origin = source.kind === 'corpus' ? 'RÉFÉRENCE (corpus externe)' : 'NEURONE PERSONNEL';
+      return `Source ${index + 1} [${origin}]\nTitre: ${source.title}\nType: ${source.kind}\nContenu: ${source.content}`;
+    })
     .join('\n\n');
 
   const msgs = [
     { role: 'system', content: buildSystemPrompt() },
-    { role: 'system', content: `Neurones disponibles:\n\n${context}` },
+    { role: 'system', content: `Neurones disponibles:\n\n${context}\n\nQuand tu t'appuies sur une source marquée RÉFÉRENCE, précise que l'information vient du corpus de référence (cite son titre) et distingue-la de ce qui vient des neurones personnels.` },
   ];
 
   if (clarificationContext.length > 0) {
@@ -386,6 +423,22 @@ function extractFallbackAnswer(sources) {
   };
 }
 
+// Resolves the "mode puissant" model to actually call: the configured
+// powerful_model (Settings, default qwen2.5:14b-instruct-q3_K_M) if it's
+// installed, else any installed variant sharing its base name (handles a
+// stale exact-tag mismatch), else whatever qwen2.5:14b variant is installed
+// (covers switching from the quantized default back to the full model), else
+// the configured name as a last resort (chatCompletionPowerful will then
+// surface Ollama's own "model not found" error).
+function resolvePowerfulModel(installedNames, routerSettings) {
+  const configured = routerSettings?.powerful_model ?? 'qwen2.5:14b-instruct-q3_K_M';
+  const base = configured.split(':')[0] + ':' + (configured.split(':')[1] ?? '').split('-')[0]; // e.g. "qwen2.5:14b"
+  return installedNames.find(n => n === configured)
+    ?? installedNames.find(n => n.startsWith(configured))
+    ?? installedNames.find(n => n.startsWith(base))
+    ?? configured;
+}
+
 function shouldFallbackToExtraction(answer) {
   const normalized = String(answer ?? '').toLowerCase();
   return normalized.length === 0 || normalized.includes('je ne peux pas') || normalized.includes('je ne peux pas vous aider') || normalized.includes('i cannot') || normalized.includes('cannot help') || normalized.includes('je n\'ai pas') || normalized.includes('remarque');
@@ -396,10 +449,17 @@ async function answerQuestion(payload) {
 
   const vector = await embedText(ollamaClient, env.EMBEDDING_MODEL, payload.question);
   const maxContext = Number(payload.max_context ?? 5);
-  const retrieved = await searchNeurons(env.LANCEDB_PATH, vector, {
-    limit: maxContext,
-    threshold: 0.35
+  // scope: 'all' (default) | 'personal' (exclude corpus references) | 'reference' (corpus only)
+  const scope = payload.scope === 'personal' || payload.scope === 'reference' ? payload.scope : 'all';
+  const fetchLimit = scope === 'personal' ? maxContext * 3 : maxContext; // over-fetch so post-filtering still fills maxContext
+  let retrieved = await searchNeurons(env.LANCEDB_PATH, vector, {
+    limit: fetchLimit,
+    threshold: 0.35,
+    filterByKinds: scope === 'reference' ? ['corpus'] : [],
   });
+  if (scope === 'personal') {
+    retrieved = retrieved.filter(item => item.kind !== 'corpus').slice(0, maxContext);
+  }
 
   if (retrieved.length === 0) {
     return {
@@ -469,10 +529,7 @@ async function answerQuestion(payload) {
 
   // ── Force-local-powerful mode: bypass router entirely, never touch cloud ──────
   else if (payload.force_local_powerful) {
-    const POWERFUL_MODEL = 'qwen2.5:14b';
-    const actualModel = installedNames.find(n => n === POWERFUL_MODEL || n.startsWith('qwen2.5:14b'))
-      ?? installedNames.find(n => n.startsWith('qwen2.5:14')) // any 14b variant
-      ?? POWERFUL_MODEL;
+    const actualModel = resolvePowerfulModel(installedNames, routerSettings);
 
     // Serialise concurrent 14b calls — two parallel inferences OOM on 8 GB VRAM
     if (_powerfulBusy) {
@@ -506,7 +563,7 @@ async function answerQuestion(payload) {
         throw new Error(`14b et 7b ont échoué : ${err2.message}`);
       }
     } finally {
-      // 14b evicts nomic-embed-text from VRAM. Re-warm it now so the next indexNeuron
+      // Powerful model evicts nomic-embed-text from VRAM. Re-warm it now so the next indexNeuron
       // call doesn't hit a 27s cold-load spike.
       embedText(ollamaClient, env.EMBEDDING_MODEL, 'warmup').catch(() => {});
       _powerfulBusy = false;
@@ -564,7 +621,7 @@ async function answerQuestion(payload) {
 
   return {
     answer: finalAnswer,
-    sources: sources.map(({ id, title, score }) => ({ id, title, score })),
+    sources: sources.map(({ id, title, score, kind }) => ({ id, title, score, kind })),
     latency_ms: 0,
     model_used: chosenModel,
     router_level: chosenLevel,
@@ -1120,9 +1177,7 @@ async function resummariseTranscription({ transcription, level, focus, usePowerf
   const installedNames = await getCachedInstalledModelNames();
   const routerSettings = getRouterSettings();
 
-  const powerfulModel = installedNames.find(n => n === 'qwen2.5:14b' || n.startsWith('qwen2.5:14b'))
-    ?? installedNames.find(n => n.startsWith('qwen2.5:14'))
-    ?? 'qwen2.5:14b';
+  const powerfulModel = resolvePowerfulModel(installedNames, routerSettings);
 
   const sysMsg = {
     role:    'system',
@@ -1132,7 +1187,7 @@ async function resummariseTranscription({ transcription, level, focus, usePowerf
   const runLLM = async (msgs, inputText) => {
     if (usePowerful) {
       const text = await chatCompletionPowerful(ollamaClient, powerfulModel, msgs);
-      // 14b evicts nomic-embed-text from VRAM — re-warm before the index call that follows
+      // Powerful model evicts nomic-embed-text from VRAM — re-warm before the index call that follows
       embedText(ollamaClient, env.EMBEDDING_MODEL, 'warmup').catch(() => {});
       return { response: text, model: powerfulModel };
     }
@@ -1229,27 +1284,65 @@ const services = {
   },
   answerQuestion: async (payload) => {
     const started = Date.now();
-    const result = await answerQuestion(payload);
-    result.latency_ms = Date.now() - started;
-    return result;
+    try {
+      const result = await answerQuestion(payload);
+      result.latency_ms = Date.now() - started;
+      insertActivityLog({
+        opType: 'question', item: String(payload.question ?? '').slice(0, 200),
+        result: 'success', durationMs: Date.now() - started, modelUsed: result.model_used,
+      });
+      return result;
+    } catch (err) {
+      insertActivityLog({ opType: 'question', item: String(payload.question ?? '').slice(0, 200), result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      throw err;
+    }
   },
   captureInput: async (payload) => {
     const started = Date.now();
     const result = await captureInput(payload);
     result.latency_ms = Date.now() - started;
+    const limited = result?.child?.metadata?.status === 'limited';
+    insertActivityLog({
+      opType: 'capture', item: result?.child?.title ?? String(payload ?? '').slice(0, 200),
+      result: limited ? 'failure' : 'success',
+      reason: limited ? (result?.child?.metadata?.error ?? 'capture limitée') : null,
+      durationMs: Date.now() - started,
+    });
     return result;
   },
   deepCapture: async (url) => {
     const started = Date.now();
-    const result  = await deepCapture(url);
-    result.latency_ms = Date.now() - started;
-    return result;
+    try {
+      const result  = await deepCapture(url);
+      result.latency_ms = Date.now() - started;
+      insertActivityLog({
+        opType: 'capture_deep', item: result?.child?.title ?? url,
+        result: result.fallback ? 'failure' : 'success',
+        reason: result.fallback ? (result.reason ?? 'extraction impossible') : null,
+        durationMs: Date.now() - started, modelUsed: result.model_used ?? null,
+      });
+      return result;
+    } catch (err) {
+      insertActivityLog({ opType: 'capture_deep', item: url, result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      throw err;
+    }
   },
   deepCaptureText: async (text, source, url) => {
     const started = Date.now();
-    const result  = await deepCaptureText(text, source, url);
-    result.latency_ms = Date.now() - started;
-    return result;
+    try {
+      const result  = await deepCaptureText(text, source, url);
+      result.latency_ms = Date.now() - started;
+      insertActivityLog({
+        opType: 'capture_deep', item: result?.child?.title ?? source ?? 'texte collé',
+        result: result.fallback ? 'failure' : 'success',
+        reason: result.fallback ? (result.reason ?? 'extraction impossible') : null,
+        durationMs: Date.now() - started, modelUsed: result.model_used ?? null,
+      });
+      return result;
+    } catch (err) {
+      insertActivityLog({ opType: 'capture_deep', item: source ?? 'texte collé', result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      throw err;
+    }
   },
   deleteNeuron,
   getAllNeuronsForBackup: async () => getAllNeuronsForBackup(env.LANCEDB_PATH),
@@ -1274,10 +1367,7 @@ const services = {
   },
   runLocalPowerful: async (messages) => {
     const installedNames = await getCachedInstalledModelNames();
-    const POWERFUL_MODEL = 'qwen2.5:14b';
-    const actualModel = installedNames.find(n => n === POWERFUL_MODEL || n.startsWith('qwen2.5:14b'))
-      ?? installedNames.find(n => n.startsWith('qwen2.5:14'))
-      ?? POWERFUL_MODEL;
+    const actualModel = resolvePowerfulModel(installedNames, getRouterSettings());
     if (_powerfulBusy) {
       const waitStart = Date.now();
       while (_powerfulBusy && Date.now() - waitStart < 180_000) {
@@ -1295,7 +1385,7 @@ const services = {
       const text = await chatCompletion(ollamaClient, env.ANSWER_MODEL, messages);
       return { text, model: env.ANSWER_MODEL };
     } finally {
-      // 14b evicts nomic-embed-text from VRAM — re-warm it so the next index is fast
+      // Powerful model evicts nomic-embed-text from VRAM — re-warm it so the next index is fast
       embedText(ollamaClient, env.EMBEDDING_MODEL, 'warmup').catch(() => {});
       _powerfulBusy = false;
     }
@@ -1391,6 +1481,8 @@ app.route('/api', createWebAnswerRoute({ services, logger }));
 app.route('/api', createWebExploreRoute({ services, logger }));
 app.route('/api', createFilesRoute({ rootDir, logger }));
 app.route('/api', createBackupRoute({ services, logger }));
+app.route('/api', createCorpusRoute({ services, logger }));
+app.route('/api', createActivityRoute({ logger }));
 app.route('/api', createRouterRoute({ services }));
 app.route('/api', createOllamaRoute({ services }));
 app.route('/api', createDownloadRoute({ services, logger }));
@@ -1399,6 +1491,8 @@ app.route('/api', createResearchRoute({
   fallbackChat: (messages) => chatCompletion(ollamaClient, env.ANSWER_MODEL, messages),
 }));
 app.route('/api', createImageRoute({ logger }));
+app.route('/api', createVisionRoute({ ollamaClient, env, logger }));
+app.route('/api', createChatRoute({ ollamaClient, env, logger }));
 app.route('/api', createClarifyRoute({ logger }));
 app.route('/api', createPdfRoute({ services, logger }));
 app.route('/api', createCandidatureRoute({
@@ -1408,8 +1502,10 @@ app.route('/api', createCandidatureRoute({
   ensureOllamaAvailableOrThrow:  services.ensureOllamaAvailableOrThrow,
 }));
 app.route('/api', createCvImportRoute({ logger }));
-app.route('/api', createAgentsRoute({ logger }));
+app.route('/api', createAgentsRoute({ logger, ollamaClient, services }));
+app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
+app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());
 app.route('/api', createPrivacyRoute({ logger }));
 app.route('/api', createVoiceRoute({ logger }));
@@ -1445,7 +1541,7 @@ serve({
     logger.info(`\n${'─'.repeat(56)}\n  ACCES MOBILE ACTIF\n  Frontend : ${protocol}://${LOCAL_IP}:5173\n  API      : ${protocol}://${LOCAL_IP}:${env.PORT}\n${'─'.repeat(56)}`);
   }
   scheduleDailyBackup(env.LANCEDB_PATH, logger);
-  startAgentScheduler({ logger });
+  startAgentScheduler({ logger, ollamaClient, services });
   startInboxWatcher({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger });
   // Auto-compact LanceDB if highly fragmented (>1000 fragments = many small files slowing upserts).
   // Runs in background so startup is not blocked.

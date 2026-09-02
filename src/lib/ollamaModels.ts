@@ -1,7 +1,7 @@
 export interface OllamaRecommendedModel {
   name: string;
   label: string;
-  category: 'generaliste' | 'code' | 'embeddings';
+  category: 'generaliste' | 'code' | 'embeddings' | 'vision';
   approxSizeBytes: number;
   approxVramGiB: number;
   note: string;
@@ -20,11 +20,27 @@ export const OLLAMA_RECOMMENDED_MODELS: OllamaRecommendedModel[] = [
   },
   {
     name: 'qwen2.5:14b',
-    label: 'Qwen 2.5 14B',
+    label: 'Qwen 2.5 14B (non quantisé)',
     category: 'generaliste',
-    approxSizeBytes: 8_900_000_000,
+    approxSizeBytes: 9_000_000_000,
     approxVramGiB: 9.5,
-    note: 'Plus précis, risque de dépasser 8 Go',
+    note: '9 Go — dépasse une carte 8 Go de VRAM, plus lent (rechargements à froid)',
+  },
+  {
+    name: 'qwen2.5:14b-instruct-q3_K_M',
+    label: 'Qwen 2.5 14B (quantisé q3_K_M)',
+    category: 'generaliste',
+    approxSizeBytes: 7_300_000_000,
+    approxVramGiB: 7.3,
+    note: 'Tient dans 8 Go de VRAM — modèle "puissant" par défaut',
+  },
+  {
+    name: 'mistral-nemo:12b-instruct-2407-q4_K_M',
+    label: 'Mistral Nemo 12B (quantisé q4_K_M)',
+    category: 'generaliste',
+    approxSizeBytes: 7_500_000_000,
+    approxVramGiB: 7.5,
+    note: 'Tient dans 8 Go de VRAM — alternative au 14B quantisé',
   },
   {
     name: 'llama3.2:3b',
@@ -67,6 +83,14 @@ export const OLLAMA_RECOMMENDED_MODELS: OllamaRecommendedModel[] = [
     note: 'Spécialisé code / assistance technique',
   },
   {
+    name: 'llava:7b',
+    label: 'LLaVA 7B (vision)',
+    category: 'vision',
+    approxSizeBytes: 4_700_000_000,
+    approxVramGiB: 4.7,
+    note: 'Analyse d’image locale — laisse de la marge sur 8 Go de VRAM',
+  },
+  {
     name: 'nomic-embed-text',
     label: 'Nomic Embed Text',
     category: 'embeddings',
@@ -104,4 +128,15 @@ export function getRecommendedModel(name: string): OllamaRecommendedModel | unde
 
 export function formatModelDisplaySize(actualSizeBytes: number | null | undefined, fallbackSizeBytes: number): string {
   return formatBytes(actualSizeBytes ?? fallbackSizeBytes);
+}
+
+// Reference budget for the visual "tient dans la VRAM / déborde" indicator —
+// matches the 8 Go card this project targets. It's a rough guide (actual
+// headroom also depends on context length and what else is loaded), not a
+// guarantee.
+export const VRAM_BUDGET_GIB = 8;
+
+export function fitsVramBudget(sizeBytes: number | null | undefined): boolean {
+  if (sizeBytes == null) return true; // unknown size — don't warn without data
+  return sizeBytes / 1_073_741_824 <= VRAM_BUDGET_GIB;
 }

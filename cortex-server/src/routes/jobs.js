@@ -13,6 +13,59 @@ function purge() {
   }
 }
 
+// Used by the vision route to warn before starting a heavy GPU load (vision
+// model) on top of a batch/transcription job already running — same registry
+// BatchProgressModal already writes to client-side, no new tracking added.
+export function hasActiveJobs() {
+  purge();
+  for (const job of jobs.values()) {
+    if (job.status === 'running') return true;
+  }
+  return false;
+}
+
+// Direct registry access for server-side callers (e.g. the video pipeline)
+// that need to drive BatchProgressModal without an HTTP round-trip to itself.
+export function registerJob(id, operation, total) {
+  const job = {
+    id,
+    operation:    String(operation ?? 'Traitement'),
+    current:      0,
+    total:        Number(total ?? 0),
+    currentLabel: '',
+    okCount:      0,
+    fallbackCount: 0,
+    errorCount:   0,
+    startedAt:    Date.now(),
+    updatedAt:    Date.now(),
+    status:       'running',
+    summary:      null,
+  };
+  jobs.set(id, job);
+  return id;
+}
+
+export function updateJob(id, updates) {
+  const job = jobs.get(id);
+  if (!job) return;
+  if (updates.current       !== undefined) job.current       = Number(updates.current);
+  if (updates.currentLabel  !== undefined) job.currentLabel  = String(updates.currentLabel);
+  if (updates.okCount       !== undefined) job.okCount       = Number(updates.okCount);
+  if (updates.fallbackCount !== undefined) job.fallbackCount = Number(updates.fallbackCount);
+  if (updates.errorCount    !== undefined) job.errorCount    = Number(updates.errorCount);
+  if (updates.status        !== undefined) job.status        = String(updates.status);
+  if (updates.summary       !== undefined) job.summary       = updates.summary;
+  job.updatedAt = Date.now();
+}
+
+export function finishJob(id, status, summary) {
+  const job = jobs.get(id);
+  if (!job) return;
+  job.status    = String(status ?? 'done');
+  job.summary   = summary ?? null;
+  job.updatedAt = Date.now();
+}
+
 export function createJobsRoute() {
   const route = new Hono();
 

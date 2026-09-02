@@ -2,7 +2,8 @@ import { useState, useMemo, memo, useCallback } from 'react';
 import {
   Trash2, Plus, FileText, CheckSquare, Zap, BookOpen, Heart,
   Radio, RefreshCw, Video, Link, ChevronLeft, Search, X, ListVideo,
-  MessageCircle, Crosshair, Home, Camera, FileUser, Mail, Briefcase, Terminal,
+  MessageCircle, Crosshair, Home, Camera, FileUser, Mail, Briefcase, Terminal, Mountain,
+  PenLine, Clapperboard,
 } from 'lucide-react';
 import type { Page, PageKind } from '../../lib/types';
 import { KIND_META } from '../../lib/types';
@@ -23,6 +24,9 @@ const KIND_ICONS: Record<PageKind, React.ElementType> = {
   candidature: Mail,
   rapport:     Briefcase,
   prompt:      Terminal,
+  corpus:      Mountain,
+  'exemple-resume': PenLine,
+  video_summary:    Clapperboard,
 };
 
 // Filters shown in the bar. "all" = no kind restriction.
@@ -174,12 +178,16 @@ interface Props {
   onToggleHomeScreen: (show: boolean) => void;
   onCaptureOpen:      () => void;
   onSearchOpen:       () => void;
+  pageCounts?:        { total: number; byKind: Record<string, number> };
+  allMetaLoaded?:     boolean;
+  onLoadAllPages?:    () => void;
 }
 
 function Sidebar({
   pages, selectedPageId, loading, cortexAvailable,
   onSelectPage, onNewPage, onDeletePage, onRequestReindex,
   showHomeScreen, onToggleHomeScreen, onCaptureOpen, onSearchOpen,
+  pageCounts, allMetaLoaded, onLoadAllPages,
 }: Props) {
   const [hoveredId,    setHoveredId]    = useState<string | null>(null);
   const [showKindMenu, setShowKindMenu] = useState(false);
@@ -264,7 +272,10 @@ function Sidebar({
     f.always || (counts[f.key] ?? 0) > 0,
   );
 
-  const total = pages.length;
+  // Use server-provided total if available (accurate even with lazy loading), else fall back to loaded count
+  const total = pageCounts?.total || pages.length;
+  // Per-kind counts: prefer server counts for home screen, computed for filter bar
+  const serverKindCounts = pageCounts?.byKind ?? {};
 
   return (
     <aside className="glass sidebar-hud flex flex-col">
@@ -447,13 +458,24 @@ function Sidebar({
               </div>
             ) : (
               <>
-                {/* Total */}
-                <p className="font-mono mb-2" style={{ fontSize: 13, color: '#3dffaa', fontWeight: 600 }}>
-                  {total.toLocaleString('fr')}
-                  <span style={{ fontSize: 9, color: '#3d3060', fontWeight: 400, marginLeft: 6 }}>
-                    neurone{total !== 1 ? 's' : ''}
-                  </span>
-                </p>
+                {/* Total + sync indicator */}
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="font-mono" style={{ fontSize: 13, color: '#3dffaa', fontWeight: 600 }}>
+                    {total.toLocaleString('fr')}
+                    <span style={{ fontSize: 9, color: '#3d3060', fontWeight: 400, marginLeft: 6 }}>
+                      neurone{total !== 1 ? 's' : ''}
+                    </span>
+                  </p>
+                  {!allMetaLoaded && pages.length > 0 && (
+                    <span
+                      className="font-mono"
+                      style={{ fontSize: 8, color: '#3d3060', letterSpacing: '0.06em' }}
+                      title="Synchronisation en cours — le cortex est disponible, tout le contenu sera accessible hors-ligne"
+                    >
+                      synchro…
+                    </span>
+                  )}
+                </div>
 
                 {/* Kind breakdown — 2 columns */}
                 <div style={{
@@ -462,7 +484,7 @@ function Sidebar({
                   gap: '3px 8px',
                 }}>
                   {SUMMARY_KINDS.map(({ kind, label }) => {
-                    const n = counts[kind] ?? 0;
+                    const n = serverKindCounts[kind] ?? counts[kind] ?? 0;
                     if (n === 0) return null;
                     const color = KIND_META[kind].color;
                     return (
@@ -583,10 +605,15 @@ function Sidebar({
                 e.currentTarget.style.color = '#7a6c9a';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
               }}
-              onClick={() => onToggleHomeScreen(false)}
+              onClick={() => {
+                if (!allMetaLoaded && onLoadAllPages) onLoadAllPages();
+                onToggleHomeScreen(false);
+              }}
             >
               <span>Tous les neurones</span>
-              <span style={{ fontSize: 9, opacity: 0.6 }}>{total} →</span>
+              <span style={{ fontSize: 9, opacity: 0.6 }}>
+                {allMetaLoaded ? total : `${pages.length} / ${total}`} →
+              </span>
             </button>
           </div>
         </div>

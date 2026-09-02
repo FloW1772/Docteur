@@ -1,11 +1,43 @@
 import { Hono } from 'hono';
 import {
   savePageToStoreIfNewer, deletePageFromStore, getAllPagesFromStore, getPageFromStore, repairLinksFromMetadata,
-  getDatabase,
+  getDatabase, getRecentPagesFromStore, getAllPagesMetaFromStore, getPageCountsFromStore,
 } from '../lib/sqlite.js';
 
 export function createNeuronRoute({ services }) {
   const route = new Hono();
+
+  // GET /api/neurons/recent?limit=N — metadata only (no blocks), for fast startup
+  route.get('/neurons/recent', (c) => {
+    const raw   = c.req.query('limit');
+    const limit = Math.min(raw ? (parseInt(raw, 10) || 50) : 50, 500);
+    try {
+      const pages = getRecentPagesFromStore(limit);
+      return c.json({ ok: true, pages, limit });
+    } catch (error) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/neurons/counts — total + per-kind counts (for home screen without loading all pages)
+  route.get('/neurons/counts', (c) => {
+    try {
+      const counts = getPageCountsFromStore();
+      return c.json({ ok: true, ...counts });
+    } catch (error) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/neurons/all-meta — all pages metadata, no blocks (for "Tous les neurones" lazy load)
+  route.get('/neurons/all-meta', (c) => {
+    try {
+      const pages = getAllPagesMetaFromStore();
+      return c.json({ ok: true, pages });
+    } catch (error) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
 
   // GET /api/neurons — list all pages (for remote clients)
   route.get('/neurons', (c) => {

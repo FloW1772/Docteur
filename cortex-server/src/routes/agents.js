@@ -8,7 +8,7 @@ import {
 
 const MAX_AGENTS = 10;
 
-export function createAgentsRoute({ logger } = {}) {
+export function createAgentsRoute({ logger, ollamaClient, services } = {}) {
   const route = new Hono();
 
   // GET /api/agents/types — list available agent types (for UI)
@@ -80,8 +80,11 @@ export function createAgentsRoute({ logger } = {}) {
     if (!agent.active) return c.json({ error: 'Agent désactivé' }, 400);
 
     try {
-      const { runId, output } = await executeAgent(agent, { triggeredBy: 'manual', logger });
-      return c.json({ ok: true, run_id: runId, title: output.title, content: output.content, kind: output.kind });
+      const { runId, output, skipped, similarityNote } = await executeAgent(agent, { triggeredBy: 'manual', logger, ollamaClient, services });
+      return c.json({
+        ok: true, run_id: runId, title: output.title, content: output.content, kind: output.kind,
+        skipped, similarity_note: similarityNote,
+      });
     } catch (err) {
       const status = err.strict_local ? 503 : err.no_key ? 503 : 500;
       return c.json({ error: err.message, strict_local: !!err.strict_local, no_key: !!err.no_key }, status);
