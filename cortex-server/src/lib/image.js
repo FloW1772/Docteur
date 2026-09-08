@@ -30,12 +30,12 @@ export function getImagePath(id) {
   return path.join(IMAGE_DIR, id);
 }
 
-export function deleteImageFile(id) {
+export function deleteImageFile(id, logger) {
   try {
     const p = getImagePath(id);
     if (fs.existsSync(p)) fs.unlinkSync(p);
-  } catch {
-    // silent
+  } catch (err) {
+    logger?.warn?.({ id, error: err.message }, 'IMAGE_DELETE_FAILED');
   }
 }
 

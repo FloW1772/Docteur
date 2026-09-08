@@ -6,11 +6,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { transcribeAudioFileWithSegments } from '../whisper.js';
 import { transcribeWithGroq } from '../whisper-groq.js';
-import { getCloudKeys, getWhisperStats, logWhisperCall } from '../sqlite.js';
+import { getCloudKeys, getWhisperStats, logWhisperCall, getRouterSettings } from '../sqlite.js';
 
 // Résout 'auto' → 'groq' si une clé est configurée et qu'aucun quota Groq n'a
 // été atteint dans la dernière heure, sinon 'local'.
 export function resolveWhisperProvider(requested) {
+  // strict_local_mode wins regardless of what was requested — checked here,
+  // at the point of the actual decision, not just when a setting is saved.
+  if (getRouterSettings()?.strict_local_mode === true) return 'local';
   if (requested !== 'auto') return requested;
   const keys = getCloudKeys();
   if (!keys.groq_key) return 'local';

@@ -10,7 +10,8 @@ import dotenv from 'dotenv';
 import { createLogger } from './lib/logger.js';
 import { createOllamaClient, embedText, chatCompletion, chatCompletionPowerful, unloadModel, getInstalledModels, verifyModelAvailability } from './lib/ollama.js';
 import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
-import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan } from './lib/sqlite.js';
+import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
+import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from './lib/style-examples.js';
 import { routedCompletion } from './lib/router.js';
 import { completeWithCascade as geminiCascade } from './lib/providers/gemini.js';
 import * as groqProvider       from './lib/providers/groq.js';
@@ -29,6 +30,7 @@ import { createRouterRoute } from './routes/router.js';
 import { createOllamaRoute } from './routes/ollama.js';
 import { createDownloadRoute } from './routes/download.js';
 import { createResearchRoute } from './routes/research.js';
+import { createStyleExamplesRoute } from './routes/style-examples.js';
 import { createImageRoute } from './routes/image.js';
 import { createVisionRoute } from './routes/vision.js';
 import { createChatRoute } from './routes/chat.js';
@@ -52,7 +54,14 @@ import { createWebAnswerRoute }    from './routes/web-answer.js';
 import { createWebExploreRoute }   from './routes/web-explore.js';
 import { createSkillsRoute }       from './routes/skills.js';
 import { createPromptGeneratorRoute } from './routes/prompt-generator.js';
+import { createTeacherRoute }       from './routes/teacher.js';
 import { createTodoRoute }         from './routes/todo.js';
+import { createKiwixRoute }        from './routes/kiwix.js';
+import { createAudioPlayerRoute }  from './routes/audio-player.js';
+import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe } from './lib/kiwix.js';
+import { getKiwixSearchScope } from './lib/sqlite.js';
+import { search as kiwixSearch, getContent as kiwixGetContent } from './lib/kiwix-client.js';
+import { sanitizeZimHtml } from './lib/kiwix-sanitize.js';
 import { checkYtDlp } from './lib/ytdlp.js';
 import { scheduleDailyBackup } from './lib/backup.js';
 import { buildCaptureResult } from './lib/capture.js';
@@ -334,7 +343,7 @@ async function searchNeuronsEndpoint(payload) {
     .map(n => {
       const kScore = keywordScore(n.title, n.content, query);
       if (kScore === 0) return null;
-      return { id: n.id, title: n.title, kind: n.kind, content_preview: n.content_preview, score: kScore };
+      return { id: n.id, title: n.title, kind: n.kind, content_preview: n.content_preview, metadata: n.metadata, score: kScore };
     })
     .filter(Boolean);
 
@@ -342,7 +351,7 @@ async function searchNeuronsEndpoint(payload) {
   const merged = new Map();
 
   for (const r of semantic) {
-    merged.set(r.id, { id: r.id, title: r.title, kind: r.kind, content_preview: r.content_preview, score: r.score });
+    merged.set(r.id, { id: r.id, title: r.title, kind: r.kind, content_preview: r.content_preview, metadata: r.metadata, score: r.score });
   }
   for (const r of keyword) {
     if (merged.has(r.id)) {
@@ -358,13 +367,26 @@ async function searchNeuronsEndpoint(payload) {
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
+  // Same auto-private detection as answerQuestion (server.js ~535-550):
+  // cv/candidature kinds are always private, plus any page explicitly marked
+  // private:true by the user. Callers that build cloud-bound prompts from
+  // this endpoint's results (teacher.js, style-examples.js) must exclude or
+  // otherwise guard on this flag — it was previously not exposed here at all.
+  const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
+  const isPrivate = (r) => {
+    if (AUTO_PRIVATE_KINDS.has(r.kind)) return true;
+    try { return getPageFromStore(r.id)?.private === true; } catch { return false; }
+  };
+
   return {
     results: final.map(r => ({
       id:              r.id,
       title:           r.title,
       kind:            r.kind,
       content_preview: r.content_preview ?? '',
+      metadata:        r.metadata ?? {},
       score:           Number(r.score.toFixed(4)),
+      private:         isPrivate(r),
     })),
     count:      final.length,
     latency_ms: 0,
@@ -381,14 +403,14 @@ Tu réponds en t'appuyant uniquement sur les neurones fournis. Si l'information 
 function buildContextMessages(question, sources, clarificationContext = []) {
   const context = sources
     .map((source, index) => {
-      const origin = source.kind === 'corpus' ? 'RÉFÉRENCE (corpus externe)' : 'NEURONE PERSONNEL';
+      const origin = source.isKiwix ? 'ARCHIVE ZIM (Kiwix)' : (source.kind === 'corpus' ? 'RÉFÉRENCE (corpus externe)' : 'NEURONE PERSONNEL');
       return `Source ${index + 1} [${origin}]\nTitre: ${source.title}\nType: ${source.kind}\nContenu: ${source.content}`;
     })
     .join('\n\n');
 
   const msgs = [
     { role: 'system', content: buildSystemPrompt() },
-    { role: 'system', content: `Neurones disponibles:\n\n${context}\n\nQuand tu t'appuies sur une source marquée RÉFÉRENCE, précise que l'information vient du corpus de référence (cite son titre) et distingue-la de ce qui vient des neurones personnels.` },
+    { role: 'system', content: `Neurones disponibles:\n\n${context}\n\nQuand tu t'appuies sur une source marquée RÉFÉRENCE, précise que l'information vient du corpus de référence (cite son titre) et distingue-la de ce qui vient des neurones personnels. Quand tu t'appuies sur une source marquée ARCHIVE ZIM (Kiwix), précise clairement que l'information vient d'une archive locale hors-ligne (cite le titre de l'article) et distingue-la des neurones personnels.` },
   ];
 
   if (clarificationContext.length > 0) {
@@ -478,6 +500,49 @@ async function answerQuestion(payload) {
     kind: item.kind,
     content: item.content
   }));
+
+  // ── Sources ZIM (Kiwix) additionnelles, selon le réglage "portée de recherche" ─
+  // "mes neurones seuls" (défaut) | "archives seules" | "les deux". Jamais bulk :
+  // uniquement les meilleurs résultats de recherche kiwix-serve pour la question.
+  const kiwixScope = payload.kiwix_scope ?? getKiwixSearchScope();
+  let kiwixSources = [];
+  if (kiwixScope === 'archives' || kiwixScope === 'les_deux') {
+    try {
+      const results = await kiwixSearch('', payload.question, { pageLength: 3 });
+      for (const r of results.slice(0, 3)) {
+        try {
+          const { html } = await kiwixGetContent(r.bookName, r.path);
+          const cleaned = sanitizeZimHtml(html, r.bookName);
+          kiwixSources.push({
+            id: `kiwix:${r.bookName}:${r.path}`,
+            title: r.title || cleaned.title,
+            score: 0.5,
+            kind: 'kiwix',
+            content: cleaned.text.slice(0, 4_000),
+            isKiwix: true,
+            book: r.bookName,
+            articlePath: r.path,
+          });
+        } catch { /* article isolé indisponible — on continue */ }
+      }
+    } catch (err) {
+      logger.warn({ error: err.message }, 'kiwix search failed during answerQuestion');
+    }
+  }
+  if (kiwixScope === 'archives') {
+    sources.length = 0;
+  }
+  sources.push(...kiwixSources);
+
+  if (sources.length === 0) {
+    return {
+      answer: "Je n'ai rien trouvé dans ton cortex ni dans les archives sur ce sujet.",
+      sources: [],
+      no_results: true,
+      model_used: null,
+      router_level: null,
+    };
+  }
 
   // ── Détection des sources privées ──────────────────────────────────────────
   // kinds auto-privés : cv et candidature (données personnelles)
@@ -621,7 +686,9 @@ async function answerQuestion(payload) {
 
   return {
     answer: finalAnswer,
-    sources: sources.map(({ id, title, score, kind }) => ({ id, title, score, kind })),
+    sources: sources.map(({ id, title, score, kind, isKiwix, book, articlePath }) => ({
+      id, title, score, kind, isKiwix: isKiwix || undefined, book, articlePath,
+    })),
     latency_ms: 0,
     model_used: chosenModel,
     router_level: chosenLevel,
@@ -895,7 +962,16 @@ async function deepCapture(url) {
 
 const MAX_TEXT_WORDS = 8_000;
 
-async function deepCaptureText(text, source, url) {
+// Résout le bloc d'exemples de style à insérer dans un prompt de résumé, si
+// le réglage global est activé — sinon comportement actuel inchangé (bloc vide).
+async function resolveStyleExamplesBlock({ type, queryText } = {}) {
+  const settings = getStyleExampleSettings();
+  if (!settings.enabled) return { block: '', usedExamples: [] };
+  const examples = await findStyleExamples(services, { type, queryText });
+  return { block: buildStyleExamplesBlock(examples), usedExamples: describeUsedExamples(examples) };
+}
+
+async function deepCaptureText(text, source, url, styleExampleType) {
   await ensureOllamaAvailableOrThrow();
 
   // Truncate if needed (same logic as deep-capture.js)
@@ -909,8 +985,9 @@ async function deepCaptureText(text, source, url) {
     truncated = true;
   }
 
+  const { block: styleBlock, usedExamples } = await resolveStyleExamplesBlock({ type: styleExampleType, queryText: source });
   const truncatedNote = truncated ? '\n\n⚠️ Contenu tronqué (source trop longue).' : '';
-  const userContent = `${DEEP_ANALYSIS_PROMPT}\n\nContenu :\n${analysisText}${truncatedNote}`;
+  const userContent = `${DEEP_ANALYSIS_PROMPT}${styleBlock}\n\nContenu :\n${analysisText}${truncatedNote}`;
   const messages = [
     { role: 'system', content: `Tu es un assistant d'analyse de contenu. Produis une synthèse structurée en français avec du Markdown propre. ${buildPersonaToneNote(getPersonaSettings())}` },
     { role: 'user', content: userContent },
@@ -969,6 +1046,7 @@ async function deepCaptureText(text, source, url) {
         model_used:   modelUsed,
         truncated,
         ...(url ? { url } : {}),
+        ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}),
       },
     },
     fallback:   false,
@@ -991,6 +1069,13 @@ async function deepCaptureWhisper(url, onProgress, signal, provider = 'local') {
     } else {
       provider = 'local';
     }
+  }
+
+  // strict_local_mode must be re-checked here, at the moment of the actual
+  // cloud call — the caller may pass provider:'groq' explicitly regardless of
+  // this setting, so re-checking it once at request start is not enough.
+  if (provider === 'groq' && getRouterSettings()?.strict_local_mode === true) {
+    provider = 'local';
   }
 
   // Step 1 — fetch video metadata
@@ -1164,12 +1249,13 @@ async function deepCaptureWhisper(url, onProgress, signal, provider = 'local') {
   };
 }
 
-async function resummariseTranscription({ transcription, level, focus, usePowerful, onProgress }) {
+async function resummariseTranscription({ transcription, level, focus, usePowerful, styleExampleType, onProgress }) {
   await ensureOllamaAvailableOrThrow();
 
+  const { block: styleBlock, usedExamples } = await resolveStyleExamplesBlock({ type: styleExampleType });
   const basePrompt = RESUMMARISE_PROMPTS[level] ?? RESUMMARISE_PROMPTS.standard;
   const focusLine  = focus?.trim() ? `Focalise l'analyse sur : ${focus.trim()}\n\n` : '';
-  const fullPrompt = focusLine + basePrompt;
+  const fullPrompt = focusLine + basePrompt + styleBlock;
 
   const words     = transcription.trim().split(/\s+/).filter(Boolean);
   const wordCount = words.length;
@@ -1239,7 +1325,10 @@ async function resummariseTranscription({ transcription, level, focus, usePowerf
     modelUsed        = r.model;
   }
 
-  return { summary: analysisResponse.trim(), model_used: modelUsed };
+  return {
+    summary: analysisResponse.trim(), model_used: modelUsed,
+    ...(usedExamples.length > 0 ? { used_examples: usedExamples } : {}),
+  };
 }
 
 async function deleteNeuron(id) {
@@ -1327,10 +1416,10 @@ const services = {
       throw err;
     }
   },
-  deepCaptureText: async (text, source, url) => {
+  deepCaptureText: async (text, source, url, styleExampleType) => {
     const started = Date.now();
     try {
-      const result  = await deepCaptureText(text, source, url);
+      const result  = await deepCaptureText(text, source, url, styleExampleType);
       result.latency_ms = Date.now() - started;
       insertActivityLog({
         opType: 'capture_deep', item: result?.child?.title ?? source ?? 'texte collé',
@@ -1488,6 +1577,7 @@ app.route('/api', createOllamaRoute({ services }));
 app.route('/api', createDownloadRoute({ services, logger }));
 app.route('/api', createResearchRoute({
   logger,
+  services,
   fallbackChat: (messages) => chatCompletion(ollamaClient, env.ANSWER_MODEL, messages),
 }));
 app.route('/api', createImageRoute({ logger }));
@@ -1506,10 +1596,14 @@ app.route('/api', createAgentsRoute({ logger, ollamaClient, services }));
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
+app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());
 app.route('/api', createPrivacyRoute({ logger }));
 app.route('/api', createVoiceRoute({ logger }));
 app.route('/api', createInboxRoute({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger }));
+app.route('/api', createKiwixRoute({ services, logger }));
+app.route('/api', createAudioPlayerRoute({ logger }));
+app.route('/api', createStyleExamplesRoute({ services, logger }));
 
 app.onError((error, c) => {
   const status = services.isOllamaError(error) ? 503 : 500;
@@ -1571,6 +1665,7 @@ serve({
     }
     if (cleaned > 0) logger.info({ cleaned }, 'orphan tmp dirs cleaned');
   } catch { /* non-fatal */ }
+  registerKiwixShutdownHook(logger);
   // Check yt-dlp availability (non-blocking)
   checkYtDlp().then(v => {
     if (v) logger.info({ version: v }, 'yt-dlp trouvé');

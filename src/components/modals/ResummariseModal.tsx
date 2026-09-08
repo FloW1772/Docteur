@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
-import { X, RefreshCw, Cpu, Zap } from 'lucide-react';
-import { cortexClient, type ResummariseLevel, type ResummariseProgress } from '../../lib/cortex/client';
+import { X, RefreshCw, Cpu, Zap, Save, MessageSquareWarning } from 'lucide-react';
+import { cortexClient, type ResummariseLevel, type ResummariseProgress, type StyleExampleUsed } from '../../lib/cortex/client';
 import type { Page } from '../../lib/types';
 
 interface Props {
@@ -9,6 +9,13 @@ interface Props {
   onDone:        (summary: string, modelUsed: string) => void;
   onRetranscribe?: () => void;
 }
+
+const RESUMMARISE_LEVEL_PROMPT_HINTS: Record<ResummariseLevel, string> = {
+  short:      'Résumé très court en français (2-3 phrases maximum) : l\'essentiel uniquement, sans détails ni liste. Markdown simple.',
+  standard:   'Analyse ce contenu et produis en français : 1. RÉSUMÉ (3-5 phrases) 2. POINTS CLÉS (5-8 puces) 3. CHIFFRES ET FAITS NOTABLES 4. À RETENIR (1-2 phrases). Markdown propre.',
+  detailed:   'Analyse détaillée en français : résumé étendu, points clés développés, arguments et exemples, chiffres, dates et faits notables, à retenir. Markdown propre.',
+  exhaustive: 'Compte-rendu exhaustif structuré en français (sections Markdown) : résumé, points principaux, points secondaires, chiffres/dates/faits, conclusion. Markdown propre.',
+};
 
 const LEVELS: { value: ResummariseLevel; label: string; desc: string }[] = [
   { value: 'short',     label: 'Court',    desc: '2-3 phrases — l\'essentiel uniquement' },
@@ -30,22 +37,32 @@ export default function ResummariseModal({ page, onClose, onDone, onRetranscribe
   const [error, setError]               = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  const [result, setResult]             = useState<{ summary: string; modelUsed: string; usedExamples?: StyleExampleUsed[] } | null>(null);
+  const [showSaveForm, setShowSaveForm] = useState(false);
+  const [showFeedbackForm, setShowFeedbackForm] = useState(false);
+  const [exampleType, setExampleType]   = useState('');
+  const [saveStatus, setSaveStatus]     = useState<string | null>(null);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [regenerating, setRegenerating] = useState(false);
+
   const running = progress !== null;
 
   async function handleStart() {
     if (!hasTranscription) return;
     setError(null);
+    setResult(null);
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setProgress({ label: 'Initialisation…' });
     try {
       const transcription = meta.transcription_raw as string;
-      const result = await cortexClient.resummarise(
+      const r = await cortexClient.resummarise(
         { transcription, level, focus: focus.trim() || undefined, use_powerful: usePowerful },
         (p) => setProgress(p),
         ctrl.signal,
       );
-      onDone(result.summary, result.model_used);
+      setResult({ summary: r.summary, modelUsed: r.model_used, usedExamples: r.used_examples });
+      setProgress(null);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
         setError((e as Error).message);
@@ -53,6 +70,43 @@ export default function ResummariseModal({ page, onClose, onDone, onRetranscribe
       }
     } finally {
       abortRef.current = null;
+    }
+  }
+
+  async function handleSaveAsExample() {
+    if (!result || !exampleType.trim()) return;
+    setSaveStatus('Enregistrement…');
+    try {
+      await cortexClient.saveAsStyleExample({
+        title:   `Exemple — ${page.title}`,
+        content: result.summary,
+        type:    exampleType.trim(),
+        source_excerpt: typeof meta.transcription_raw === 'string' ? (meta.transcription_raw as string).slice(0, 500) : undefined,
+      });
+      setSaveStatus('Exemple enregistré.');
+      setShowSaveForm(false);
+    } catch (e) {
+      setSaveStatus(`Échec : ${(e as Error).message}`);
+    }
+  }
+
+  async function handleRegenerateWithFeedback() {
+    if (!result || !feedbackText.trim()) return;
+    setRegenerating(true);
+    try {
+      const basePrompt = RESUMMARISE_LEVEL_PROMPT_HINTS[level];
+      const r = await cortexClient.regenerateSummaryWithFeedback({
+        original_prompt: basePrompt,
+        bad_output: result.summary,
+        feedback: feedbackText.trim(),
+      });
+      setResult({ summary: r.summary, modelUsed: r.model_used });
+      setShowFeedbackForm(false);
+      setFeedbackText('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRegenerating(false);
     }
   }
 
@@ -134,6 +188,91 @@ export default function ResummariseModal({ page, onClose, onDone, onRetranscribe
                   Retranscrire la vidéo
                 </button>
               )}
+            </div>
+          </div>
+        ) : result ? (
+          /* Result — utiliser / sauvegarder comme exemple / régénérer avec un retour */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{
+              maxHeight: 220, overflowY: 'auto', fontSize: 11, color: '#c0b0e0', lineHeight: 1.6,
+              whiteSpace: 'pre-wrap', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: 8, padding: '10px 12px',
+            }}>
+              {result.summary}
+            </div>
+
+            {result.usedExamples && result.usedExamples.length > 0 && (
+              <div style={{ fontSize: 10, color: '#5a4a7a' }}>
+                Exemples de style utilisés : {result.usedExamples.map(e => e.title).join(', ')}
+              </div>
+            )}
+
+            {!showSaveForm && !showFeedbackForm && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => setShowSaveForm(true)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#7a6c9a', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace' }}>
+                  <Save size={11} /> Sauvegarder comme exemple
+                </button>
+                <button type="button" onClick={() => setShowFeedbackForm(true)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#7a6c9a', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace' }}>
+                  <MessageSquareWarning size={11} /> Régénérer en précisant ce qui n'allait pas
+                </button>
+              </div>
+            )}
+
+            {showSaveForm && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <span style={{ fontSize: 10, color: '#5a4a7a', letterSpacing: '0.1em' }}>TYPE DE RÉSUMÉ (ex : vidéo éducative, interview, podcast…)</span>
+                <input
+                  type="text" value={exampleType} onChange={e => setExampleType(e.target.value)}
+                  placeholder="Type de résumé"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#c0b0e0', fontSize: 11, padding: '8px 10px', outline: 'none', fontFamily: 'IBM Plex Mono, monospace' }}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" onClick={() => setShowSaveForm(false)}
+                    style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#7a6c9a', cursor: 'pointer' }}>
+                    Annuler
+                  </button>
+                  <button type="button" onClick={() => void handleSaveAsExample()} disabled={!exampleType.trim()}
+                    style={{ background: 'rgba(94,231,255,0.12)', border: '1px solid rgba(94,231,255,0.3)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#5ee7ff', cursor: exampleType.trim() ? 'pointer' : 'default', opacity: exampleType.trim() ? 1 : 0.5 }}>
+                    Enregistrer
+                  </button>
+                </div>
+              </div>
+            )}
+            {saveStatus && <div style={{ fontSize: 10, color: '#7a6c9a' }}>{saveStatus}</div>}
+
+            {showFeedbackForm && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <span style={{ fontSize: 10, color: '#5a4a7a', letterSpacing: '0.1em' }}>CE QUI N'ALLAIT PAS</span>
+                <textarea
+                  value={feedbackText} onChange={e => setFeedbackText(e.target.value)}
+                  placeholder="Ex : trop long, manque les chiffres clés, ton trop formel…"
+                  rows={3}
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#c0b0e0', fontSize: 11, padding: '8px 10px', outline: 'none', fontFamily: 'IBM Plex Mono, monospace', resize: 'vertical' }}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" onClick={() => setShowFeedbackForm(false)}
+                    style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#7a6c9a', cursor: 'pointer' }}>
+                    Annuler
+                  </button>
+                  <button type="button" onClick={() => void handleRegenerateWithFeedback()} disabled={!feedbackText.trim() || regenerating}
+                    style={{ background: 'rgba(94,231,255,0.12)', border: '1px solid rgba(94,231,255,0.3)', borderRadius: 6, padding: '6px 12px', fontSize: 11, color: '#5ee7ff', cursor: feedbackText.trim() && !regenerating ? 'pointer' : 'default', opacity: feedbackText.trim() && !regenerating ? 1 : 0.5 }}>
+                    {regenerating ? 'Régénération…' : 'Régénérer'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 12 }}>
+              <button type="button" onClick={onClose}
+                style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '7px 16px', fontSize: 11, color: '#7a6c9a', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace' }}>
+                Annuler
+              </button>
+              <button type="button" onClick={() => onDone(result.summary, result.modelUsed)}
+                style={{ background: 'rgba(94,231,255,0.12)', border: '1px solid rgba(94,231,255,0.3)', borderRadius: 6, padding: '7px 16px', fontSize: 11, color: '#5ee7ff', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace' }}>
+                Utiliser ce résumé
+              </button>
             </div>
           </div>
         ) : running ? (

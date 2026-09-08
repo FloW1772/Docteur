@@ -61,7 +61,12 @@ export async function runBackup(lancedbPath) {
     neurons: neuronsWithLinks,
   };
 
-  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+  // Atomic write: write to a temp file then rename, so a crash/power-loss
+  // mid-write can never leave a truncated/corrupt backup-YYYY-MM-DD.json —
+  // rename() is atomic on both POSIX and NTFS for same-volume paths.
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
+  fs.renameSync(tmpPath, filePath);
 
   // Rotation: keep only MAX_BACKUPS, delete oldest
   const files = fs.readdirSync(dir)

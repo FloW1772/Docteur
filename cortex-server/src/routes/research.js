@@ -10,7 +10,9 @@ import {
   setGeminiRpm,
   DEFAULT_MODEL,
 } from '../lib/providers/gemini.js';
-import { getCloudKeys, getRouterSettings, getMeta, setMeta, insertActivityLog } from '../lib/sqlite.js';
+import { getCloudKeys, getRouterSettings, getMeta, setMeta, insertActivityLog, getVeilleSettings, setVeilleSettings, getStyleExampleSettings } from '../lib/sqlite.js';
+import { normalizeDetailLevel, detailLevelInstruction } from '../lib/detail-level.js';
+import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from '../lib/style-examples.js';
 
 // ── Grounding quota tracker (daily counter in SQLite) ─────────────────────────
 
@@ -38,10 +40,12 @@ function incrementGroundingUsage() {
 // gemini-3.1-flash-lite does NOT support the googleSearch tool.
 const GROUNDING_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
-function synthesePrompt(subject) {
+function synthesePrompt(subject, detailLevel = 'synthese', styleBlock = '') {
   return `Tu es un expert en veille stratégique et prospective. En te basant sur tes connaissances, produis une synthèse structurée en français sur le sujet suivant :
 
 **${subject}**
+
+${detailLevelInstruction(detailLevel)}${styleBlock}
 
 ## Vue d'ensemble
 [3-5 phrases de contexte général]
@@ -62,12 +66,14 @@ function synthesePrompt(subject) {
 *Synthèse basée sur les connaissances de l'IA — informations à vérifier pour les données récentes.*`;
 }
 
-function actualitePrompt(subject) {
+function actualitePrompt(subject, detailLevel = 'synthese', styleBlock = '') {
   return `Fais une recherche web et synthétise les actualités récentes (derniers mois) sur le sujet suivant :
 
 **${subject}**
 
 IMPÉRATIF : Pour chaque information importante, cite la source avec un lien cliquable au format [Titre de la source](URL). Ne mentionne que des faits avec une source web vérifiable. Si tu n'as pas de source récente fiable sur un point, dis-le clairement sans inventer.
+
+${detailLevelInstruction(detailLevel)}${styleBlock}
 
 ## Actualités récentes
 [Informations récentes avec sources — format : information ([Source](URL))]
@@ -103,8 +109,15 @@ const STRICT_LOCAL_ERROR = {
   strict_local: true,
 };
 
-export function createResearchRoute({ logger, fallbackChat }) {
+export function createResearchRoute({ logger, fallbackChat, services }) {
   const app = new Hono();
+
+  async function resolveStyleBlock({ useStyleExamples, styleExampleType, subject }) {
+    const settings = getStyleExampleSettings();
+    if (!settings.enabled || !useStyleExamples) return { block: '', usedExamples: [] };
+    const examples = await findStyleExamples(services, { type: styleExampleType, queryText: subject });
+    return { block: buildStyleExamplesBlock(examples), usedExamples: describeUsedExamples(examples) };
+  }
 
   app.post('/research', async (c) => {
     if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
@@ -112,6 +125,9 @@ export function createResearchRoute({ logger, fallbackChat }) {
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
     const mode    = body.mode === 'actualite' ? 'actualite' : 'synthese';
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
+    const useStyleExamples = body.useStyleExamples === true;
+    const styleExampleType = body.styleExampleType ? String(body.styleExampleType).trim() : undefined;
 
     if (!subject) return c.json({ error: 'Sujet manquant' }, 400);
     if (subject.length > 500) return c.json({ error: 'Sujet trop long (max 500 caractères)' }, 400);
@@ -127,10 +143,13 @@ export function createResearchRoute({ logger, fallbackChat }) {
     // Apply the saved RPM limit
     const settings = getRouterSettings();
     setGeminiRpm(settings.gemini_rpm ?? 10);
+    setVeilleSettings({ detailLevel });
+
+    const { block: styleBlock, usedExamples } = await resolveStyleBlock({ useStyleExamples, styleExampleType, subject });
 
     // ── Mode synthèse ──────────────────────────────────────────────────────────
     if (mode === 'synthese') {
-      const prompt = synthesePrompt(subject);
+      const prompt = synthesePrompt(subject, detailLevel, styleBlock);
       try {
         const result = await completeWithCascade({
           apiKey:    keys.gemini_key,
@@ -140,7 +159,10 @@ export function createResearchRoute({ logger, fallbackChat }) {
         });
         logger?.info({ subject, model: result.model, mode }, 'research synthese done');
         insertActivityLog({ opType: 'veille', item: subject, result: 'success', modelUsed: result.model });
-        return c.json({ content: result.text, model: result.model, mode, sources: [] });
+        return c.json({
+          content: result.text, model: result.model, mode, sources: [], detailLevel,
+          ...(usedExamples.length > 0 ? { usedExamples } : {}),
+        });
       } catch (err) {
         logger?.warn({ subject, err: err.message }, 'research synthese failed');
         insertActivityLog({ opType: 'veille', item: subject, result: 'failure', reason: err.message });
@@ -158,7 +180,7 @@ export function createResearchRoute({ logger, fallbackChat }) {
     }
 
     // ── Mode actualité (grounding Google Search) ───────────────────────────────
-    const prompt = actualitePrompt(subject);
+    const prompt = actualitePrompt(subject, detailLevel, styleBlock);
     let lastErr;
 
     for (const model of GROUNDING_MODELS) {
@@ -174,7 +196,9 @@ export function createResearchRoute({ logger, fallbackChat }) {
           model,
           mode,
           sources: result.sources,
+          detailLevel,
           ...(warning ? { warning } : {}),
+          ...(usedExamples.length > 0 ? { usedExamples } : {}),
         });
       } catch (err) {
         lastErr = err;
@@ -194,6 +218,82 @@ export function createResearchRoute({ logger, fallbackChat }) {
              'Utilise le mode "Synthèse de fond" pour une réponse sans recherche web.',
       grounding_unavailable: true,
     }, 503);
+  });
+
+  // ── POST /api/research/regenerate ────────────────────────────────────────────
+  // Régénère une veille existante à un autre niveau de détail SANS relancer de
+  // recherche web : réutilise le sujet et, si fournies, les sources déjà
+  // collectées (citées comme contexte, pas re-vérifiées) via completeWithCascade.
+  app.post('/research/regenerate', async (c) => {
+    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+
+    const body    = await c.req.json().catch(() => ({}));
+    const subject = String(body.subject ?? '').trim();
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
+    const sources = Array.isArray(body.sources)
+      ? body.sources.filter(s => s?.title && s?.url).slice(0, 30)
+      : [];
+    const useStyleExamples = body.useStyleExamples === true;
+    const styleExampleType = body.styleExampleType ? String(body.styleExampleType).trim() : undefined;
+    const feedback = body.feedback ? String(body.feedback).trim().slice(0, 500) : '';
+    const badOutput = body.bad_output ? String(body.bad_output).trim().slice(0, 3000) : '';
+
+    if (!subject) return c.json({ error: 'Sujet manquant' }, 400);
+    if (subject.length > 500) return c.json({ error: 'Sujet trop long (max 500 caractères)' }, 400);
+
+    const keys = getCloudKeys();
+    if (!keys.gemini_key) return c.json({ error: 'Clé Gemini non configurée.', no_key: true }, 503);
+    setGeminiRpm((getRouterSettings().gemini_rpm ?? 10));
+    setVeilleSettings({ detailLevel });
+
+    const { block: styleBlock, usedExamples } = await resolveStyleBlock({ useStyleExamples, styleExampleType, subject });
+
+    const sourcesBlock = sources.length > 0
+      ? `\n\nSources déjà collectées à réutiliser (ne fais AUCUNE nouvelle recherche web, appuie-toi uniquement sur ces sources et cite-les) :\n${sources.map(s => `- [${s.title}](${s.url})`).join('\n')}`
+      : '';
+    const feedbackBlock = feedback
+      ? `\n\n${badOutput ? `Résultat précédent décevant :\n${badOutput}\n\n` : ''}Tiens compte de ce retour utilisateur pour produire une meilleure version : ${feedback}`
+      : '';
+
+    const sourcesHeading = sources.length > 0 ? '## Sources citées' : '';
+    const prompt = `Tu es un expert en veille stratégique. Rédige une synthèse structurée en français sur le sujet suivant, dans le registre demandé ci-dessous :
+
+**${subject}**${sourcesBlock}${feedbackBlock}
+
+${detailLevelInstruction(detailLevel)}${styleBlock}
+
+## Vue d'ensemble
+## Points clés
+## Contexte et perspective
+${sourcesHeading}`;
+
+    try {
+      const result = await completeWithCascade({
+        apiKey:    keys.gemini_key,
+        messages:  [{ role: 'user', content: prompt }],
+        maxTokens: 8192,
+        logger,
+      });
+      logger?.info({ subject, detailLevel, sourcesReused: sources.length, model: result.model }, 'research regenerate done');
+      return c.json({
+        content: result.text, model: result.model, detailLevel, sources,
+        ...(usedExamples.length > 0 ? { usedExamples } : {}),
+      });
+    } catch (err) {
+      if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
+      if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé pour aujourd\'hui.', quota: true }, 429);
+      return c.json({ error: err.message || 'Erreur lors de la régénération' }, 500);
+    }
+  });
+
+  // ── GET/PUT /api/research/settings ───────────────────────────────────────────
+  app.get('/research/settings', (c) => c.json(getVeilleSettings()));
+
+  app.put('/research/settings', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'body requis' }, 400);
+    setVeilleSettings({ detailLevel: normalizeDetailLevel(body.detailLevel) });
+    return c.json(getVeilleSettings());
   });
 
   // ── GET /api/research/quota ───────────────────────────────────────────────────
@@ -270,6 +370,7 @@ Chaque sous-sujet doit être :
     const index       = Math.max(1, Number(body.index) || 1);
     const total       = Math.max(1, Number(body.total) || 1);
     const source      = body.source === 'web' ? 'web' : 'ia';
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
     const otherTopics = Array.isArray(body.otherTopics)
       ? body.otherTopics.map(String).filter(Boolean).slice(0, 20)
       : [];
@@ -301,6 +402,8 @@ IMPÉRATIF : Pour chaque information importante, cite la source avec [Titre](URL
 Rédige 600 à 900 mots structurés avec des sous-sections (###).
 Données récentes, exemples concrets, chiffres si disponibles.
 
+${detailLevelInstruction(detailLevel)}
+
 Termine par une ligne : *Généré par IA le ${date} — à vérifier via les sources.*`
       : `Tu es un expert en veille stratégique. Rédige un article dense et précis sur ce sous-sujet de la veille "${subject}" :
 
@@ -308,6 +411,8 @@ Termine par une ligne : *Généré par IA le ${date} — à vérifier via les so
 
 Longueur : 600 à 900 mots. Structure avec sous-sections (###). Données chiffrées, exemples concrets, analyses.
 Zéro remplissage — chaque phrase doit apporter une information.
+
+${detailLevelInstruction(detailLevel)}
 
 Termine par : *Synthèse basée sur les connaissances de l'IA — à vérifier pour les données récentes.*`;
 
@@ -338,7 +443,7 @@ Termine par : *Synthèse basée sur les connaissances de l'IA — à vérifier p
       }
 
       logger?.info({ subject, subtopic, index, total, source, model }, 'deep section done');
-      return c.json({ content: text, model, sources });
+      return c.json({ content: text, model, sources, detailLevel });
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
@@ -355,6 +460,7 @@ Termine par : *Synthèse basée sur les connaissances de l'IA — à vérifier p
     const subject = String(body.subject ?? '').trim();
     const depth   = Math.min(15, Math.max(2, Number(body.depth) || 5));
     const source  = body.source === 'web' ? 'web' : 'ia';
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
 
     if (!subject) return c.json({ error: 'Sujet manquant' }, 400);
     if (subject.length > 500) return c.json({ error: 'Sujet trop long' }, 400);
@@ -381,6 +487,8 @@ IMPÉRATIF : Pour chaque affirmation, cite la source avec [Titre](URL).
 Format : ## pour les sections, ### pour les sous-sections, listes à puces pour les points clés.
 Minimum 1500 mots. Commence par ## Résumé exécutif. Termine par ## Sources.
 
+${detailLevelInstruction(detailLevel)}
+
 Dernière ligne : *Document généré par IA le ${date} — à vérifier via les sources.*`
       : `Tu es un expert en veille stratégique. Rédige un document de synthèse complet et détaillé sur : **${subject}**
 
@@ -388,6 +496,8 @@ Structure : ${sections} sections principales avec sous-sections.
 Format : ## pour les sections, ### pour les sous-sections, listes à puces.
 Minimum 1500 mots. Dense, précis, zéro remplissage. Données chiffrées et exemples concrets.
 Commence par ## Résumé exécutif. Couvre : contexte, aspects techniques, économiques/sociaux, acteurs, tendances, perspectives.
+
+${detailLevelInstruction(detailLevel)}
 
 Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — à vérifier pour les données récentes.*`;
 
@@ -414,7 +524,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
       }
 
       logger?.info({ subject, depth, source, model }, 'deep document done');
-      return c.json({ content: text, model, sources });
+      return c.json({ content: text, model, sources, detailLevel });
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
@@ -537,6 +647,7 @@ Chaque angle doit être suffisamment distinct pour générer des sources DIFFÉR
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
     const angle   = String(body.angle   ?? '').trim();
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
 
     if (!subject || !angle) return c.json({ error: 'Sujet et angle requis' }, 400);
 
@@ -561,6 +672,8 @@ EXIGENCES STRICTES :
 - Longueur : 400-600 mots
 - Structure : 2-3 sous-sections claires
 
+${detailLevelInstruction(detailLevel)}
+
 Termine par :
 **Sources citées :**
 - [Titre 1](URL1)
@@ -574,7 +687,7 @@ Termine par :
         const result = await completeWithGrounding({ apiKey: keys.gemini_key, model, prompt });
         incrementGroundingUsage();
         logger?.info({ subject, angle, model, sources: result.sources.length }, 'multi source done');
-        return c.json({ content: result.text, model, sources: result.sources ?? [], angle });
+        return c.json({ content: result.text, model, sources: result.sources ?? [], angle, detailLevel });
       } catch (err) {
         if (err.isAuth) return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       }
@@ -591,6 +704,7 @@ Termine par :
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
     const sources = Array.isArray(body.sources) ? body.sources : [];
+    const detailLevel = normalizeDetailLevel(body.detailLevel);
 
     if (!subject || sources.length < 2) return c.json({ error: 'Sujet et au moins 2 sources requis' }, 400);
 
@@ -622,6 +736,8 @@ Liste les affirmations importantes qui n'apparaissent que dans UNE SEULE source.
 ## 🔍 Zones d'ombre
 Ce qu'aucune des ${sources.length} sources ne couvre de façon satisfaisante. Angles non explorés, questions ouvertes.
 
+${detailLevelInstruction(detailLevel)}
+
 ---
 RÈGLES ABSOLUES :
 - Ne construis jamais de faux consensus : si une info vient d'une seule source, dis-le dans "Source unique"
@@ -631,7 +747,7 @@ RÈGLES ABSOLUES :
     try {
       const result = await completeWithCascade({ apiKey: keys.gemini_key, messages: [{ role: 'user', content: prompt }], maxTokens: 4096, logger });
       logger?.info({ subject, sourceCount: sources.length }, 'multi crosscheck done');
-      return c.json({ synthesis: result.text, model: result.model });
+      return c.json({ synthesis: result.text, model: result.model, detailLevel });
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);

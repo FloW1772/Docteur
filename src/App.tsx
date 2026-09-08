@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen } from 'lucide-react';
 import { usePages } from './hooks/usePages';
 import { useCortex } from './hooks/useCortex';
+import { useModalOpenTracking, useAnyModalOpen } from './hooks/useModalRegistry';
 import { useVoiceActivation } from './hooks/useVoiceActivation';
 import { useGestureCamera, getGestureSensitivity, setGestureSensitivity, getEasterEggEnabled, setEasterEggEnabled } from './hooks/useGestureCamera';
 import { useScreenShare } from './hooks/useScreenShare';
@@ -27,6 +28,10 @@ import AgentsModal   from './components/modals/AgentsModal';
 import VideoSummaryModal from './components/modals/VideoSummaryModal';
 import SkillsModal   from './components/modals/SkillsModal';
 import PromptGeneratorModal from './components/modals/PromptGeneratorModal';
+import TeacherModal from './components/modals/TeacherModal';
+import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
+import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
+import AudioPlayer from './components/layout/AudioPlayer';
 import TodoPanel     from './components/panels/TodoPanel';
 import BatchProgressModal, { type BatchProgressState, type QueuedJob } from './components/modals/BatchProgressModal';
 import ConfirmBatchModal from './components/modals/ConfirmBatchModal';
@@ -41,8 +46,8 @@ import CompareModal     from './components/modals/CompareModal';
 import type { Page, PageKind, Block } from './lib/types';
 import { KIND_META } from './lib/types';
 import { generateId } from './lib/generateId';
-import { cortexClient, onConnectionError } from './lib/cortex/client';
-import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport } from './lib/cortex/client';
+import { cortexClient, onConnectionError, DETAIL_LEVEL_LABELS } from './lib/cortex/client';
+import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
 import { pageToContent } from './lib/cortex/pageToContent';
 import { savePage } from './lib/storage';
 import { useMobile } from './lib/useMobile';
@@ -1242,6 +1247,8 @@ function PageEditor({
   onExportPdf,
   onReviewPage,
   reviewLoading,
+  onRegenerateVeille,
+  regenerateLoading,
   onDeepAnalyze,
   onResummarise,
   onPlayVideo,
@@ -1255,6 +1262,7 @@ function PageEditor({
   onCvAtsKeywords,
   onCvMasterCv,
   onCvAdaptCv,
+  onCvFreeQuestion,
   cvBusy = false,
   onTogglePrivate,
   onDuplicatePrompt,
@@ -1272,6 +1280,8 @@ function PageEditor({
   onExportPdf?:     () => void;
   onReviewPage?:    () => Promise<void>;
   reviewLoading?:   boolean;
+  onRegenerateVeille?: (level: DetailLevel) => Promise<void>;
+  regenerateLoading?: boolean;
   onDeepAnalyze?:   (ids: string[]) => Promise<void>;
   onResummarise?:   () => void;
   onPlayVideo?:     (videoId: string, title: string) => void;
@@ -1285,6 +1295,7 @@ function PageEditor({
   onCvAtsKeywords?: () => Promise<void>;
   onCvMasterCv?:    () => Promise<void>;
   onCvAdaptCv?:        () => void;
+  onCvFreeQuestion?:   () => void;
   cvBusy?:             boolean;
   onTogglePrivate?:    () => void;
   onDuplicatePrompt?:  () => void;
@@ -1300,6 +1311,7 @@ function PageEditor({
   const [corpusSummary, setCorpusSummary]           = useState<{ text: string; model: string; truncated: boolean } | null>(null);
   const [corpusSummarizing, setCorpusSummarizing]   = useState(false);
   const [corpusSummaryError, setCorpusSummaryError] = useState<string | null>(null);
+  const [regenerateMenuOpen, setRegenerateMenuOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const menuRef  = useRef<HTMLDivElement>(null);
 
@@ -1569,6 +1581,73 @@ function PageEditor({
             );
           })()}
 
+          {/* Detail level badge — only on recherche neurons that have one */}
+          {page.kind === 'recherche' && page.metadata?.detailLevel != null && (
+            <span
+              title="Niveau de détail utilisé pour cette veille"
+              className="font-mono"
+              style={{
+                fontSize: 9, letterSpacing: '0.08em', padding: '2px 6px', borderRadius: 5,
+                color: '#a78bfa', border: '1px solid rgba(167,139,250,0.25)', background: 'rgba(167,139,250,0.08)',
+              }}
+            >
+              {DETAIL_LEVEL_LABELS[page.metadata.detailLevel as DetailLevel] ?? String(page.metadata.detailLevel)}
+            </span>
+          )}
+
+          {/* Régénérer à un autre niveau — only on recherche neurons with a known subject */}
+          {page.kind === 'recherche' && typeof page.metadata?.subject === 'string' && onRegenerateVeille && (
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                title={regenerateLoading ? 'Régénération en cours…' : 'Régénérer cette veille à un autre niveau de détail'}
+                disabled={regenerateLoading}
+                onClick={() => setRegenerateMenuOpen(o => !o)}
+                className="flex items-center gap-1.5 font-mono rounded px-2 py-1 transition-all"
+                style={{
+                  fontSize: 10, letterSpacing: '0.08em',
+                  color: '#a78bfa',
+                  border: '1px solid rgba(167,139,250,0.2)',
+                  background: regenerateMenuOpen ? 'rgba(167,139,250,0.1)' : 'transparent',
+                  cursor: regenerateLoading ? 'default' : 'pointer',
+                  opacity: regenerateLoading ? 0.7 : 1,
+                }}
+                onMouseEnter={e => { if (!regenerateLoading) { e.currentTarget.style.background = 'rgba(167,139,250,0.1)'; e.currentTarget.style.borderColor = 'rgba(167,139,250,0.4)'; } }}
+                onMouseLeave={e => { if (!regenerateLoading && !regenerateMenuOpen) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(167,139,250,0.2)'; } }}
+              >
+                {regenerateLoading
+                  ? <RefreshCw size={11} className="animate-spin" />
+                  : <RefreshCw size={11} />}
+                {regenerateLoading ? 'Régénération…' : 'Régénérer à un autre niveau'}
+              </button>
+              {regenerateMenuOpen && !regenerateLoading && (
+                <div style={{
+                  position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 20,
+                  background: '#150f28', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 8,
+                  padding: 6, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 140,
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                }}>
+                  {(['synthese', 'standard', 'pedagogique', 'expert'] as DetailLevel[]).map(level => (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => { setRegenerateMenuOpen(false); void onRegenerateVeille(level); }}
+                      className="font-mono"
+                      style={{
+                        textAlign: 'left', padding: '6px 8px', borderRadius: 5, fontSize: 10.5,
+                        color: '#c8b8e8', background: 'transparent', border: 'none', cursor: 'pointer',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(167,139,250,0.12)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      {DETAIL_LEVEL_LABELS[level]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Review button — only on recherche neurons */}
           {page.kind === 'recherche' && onReviewPage && (
             <button
@@ -1597,7 +1676,7 @@ function PageEditor({
           )}
 
           {/* CV action buttons — only on cv neurons */}
-          {page.kind === 'cv' && (onCvAnalyze || onCvRewrite || onCvLetter || onCvImportPdf || onCvTargetJobs || onCvAtsKeywords || onCvMasterCv || onCvAdaptCv) && (
+          {page.kind === 'cv' && (onCvAnalyze || onCvRewrite || onCvLetter || onCvImportPdf || onCvTargetJobs || onCvAtsKeywords || onCvMasterCv || onCvAdaptCv || onCvFreeQuestion) && (
             <>
               <span style={{ fontSize: 8, color: '#f472b6', fontFamily: 'monospace', opacity: 0.7, paddingRight: 2 }}>🔒 local</span>
               {onCvAnalyze && (
@@ -1714,6 +1793,19 @@ function PageEditor({
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(249,115,22,0.2)'; }}
                 >
                   ⚡ Adapter offre
+                </button>
+              )}
+              {onCvFreeQuestion && (
+                <button
+                  type="button"
+                  title="Poser une question libre sur ce CV (100% local)"
+                  onClick={onCvFreeQuestion}
+                  className="flex items-center gap-1.5 font-mono rounded px-2 py-1 transition-all"
+                  style={{ fontSize: 10, letterSpacing: '0.08em', color: '#c084fc', border: '1px solid rgba(192,132,252,0.2)', background: 'transparent', cursor: 'pointer' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(192,132,252,0.08)'; e.currentTarget.style.borderColor = 'rgba(192,132,252,0.4)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'rgba(192,132,252,0.2)'; }}
+                >
+                  ? Question libre
                 </button>
               )}
             </>
@@ -2110,7 +2202,9 @@ export default function App() {
 
   const [selectedId, setSelectedId]           = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId]  = useState<string | null>(null);
+  useModalOpenTracking(!!pendingDeleteId);
   const [linkPickerForId, setLinkPickerForId]  = useState<string | null>(null);
+  useModalOpenTracking(!!linkPickerForId);
   const [toast, setToast]                      = useState<string | null>(null);
 
   // Surface server write errors (remote mode) as toast
@@ -2140,29 +2234,52 @@ export default function App() {
     cortexClient.getShortcuts().then(s => setCustomShortcuts(s)).catch(() => {});
   }, []);
   const [showReindex, setShowReindex]          = useState(false);
+  useModalOpenTracking(showReindex);
   const [reindexRunning, setReindexRunning]    = useState(false);
   const [reviewingId, setReviewingId]          = useState<string | null>(null);
+  const [regeneratingId, setRegeneratingId]    = useState<string | null>(null);
   const [resummariseId, setResummariseId]      = useState<string | null>(null);
+  useModalOpenTracking(!!resummariseId);
   const [compareQuestion, setCompareQuestion]  = useState<string | null>(null);
+  useModalOpenTracking(!!compareQuestion);
   const [reindexProgress, setReindexProgress]  = useState(0);
   const [consoleOpen, setConsoleOpen]          = useState(false);
+  useModalOpenTracking(consoleOpen);
   const [activeVideo, setActiveVideo]          = useState<{ videoId: string; title: string } | null>(null);
+  useModalOpenTracking(!!activeVideo);
   const [sourceHighlights, setSourceHighlights] = useState<Set<string>>(new Set());
   const [backupOpen, setBackupOpen]            = useState(false);
+  useModalOpenTracking(backupOpen);
   const [corpusOpen, setCorpusOpen]            = useState(false);
+  useModalOpenTracking(corpusOpen);
   const [activityLogOpen, setActivityLogOpen]  = useState(false);
+  useModalOpenTracking(activityLogOpen);
   const [corpusShow3D, setCorpusShow3D]        = useState(getCorpusShowIn3D());
   const [settingsOpen, setSettingsOpen]        = useState(false);
+  useModalOpenTracking(settingsOpen);
   const [captureOpen, setCaptureOpen]          = useState(false);
+  useModalOpenTracking(captureOpen);
   const [helpOpen, setHelpOpen]                = useState(false);
+  useModalOpenTracking(helpOpen);
   const [roadmapOpen, setRoadmapOpen]          = useState(false);
+  useModalOpenTracking(roadmapOpen);
   const [agentsOpen, setAgentsOpen]            = useState(false);
+  useModalOpenTracking(agentsOpen);
   const [videoSummaryOpen, setVideoSummaryOpen] = useState(false);
   const [videoSummaryMinimized, setVideoSummaryMinimized] = useState(false);
+  useModalOpenTracking(videoSummaryOpen && !videoSummaryMinimized);
   const [strictLocalMode, setStrictLocalMode]  = useState(false);
   const [skillsOpen, setSkillsOpen]            = useState(false);
+  useModalOpenTracking(skillsOpen);
   const [promptGeneratorOpen, setPromptGeneratorOpen] = useState(false);
+  useModalOpenTracking(promptGeneratorOpen);
+  const [kiwixOpen, setKiwixOpen]              = useState(false);
+  useModalOpenTracking(kiwixOpen);
+  const [teacherOpen, setTeacherOpen]          = useState(false);
+  useModalOpenTracking(teacherOpen);
+  const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
+  useModalOpenTracking(todoOpen);
   const [todoPendingCount, setTodoPendingCount] = useState(0);
   const [pdfExportPage, setPdfExportPage]      = useState<{ pageId: string; title: string } | null>(null);
   const [pdfSubjectInitial, setPdfSubjectInitial] = useState('');
@@ -2182,6 +2299,7 @@ export default function App() {
 
   // ── Conversation mode (chat, 100% local) ────────────────────────────────────
   const [conversationOpen, setConversationOpen] = useState(false);
+  useModalOpenTracking(conversationOpen);
   // gesture.stop isn't defined yet at this point (useGestureCamera is called
   // below, and needs handleEasterEgg as one of its params) — same
   // ref-indirection pattern as gestureInputRef just above, for the same reason.
@@ -2268,6 +2386,7 @@ export default function App() {
   // both entry points, only the metadata "source" tag differs.)
   const screenShare = useScreenShare();
   const [screenCaptureImage, setScreenCaptureImage]   = useState<string | null>(null);
+  useModalOpenTracking(!!screenCaptureImage);
   const [screenCaptureSource, setScreenCaptureSource] = useState<'screen_share' | 'camera_photo'>('screen_share');
 
   function handleScreenCapture() {
@@ -2355,30 +2474,45 @@ export default function App() {
   const [customShortcuts, setCustomShortcuts]  = useState<Record<string, string>>({});
   // Playlist: choice modal (video with &list= param) + import flow
   const [playlistChoice, setPlaylistChoice]    = useState<{ videoUrl: string; playlistUrl: string } | null>(null);
+  useModalOpenTracking(!!playlistChoice);
   const [playlistImport, setPlaylistImport]    = useState<{ url: string; info: PlaylistInfo | null; loading: boolean } | null>(null);
+  useModalOpenTracking(!!playlistImport);
   const [captureValue, setCaptureValue]        = useState('');
   const [captureBusy, setCaptureBusy]          = useState(false);
   const [capturePhase, setCapturePhase]        = useState<string | null>(null);
   const [pendingCaptureImgs, setPendingCaptureImgs] = useState<Array<{ id: string; previewUrl: string }>>([]);
   const [cvBusyId, setCvBusyId]                    = useState<string | null>(null);
   const [candidatureLetterReq, setCandidatureLetterReq] = useState<{ cvPageId: string; prefillContext?: string } | null>(null);
+  useModalOpenTracking(!!candidatureLetterReq);
   const [cvRewriteModalReq, setCvRewriteModalReq]  = useState<{ sourcePageId: string } | null>(null);
+  useModalOpenTracking(!!cvRewriteModalReq);
   const [cvAdaptModalReq,  setCvAdaptModalReq]     = useState<{ sourcePageId: string } | null>(null);
+  useModalOpenTracking(!!cvAdaptModalReq);
+  const [cvFreeQuestionModalReq, setCvFreeQuestionModalReq] = useState<{ sourcePageId: string } | null>(null);
+  useModalOpenTracking(!!cvFreeQuestionModalReq);
   const [cvPdfImportOpen,  setCvPdfImportOpen]     = useState(false);
+  useModalOpenTracking(cvPdfImportOpen);
   const [conflictRequest, setConflictRequest]  = useState<{ existingNeuron: Page; proposedParent: CaptureNeuron } | null>(null);
+  useModalOpenTracking(!!conflictRequest);
   const [downloadUrl, setDownloadUrl]          = useState<string | null>(null);
+  useModalOpenTracking(!!downloadUrl);
   const [downloadFolder, setDownloadFolder]    = useState<string>(() => localStorage.getItem('docteur.downloadFolder') ?? 'D:\\upload');
   // Batch processing
   const [batchSize,     setBatchSizeState]     = useState<number>(() => parseInt(localStorage.getItem('docteur.batchSize')  ?? '5',    10));
   const [batchDelay,    setBatchDelayState]    = useState<number>(() => parseInt(localStorage.getItem('docteur.batchDelay') ?? '1500', 10));
   const [batchProgress, setBatchProgress]      = useState<BatchProgressState | null>(null);
+  useModalOpenTracking(!!batchProgress);
   const [batchMinimized, setBatchMinimized]    = useState(false);
   const [batchFailures, setBatchFailures]       = useState<Array<{ label: string; reason: string }> | null>(null);
   const [confirmBatch,  setConfirmBatch]        = useState<{ count: number; operation: string; estimatedMinutes: number; onConfirm: () => void } | null>(null);
+  useModalOpenTracking(!!confirmBatch);
   const [whisperRequest, setWhisperRequest]     = useState<{ url: string; title: string; duration: number | null; groqAvailable: boolean } | null>(null);
+  useModalOpenTracking(!!whisperRequest);
   const [whisperBatchChoice, setWhisperBatchChoice] = useState<{ ids: string[]; fromPlaylist?: boolean } | null>(null);
+  useModalOpenTracking(!!whisperBatchChoice);
   const [whisperBatchStats, setWhisperBatchStats]   = useState<WhisperStats | null>(null);
   const [channelTranscribeRequest, setChannelTranscribeRequest] = useState<{ videoIds: string[] } | null>(null);
+  useModalOpenTracking(!!channelTranscribeRequest);
   const [channelLimitInput, setChannelLimitInput]   = useState('');
   const [groqActive, setGroqActive]             = useState(false);
   const [whisperProgress, setWhisperProgress]   = useState<WhisperProgress | null>(null);
@@ -3566,6 +3700,38 @@ export default function App() {
     }
   }, [handleUpdatePage]);
 
+  const handleRegenerateVeille = useCallback(async (page: Page, level: DetailLevel) => {
+    const subject = typeof page.metadata?.subject === 'string' ? page.metadata.subject : page.title;
+    const sources = Array.isArray(page.metadata?.sources) ? page.metadata.sources as ResearchSource[] : [];
+    setRegeneratingId(page.id);
+    setToast(`Régénération en cours (${DETAIL_LEVEL_LABELS[level]})…`);
+    try {
+      const result = await cortexClient.regenerateVeille(subject, level, sources);
+      void cortexClient.setVeilleSettings(level).catch(() => null);
+      const date = new Date().toLocaleDateString('fr-FR');
+      let content = result.content;
+      if (sources.length > 0) {
+        content += '\n\n---\n**Sources (réutilisées, sans nouvelle recherche web) :**\n' +
+          sources.map(s => `- [${s.title}](${s.url})`).join('\n');
+      }
+      content += `\n\n---\n*Régénéré par IA (${result.model}) le ${date} — niveau ${DETAIL_LEVEL_LABELS[level]}.*`;
+      const newPage = await createPageFromData({
+        title:  `${page.title} — ${DETAIL_LEVEL_LABELS[level]}`,
+        kind:   'recherche',
+        blocks: createContentBlocks(content, subject),
+        metadata: { subject, detailLevel: level, sources },
+      });
+      createLink(page.id, newPage.id);
+      cortex.scheduleIndex(newPage);
+      setSelectedId(newPage.id);
+      setToast(`Neurone régénéré · ${DETAIL_LEVEL_LABELS[level]}`);
+    } catch (e) {
+      setToast(`Régénération échouée : ${e instanceof Error ? e.message : 'Erreur'}`);
+    } finally {
+      setRegeneratingId(null);
+    }
+  }, [createPageFromData, createLink, cortex]);
+
   const RESUMMARISE_SEP = '--- RÉSUMÉ PRÉCÉDENT (';
 
   function handleResummariseDone(pageId: string, summary: string, modelUsed: string) {
@@ -3914,6 +4080,39 @@ export default function App() {
     }
   }, [handleUpdatePage, createPage, createLink]);
 
+  const handleCvFreeQuestionAsk = useCallback(async (
+    page: Page,
+    params: { question: string; chainHistory: { question: string; answer: string }[]; powerful: boolean },
+  ) => {
+    const cvContent = pageToContent(page);
+    return cortexClient.cvFreeQuestion({
+      cvContent,
+      question:     params.question,
+      chainHistory: params.chainHistory,
+      powerful:     params.powerful,
+    });
+  }, []);
+
+  const handleCvFreeQuestionSave = useCallback(async (
+    page: Page,
+    params: { question: string; answer: string; modelUsed: string },
+  ) => {
+    const date      = new Date().toLocaleDateString('fr-FR');
+    const newPage   = await createPage('candidature');
+    const titleStr  = `Question libre — ${page.title} — ${date}`;
+    const blocks: Block[] = [
+      { id: generateId(), type: 'h1',        content: titleStr },
+      { id: generateId(), type: 'paragraph', content: `🔒 100% local · ${params.modelUsed}` },
+      { id: generateId(), type: 'h2',        content: 'Question' },
+      ...createContentBlocks(params.question, 'Question'),
+      { id: generateId(), type: 'h2',        content: 'Réponse' },
+      ...createContentBlocks(params.answer, 'Réponse'),
+    ];
+    handleUpdatePage(newPage.id, { title: titleStr, blocks, kind: 'candidature', private: true });
+    createLink(page.id, newPage.id);
+    setToast('Résultat sauvegardé');
+  }, [handleUpdatePage, createPage, createLink]);
+
   const handleRestorePages = useCallback(async (
     neurons: BackupExport['neurons'],
     links: Array<{ from: string; to: string }>,
@@ -4199,9 +4398,10 @@ export default function App() {
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
 
+  const anyModalOpen = useAnyModalOpen();
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const anyModalOpen = captureOpen || backupOpen || corpusOpen || activityLogOpen || settingsOpen || helpOpen || !!pendingDeleteId || !!linkPickerForId || showReindex || !!conflictRequest || consoleOpen || !!downloadUrl || !!playlistChoice || !!playlistImport || !!batchProgress || !!confirmBatch || !!screenCaptureImage || (videoSummaryOpen && !videoSummaryMinimized);
 
       // Escape → close editor panel (only when no modal/overlay is open)
       if (e.key === 'Escape' && !anyModalOpen && selectedId) {
@@ -4227,6 +4427,12 @@ export default function App() {
         if (!anyModalOpen) setHelpOpen(true);
         return;
       }
+      // Alt+A → lecture / pause du lecteur audio
+      if (e.altKey && e.key.toLowerCase() === 'a' && !anyModalOpen) {
+        e.preventDefault();
+        audioPlayerToggleRef.current?.();
+        return;
+      }
       // Ctrl+L → open search console (no Shift, no modal already open)
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'l') {
         e.preventDefault();
@@ -4250,7 +4456,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, consoleOpen, captureOpen, backupOpen, corpusOpen, activityLogOpen, settingsOpen, helpOpen, pendingDeleteId, linkPickerForId, showReindex, conflictRequest, downloadUrl, playlistChoice, playlistImport, screenCaptureImage]);
+  }, [selectedId, consoleOpen, pendingDeleteId, anyModalOpen]);
 
   useEffect(() => {
     function onCorpus3DChanged() { setCorpusShow3D(getCorpusShowIn3D()); }
@@ -4310,6 +4516,8 @@ export default function App() {
           }}
           onSkillsOpen={() => setSkillsOpen(true)}
           onPromptGeneratorOpen={() => setPromptGeneratorOpen(true)}
+          onKiwixOpen={() => setKiwixOpen(true)}
+          onTeacherOpen={() => setTeacherOpen(true)}
           onTodoOpen={() => setTodoOpen(true)}
           todoPendingCount={todoPendingCount}
           voiceEnabled={voiceSettings?.enabled ?? false}
@@ -4386,6 +4594,8 @@ export default function App() {
             onExportPdf={() => setPdfExportPage({ pageId: selectedPage.id, title: selectedPage.title })}
             onReviewPage={() => handleReviewPage(selectedPage)}
             reviewLoading={reviewingId === selectedPage.id}
+            onRegenerateVeille={(level) => handleRegenerateVeille(selectedPage, level)}
+            regenerateLoading={regeneratingId === selectedPage.id}
             onDeepAnalyze={deepAnalyzeNeurons}
             onResummarise={(selectedPage.metadata?.deep_capture === true || selectedPage.metadata?.deep_analyzed === true) && selectedPage.kind === 'video' ? () => setResummariseId(selectedPage.id) : undefined}
             onPlayVideo={(videoId, title) => { setActiveVideo({ videoId, title }); }}
@@ -4399,6 +4609,7 @@ export default function App() {
             onCvAtsKeywords={selectedPage.kind === 'cv' ? () => handleCvAtsKeywords(selectedPage) : undefined}
             onCvMasterCv={selectedPage.kind === 'cv' ? () => handleCvMasterCv(selectedPage) : undefined}
             onCvAdaptCv={selectedPage.kind === 'cv' ? () => setCvAdaptModalReq({ sourcePageId: selectedPage.id }) : undefined}
+            onCvFreeQuestion={selectedPage.kind === 'cv' ? () => setCvFreeQuestionModalReq({ sourcePageId: selectedPage.id }) : undefined}
             cvBusy={cvBusyId === selectedPage.id}
             onTogglePrivate={() => handleUpdatePage(selectedPage.id, { private: !selectedPage.private })}
             onDuplicatePrompt={selectedPage.kind === 'prompt' ? async () => {
@@ -4528,6 +4739,18 @@ export default function App() {
         ) : null;
       })()}
 
+      {cvFreeQuestionModalReq && (() => {
+        const srcPage = pages.find(p => p.id === cvFreeQuestionModalReq.sourcePageId);
+        return srcPage ? (
+          <CvFreeQuestionModal
+            cvTitle={srcPage.title}
+            onAsk={(params) => handleCvFreeQuestionAsk(srcPage, params)}
+            onSaveResult={(params) => handleCvFreeQuestionSave(srcPage, params)}
+            onClose={() => setCvFreeQuestionModalReq(null)}
+          />
+        ) : null;
+      })()}
+
       {candidatureLetterReq && (
         <CandidatureLetterModal
           cvPages={pages.filter(p => p.kind === 'cv')}
@@ -4647,6 +4870,19 @@ export default function App() {
           strictLocalMode={strictLocalMode}
         />
       )}
+
+      {teacherOpen && (
+        <TeacherModal
+          onClose={() => setTeacherOpen(false)}
+          strictLocalMode={strictLocalMode}
+        />
+      )}
+
+      {kiwixOpen && (
+        <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />
+      )}
+
+      <AudioPlayer registerToggle={(fn) => { audioPlayerToggleRef.current = fn; }} />
 
       {/* ── Playlist choice (video with &list= param) ──────────────────────── */}
       {playlistChoice && (
@@ -5272,12 +5508,14 @@ export default function App() {
         onDeepResearch={async (subject: string, options: DeepResearchOptions) => {
           const date = new Date().toLocaleDateString('fr-FR');
           deepResearchCancelRef.current = false;
+          const detailLevel: DetailLevel = options.detailLevel ?? 'synthese';
+          void cortexClient.setVeilleSettings(detailLevel).catch(() => null);
 
           if (options.format === 'document') {
             setToast('Veille approfondie en cours…');
             setDeepResearchProgress({ current: 1, total: 1, topic: 'Génération du document…' });
             try {
-              const result = await cortexClient.deepResearchDocument(subject, options.depth, options.source);
+              const result = await cortexClient.deepResearchDocument(subject, options.depth, options.source, detailLevel);
               let content = result.content ?? '';
               if (result.sources.length > 0) {
                 content += '\n\n---\n**Sources :**\n' + result.sources.map(s => `- [${s.title}](${s.url})`).join('\n');
@@ -5286,6 +5524,7 @@ export default function App() {
                 title:  `Veille approfondie : ${subject} — ${date}`,
                 kind:   'recherche',
                 blocks: createContentBlocks(content, subject),
+                metadata: { subject, detailLevel, sources: result.sources ?? [] },
               });
               cortex.scheduleIndex(page);
               setSelectedId(page.id);
@@ -5317,6 +5556,7 @@ export default function App() {
               title:  `Veille : ${subject} — ${date}`,
               kind:   'recherche',
               blocks: createContentBlocks(parentContent, subject),
+              metadata: { subject, detailLevel },
             });
             cortex.scheduleIndex(parentPage);
             setSelectedId(parentPage.id);
@@ -5329,7 +5569,7 @@ export default function App() {
               setDeepResearchProgress({ current: i + 1, total: subtopics.length, topic });
               setToast(`Sous-sujet ${i + 1}/${subtopics.length} : ${topic}`);
               try {
-                const result = await cortexClient.deepResearchSection(subject, topic, i + 1, subtopics.length, options.source, otherTopics);
+                const result = await cortexClient.deepResearchSection(subject, topic, i + 1, subtopics.length, options.source, otherTopics, detailLevel);
                 let content = result.content ?? '';
                 if (result.sources.length > 0) {
                   content += '\n\n---\n**Sources :**\n' + result.sources.map(s => `- [${s.title}](${s.url})`).join('\n');
@@ -5338,6 +5578,7 @@ export default function App() {
                   title:  topic,
                   kind:   'recherche',
                   blocks: createContentBlocks(content, topic),
+                  metadata: { subject: topic, detailLevel, sources: result.sources ?? [] },
                 });
                 cortex.scheduleIndex(childPage);
                 createLink(parentPage.id, childPage.id);
@@ -5365,9 +5606,10 @@ export default function App() {
             setToast(`Veille échouée : ${e instanceof Error ? e.message : 'Erreur'}`);
           }
         }}
-        onMultiSourceResearch={async (subject: string, anglesCount: number) => {
+        onMultiSourceResearch={async (subject: string, anglesCount: number, detailLevel: DetailLevel = 'synthese') => {
           const date = new Date().toLocaleDateString('fr-FR');
           deepResearchCancelRef.current = false;
+          void cortexClient.setVeilleSettings(detailLevel).catch(() => null);
           setDeepResearchProgress({ current: 0, total: anglesCount + 2, topic: 'Décomposition en angles…' });
 
           try {
@@ -5384,7 +5626,7 @@ export default function App() {
               setDeepResearchProgress({ current: i + 1, total: angles.length + 2, topic: `Angle ${i + 1}/${angles.length} : ${angle}` });
               setToast(`Veille multi-sources · Angle ${i + 1}/${angles.length}…`);
               try {
-                const r = await cortexClient.multiResearchSource(subject, angle);
+                const r = await cortexClient.multiResearchSource(subject, angle, detailLevel);
                 sourceResults.push({ angle, content: r.content, sources: r.sources ?? [] });
               } catch (e) {
                 const err = e as Error & { quota?: boolean };
@@ -5410,6 +5652,7 @@ export default function App() {
             const { synthesis } = await cortexClient.multiResearchCrosscheck(
               subject,
               sourceResults.map(s => ({ angle: s.angle, content: s.content })),
+              detailLevel,
             );
 
             // Build full content: synthesis + raw sources per angle
@@ -5439,6 +5682,7 @@ export default function App() {
               title: `Veille multi-sources : ${subject} — ${date}`,
               kind:  'recherche',
               blocks: createContentBlocks(fullContent, subject),
+              metadata: { subject, detailLevel, sources: uniqueSources },
             });
             cortex.scheduleIndex(page);
             setSelectedId(page.id);
@@ -5450,13 +5694,14 @@ export default function App() {
             setToast(`Veille multi-sources échouée : ${e instanceof Error ? e.message : 'Erreur'}`);
           }
         }}
-        onResearch={async (subject, mode) => {
+        onResearch={async (subject, mode, detailLevel = 'synthese') => {
           const date        = new Date().toLocaleDateString('fr-FR');
           const modeLabel   = mode === 'actualite' ? 'Actualité' : 'Synthèse';
           const titlePrefix = mode === 'actualite' ? 'Actualité' : 'Synthèse';
           setToast('Veille en cours…');
+          void cortexClient.setVeilleSettings(detailLevel).catch(() => null);
           try {
-            const result = await cortexClient.research(subject, mode);
+            const result = await cortexClient.research(subject, mode, detailLevel);
             let content = result.content;
             if (result.sources.length > 0) {
               content += '\n\n---\n**Sources :**\n' +
@@ -5468,6 +5713,7 @@ export default function App() {
               title:  `${titlePrefix} : ${subject} — ${date}`,
               kind:   'recherche',
               blocks: createContentBlocks(content, subject),
+              metadata: { subject, detailLevel, sources: result.sources ?? [] },
             });
             cortex.scheduleIndex(page);
             setSelectedId(page.id);

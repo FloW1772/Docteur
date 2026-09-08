@@ -7,6 +7,11 @@
 
 import { Hono } from 'hono';
 import { insertActivityLog } from '../lib/sqlite.js';
+import {
+  getAllCandidatePrompts, getCandidatePromptById, insertCandidatePrompt,
+  updateCandidatePrompt, deleteCandidatePrompt, reorderCandidatePrompts,
+  touchCandidatePromptLastUsed,
+} from '../lib/sqlite.js';
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -415,6 +420,33 @@ Cordialement,
 Commence directement par le document, sans explication préalable.`;
 }
 
+const FREE_QUESTION_SYSTEM_PROMPT = `Tu es un coach de carrière expert qui répond à des questions libres sur un CV. Réponds uniquement en français.
+
+RÈGLES ABSOLUES :
+- Ne te base que sur le contenu réel du CV fourni. Si une information manque pour répondre complètement, dis-le explicitement plutôt que de l'inventer.
+- Si ta réponse touche au marché de l'emploi ou aux tendances actuelles, rappelle que tes connaissances sont figées à ta date d'entraînement et peuvent être datées — suggère que l'utilisateur complète avec une veille web via les fonctionnalités existantes de Docteur, sans jamais envoyer son CV en ligne.`;
+
+function buildFreeQuestionPrompt(cvContent) {
+  return `CV À UTILISER COMME BASE :
+"""
+${cvContent}
+"""`;
+}
+
+// Estimation grossière du nombre de tokens : ~4 caractères par token pour du
+// texte français/anglais mélangé (heuristique standard, cf. règle des 4 car/token
+// couramment utilisée pour les modèles type GPT/Llama). Seuil fixé à 3200 tokens
+// (~12800 caractères) car les modèles locaux tournant sur ce projet (qwen2.5
+// standard/14b quantized) ont un contexte utile réel de l'ordre de 4096-8192
+// tokens une fois le system prompt, le CV et la marge de génération déduits —
+// 3200 tokens de conversation accumulée laisse une marge de sécurité confortable
+// avant d'atteindre la limite et de dégrader la qualité de réponse.
+const CONTEXT_WARNING_CHAR_THRESHOLD = 3200 * 4;
+
+function estimateCharsToTokens(chars) {
+  return Math.ceil(chars / 4);
+}
+
 // ── Route factory ─────────────────────────────────────────────────────────────
 
 export function createCandidatureRoute({ logger, runLocalStandard, runLocalPowerful, ensureOllamaAvailableOrThrow }) {
@@ -641,6 +673,145 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       return c.json({ adequation_score, adapted_cv, missing, keywords_used, model_used: model }, 200);
     } catch (err) {
       if (logger) logger.error({ error_message: err.message }, 'CV_ADAPT_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  // ── POST /api/candidature/free-question ──────────────────────────────────
+  route.post('/candidature/free-question', async (c) => {
+    const body         = await c.req.json().catch(() => null);
+    const cvContent    = String(body?.cv_content ?? '').trim();
+    const question     = String(body?.question   ?? '').trim();
+    const chainHistory = Array.isArray(body?.chain_history) ? body.chain_history : [];
+    const powerful     = body?.powerful === true;
+
+    if (!cvContent) return c.json({ error: 'cv_content requis' }, 400);
+    if (!question)  return c.json({ error: 'question requise' }, 400);
+
+    const totalChars = cvContent.length + question.length
+      + chainHistory.reduce((sum, turn) => sum + String(turn?.question ?? '').length + String(turn?.answer ?? '').length, 0);
+    const contextCharsEstimate = totalChars;
+    const contextTokensEstimate = estimateCharsToTokens(totalChars);
+    const contextWarning = totalChars > CONTEXT_WARNING_CHAR_THRESHOLD;
+
+    c.set('requestPayload', { cv_length: cvContent.length, question_length: question.length, chain_turns: chainHistory.length, powerful });
+    const started = Date.now();
+
+    try {
+      await ensureOllamaAvailableOrThrow();
+
+      const messages = [
+        { role: 'system', content: FREE_QUESTION_SYSTEM_PROMPT },
+        { role: 'user',   content: buildFreeQuestionPrompt(cvContent) },
+      ];
+      for (const turn of chainHistory) {
+        if (turn?.question) messages.push({ role: 'user', content: String(turn.question) });
+        if (turn?.answer)   messages.push({ role: 'assistant', content: String(turn.answer) });
+      }
+      messages.push({ role: 'user', content: question });
+
+      const { text: answer, model } = powerful
+        ? await runLocalPowerful(messages)
+        : await runLocalStandard(messages);
+
+      c.set('modelUsed', model);
+      if (logger) logger.info({ cv_length: cvContent.length, question_length: question.length, chain_turns: chainHistory.length, model, powerful, context_tokens_estimate: contextTokensEstimate }, 'CV_FREE_QUESTION_DONE');
+      insertActivityLog({ opType: 'cv_free_question', item: 'Question libre CV', result: 'success', durationMs: Date.now() - started, modelUsed: model });
+      return c.json({
+        answer,
+        model_used: model,
+        context_chars_estimate: contextCharsEstimate,
+        context_tokens_estimate: contextTokensEstimate,
+        context_warning: contextWarning,
+      }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_FREE_QUESTION_ERROR');
+      insertActivityLog({ opType: 'cv_free_question', item: 'Question libre CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  // ── Bibliothèque de prompts sauvegardés ──────────────────────────────────
+
+  route.get('/candidature/prompts', (c) => {
+    try {
+      const prompts = getAllCandidatePrompts();
+      return c.json({ prompts }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPTS_LIST_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.post('/candidature/prompts', async (c) => {
+    const body       = await c.req.json().catch(() => null);
+    const name       = String(body?.name ?? '').trim();
+    const promptText = String(body?.prompt_text ?? '').trim();
+    if (!name)       return c.json({ error: 'name requis' }, 400);
+    if (!promptText) return c.json({ error: 'prompt_text requis' }, 400);
+    try {
+      const created = insertCandidatePrompt({ name, prompt_text: promptText });
+      if (logger) logger.info({ prompt_id: created?.id }, 'CV_PROMPT_CREATED');
+      return c.json({ prompt: created }, 201);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_CREATE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put('/candidature/prompts/reorder', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const orderedIds = Array.isArray(body?.ordered_ids) ? body.ordered_ids : null;
+    if (!orderedIds) return c.json({ error: 'ordered_ids requis' }, 400);
+    try {
+      const prompts = reorderCandidatePrompts(orderedIds);
+      if (logger) logger.info({ count: orderedIds.length }, 'CV_PROMPTS_REORDERED');
+      return c.json({ prompts }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPTS_REORDER_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put('/candidature/prompts/:id', async (c) => {
+    const id   = c.req.param('id');
+    const body = await c.req.json().catch(() => null);
+    if (!getCandidatePromptById(id)) return c.json({ error: 'prompt introuvable' }, 404);
+    const updates = {};
+    if (typeof body?.name === 'string')        updates.name = body.name.trim();
+    if (typeof body?.prompt_text === 'string') updates.prompt_text = body.prompt_text.trim();
+    try {
+      const updated = updateCandidatePrompt(id, updates);
+      if (logger) logger.info({ prompt_id: id }, 'CV_PROMPT_UPDATED');
+      return c.json({ prompt: updated }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_UPDATE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.delete('/candidature/prompts/:id', (c) => {
+    const id = c.req.param('id');
+    if (!getCandidatePromptById(id)) return c.json({ error: 'prompt introuvable' }, 404);
+    try {
+      deleteCandidatePrompt(id);
+      if (logger) logger.info({ prompt_id: id }, 'CV_PROMPT_DELETED');
+      return c.json({ ok: true }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_DELETE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.post('/candidature/prompts/:id/touch', (c) => {
+    const id = c.req.param('id');
+    const existing = getCandidatePromptById(id);
+    if (!existing) return c.json({ error: 'prompt introuvable' }, 404);
+    try {
+      const updated = touchCandidatePromptLastUsed(id);
+      return c.json({ prompt: updated }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_TOUCH_ERROR');
       return c.json({ error: err.message }, 500);
     }
   });

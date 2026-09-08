@@ -3,7 +3,8 @@ import { X, Search, Plus, RefreshCw, Bookmark, BookmarkCheck, Globe, BookOpen, M
 import { MarkdownContent } from '../../lib/renderMd';
 import { generateId } from '../../lib/generateId';
 import { cortexClient } from '../../lib/cortex/client';
-import type { SearchHit, AnswerResult, ClarifyQuestion, ResearchQuota, DeepResearchOptions, WebAnswerSource, WebSearchResult, WebDeepSource, WebDeepEvent } from '../../lib/cortex/client';
+import type { SearchHit, AnswerResult, ClarifyQuestion, ResearchQuota, DeepResearchOptions, WebAnswerSource, WebSearchResult, WebDeepSource, WebDeepEvent, DetailLevel } from '../../lib/cortex/client';
+import { DETAIL_LEVEL_LABELS } from '../../lib/cortex/client';
 import type { Page, PageKind } from '../../lib/types';
 import { KIND_META } from '../../lib/types';
 import { getCorpusTrustedSites } from '../../lib/corpusSettings';
@@ -215,9 +216,9 @@ interface Props {
   onSaveQR:           (question: string, answer: AnswerResult, clarificationContext?: ClarifyAnswer[]) => Promise<void>;
   onAnalyzeImage?:    (imageId: string) => void;
   onOpenConversation?: () => void;
-  onResearch:             (subject: string, mode: 'synthese' | 'actualite') => Promise<void>;
+  onResearch:             (subject: string, mode: 'synthese' | 'actualite', detailLevel: DetailLevel) => Promise<void>;
   onDeepResearch:         (subject: string, options: DeepResearchOptions) => Promise<void>;
-  onMultiSourceResearch:  (subject: string, angles: number) => Promise<void>;
+  onMultiSourceResearch:  (subject: string, angles: number, detailLevel: DetailLevel) => Promise<void>;
   onPlayVideo:        (videoId: string, title: string) => void;
   onPdfSubject?:      (subject: string) => void;
   onCompare?:               (question: string) => void;
@@ -298,6 +299,11 @@ export default function SearchConsole({
   const [researchLoading, setResearchLoading]               = useState(false);
   const [deepResearchSubject, setDeepResearchSubject]       = useState<string | null>(null);
   const [multiSourceSubject, setMultiSourceSubject]         = useState<string | null>(null);
+  const [defaultDetailLevel, setDefaultDetailLevel]         = useState<DetailLevel>('synthese');
+
+  useEffect(() => {
+    cortexClient.getVeilleSettings().then(s => setDefaultDetailLevel(s.detailLevel)).catch(() => null);
+  }, []);
   const [localMode, setLocalMode]             = useState(false);
   const [answerScope, setAnswerScope]         = useState<'all' | 'personal' | 'reference'>('all');
   const [commandState, setCommandState]       = useState<CommandState>(null);
@@ -654,13 +660,13 @@ export default function SearchConsole({
 
   // ── Question submit (mode QUESTION) ──────────────────────────────────────
 
-  const handleResearchMode = useCallback((mode: 'synthese' | 'actualite') => {
+  const handleResearchMode = useCallback((mode: 'synthese' | 'actualite', detailLevel: DetailLevel) => {
     if (!researchSubject || researchLoading) return;
     const subject = researchSubject;
     setResearchSubject(null);
     onClose();
     // Fire-and-forget: App.tsx handles toast + page creation + error
-    void onResearch(subject, mode);
+    void onResearch(subject, mode, detailLevel);
   }, [researchSubject, researchLoading, onResearch, onClose]);
 
   const handleDeepResearchConfirm = useCallback((options: DeepResearchOptions) => {
@@ -671,12 +677,12 @@ export default function SearchConsole({
     void onDeepResearch(subject, options);
   }, [deepResearchSubject, onDeepResearch, onClose]);
 
-  const handleMultiSourceConfirm = useCallback((angles: number) => {
+  const handleMultiSourceConfirm = useCallback((angles: number, detailLevel: DetailLevel) => {
     if (!multiSourceSubject) return;
     const subject = multiSourceSubject;
     setMultiSourceSubject(null);
     onClose();
-    void onMultiSourceResearch(subject, angles);
+    void onMultiSourceResearch(subject, angles, detailLevel);
   }, [multiSourceSubject, onMultiSourceResearch, onClose]);
 
   const handleQuestion = useCallback(async (overrideQuery?: string) => {
@@ -1312,6 +1318,7 @@ export default function SearchConsole({
                   subject={multiSourceSubject}
                   onConfirm={handleMultiSourceConfirm}
                   onCancel={() => setMultiSourceSubject(null)}
+                  defaultDetailLevel={defaultDetailLevel}
                 />
               )}
 
@@ -1321,6 +1328,7 @@ export default function SearchConsole({
                   subject={deepResearchSubject}
                   onConfirm={handleDeepResearchConfirm}
                   onCancel={() => setDeepResearchSubject(null)}
+                  defaultDetailLevel={defaultDetailLevel}
                 />
               )}
 
@@ -1332,6 +1340,7 @@ export default function SearchConsole({
                   onChoose={handleResearchMode}
                   onMultiSource={() => { setMultiSourceSubject(researchSubject); setResearchSubject(null); }}
                   onCancel={() => setResearchSubject(null)}
+                  defaultDetailLevel={defaultDetailLevel}
                 />
               )}
 
@@ -1587,6 +1596,25 @@ export default function SearchConsole({
                           {entry.answer.sources.length > 0 && !showTyping && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 10 }}>
                               {entry.answer.sources.map((src, si) => {
+                                if (src.isKiwix) {
+                                  return (
+                                    <span
+                                      key={si}
+                                      className="font-mono"
+                                      title="Source : archive ZIM hors-ligne (Kiwix)"
+                                      style={{
+                                        fontSize:    10,
+                                        padding:    '3px 10px',
+                                        borderRadius: 20,
+                                        border:     '1px solid #84cc1644',
+                                        background: 'rgba(132,204,22,0.08)',
+                                        color:       '#84cc16',
+                                      }}
+                                    >
+                                      📚 {src.title} · archive
+                                    </span>
+                                  );
+                                }
                                 const pg   = pages.find(p => p.id === src.id || p.title === src.title);
                                 const kind = pg?.kind ?? (src.kind as PageKind | undefined) ?? 'note';
                                 const meta = KIND_META[kind] ?? KIND_META.note;
@@ -1748,16 +1776,72 @@ function SaveButton({ saved, saving, onSave }: SaveButtonProps) {
 
 // ── DeepResearchPanel ─────────────────────────────────────────────────────────
 
+// ── DetailLevelPicker — niveau de détail (registre), partagé entre les panneaux ─
+
+const DETAIL_LEVEL_DESCRIPTIONS: Record<DetailLevel, string> = {
+  synthese:    "L'essentiel, en quelques paragraphes denses",
+  standard:    'Explique les notions au fil du texte',
+  pedagogique: 'Explique depuis zéro, avec analogies',
+  expert:      'Va aux nuances, suppose les bases connues',
+};
+
+interface DetailLevelPickerProps {
+  value:    DetailLevel;
+  onChange: (level: DetailLevel) => void;
+  accent?:  string;
+}
+
+function DetailLevelPicker({ value, onChange, accent = '#a78bfa' }: DetailLevelPickerProps) {
+  const levels: DetailLevel[] = ['synthese', 'standard', 'pedagogique', 'expert'];
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <p className="font-mono" style={{ color: '#7060a0', fontSize: 10, letterSpacing: '0.1em', marginBottom: 6 }}>NIVEAU DE DÉTAIL</p>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        {levels.map(level => {
+          const on = value === level;
+          return (
+            <button
+              key={level}
+              type="button"
+              onClick={() => onChange(level)}
+              style={{
+                padding: '7px 10px', borderRadius: 7, cursor: 'pointer', textAlign: 'left',
+                fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, fontWeight: 600,
+                background: on ? `${accent}26` : 'transparent',
+                border: on ? `1px solid ${accent}80` : '1px solid rgba(61,45,90,0.5)',
+                color: on ? accent : '#5a4a7a',
+                transition: 'all 0.12s',
+              }}
+            >
+              <div>{DETAIL_LEVEL_LABELS[level]}</div>
+              <div style={{ fontSize: 9, fontWeight: 400, color: on ? `${accent}b0` : '#3d2d5a', marginTop: 2 }}>
+                {DETAIL_LEVEL_DESCRIPTIONS[level]}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {value === 'pedagogique' && (
+        <p className="font-mono" style={{ color: '#f59e0b', fontSize: 10, marginTop: 6 }}>
+          ⚠ Le niveau pédagogique produit des textes plus longs.
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface DeepResearchPanelProps {
   subject:   string;
   onConfirm: (options: DeepResearchOptions) => void;
   onCancel:  () => void;
+  defaultDetailLevel?: DetailLevel;
 }
 
-function DeepResearchPanel({ subject, onConfirm, onCancel }: DeepResearchPanelProps) {
+function DeepResearchPanel({ subject, onConfirm, onCancel, defaultDetailLevel = 'synthese' }: DeepResearchPanelProps) {
   const [format, setFormat] = useState<'document' | 'arborescence'>('arborescence');
   const [depth,  setDepth]  = useState<5 | 10 | 15>(5);
   const [source, setSource] = useState<'ia' | 'web'>('ia');
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>(defaultDetailLevel);
   const [quota,  setQuota]  = useState<ResearchQuota | null>(null);
 
   useEffect(() => {
@@ -1868,6 +1952,9 @@ function DeepResearchPanel({ subject, onConfirm, onCancel }: DeepResearchPanelPr
         </div>
       </div>
 
+      {/* Niveau de détail */}
+      <DetailLevelPicker value={detailLevel} onChange={setDetailLevel} />
+
       {/* Estimation + quota */}
       <div style={{
         padding: '10px 14px', borderRadius: 7,
@@ -1901,7 +1988,7 @@ function DeepResearchPanel({ subject, onConfirm, onCancel }: DeepResearchPanelPr
         <button
           type="button"
           disabled={!quotaOk}
-          onClick={() => onConfirm({ format, depth, source })}
+          onClick={() => onConfirm({ format, depth, source, detailLevel })}
           style={{
             flex: 1, padding: '9px 16px', borderRadius: 7, cursor: quotaOk ? 'pointer' : 'not-allowed',
             fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, fontWeight: 600,
@@ -1937,12 +2024,14 @@ function DeepResearchPanel({ subject, onConfirm, onCancel }: DeepResearchPanelPr
 
 interface MultiSourceResearchPanelProps {
   subject:   string;
-  onConfirm: (angles: number) => void;
+  onConfirm: (angles: number, detailLevel: DetailLevel) => void;
   onCancel:  () => void;
+  defaultDetailLevel?: DetailLevel;
 }
 
-function MultiSourceResearchPanel({ subject, onConfirm, onCancel }: MultiSourceResearchPanelProps) {
+function MultiSourceResearchPanel({ subject, onConfirm, onCancel, defaultDetailLevel = 'synthese' }: MultiSourceResearchPanelProps) {
   const [angles, setAngles] = useState<3 | 4 | 5>(4);
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>(defaultDetailLevel);
   const [quota,  setQuota]  = useState<ResearchQuota | null>(null);
 
   useEffect(() => {
@@ -1977,6 +2066,8 @@ function MultiSourceResearchPanel({ subject, onConfirm, onCancel }: MultiSourceR
         </div>
       </div>
 
+      <DetailLevelPicker value={detailLevel} onChange={setDetailLevel} accent="#3dffaa" />
+
       <div style={{ padding: '10px 14px', borderRadius: 7, background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(30,50,40,0.5)', marginBottom: 14 }}>
         <p className="font-mono" style={{ color: '#c8ffe8', fontSize: 11 }}>
           Estimation : 1 plan + {groundingCalls} recherches web + 1 recoupement = <strong>{groundingCalls}</strong> appels grounding
@@ -2001,7 +2092,7 @@ function MultiSourceResearchPanel({ subject, onConfirm, onCancel }: MultiSourceR
         <button
           type="button"
           disabled={!quotaOk}
-          onClick={() => onConfirm(angles)}
+          onClick={() => onConfirm(angles, detailLevel)}
           className="font-mono"
           style={{
             flex: 1, padding: '9px 16px', borderRadius: 7, fontWeight: 600, fontSize: 11,
@@ -2028,12 +2119,14 @@ function MultiSourceResearchPanel({ subject, onConfirm, onCancel }: MultiSourceR
 interface ResearchChoicePanelProps {
   subject:         string;
   loading:         boolean;
-  onChoose:        (mode: 'synthese' | 'actualite') => void;
+  onChoose:        (mode: 'synthese' | 'actualite', detailLevel: DetailLevel) => void;
   onMultiSource:   () => void;
   onCancel:        () => void;
+  defaultDetailLevel?: DetailLevel;
 }
 
-function ResearchChoicePanel({ subject, loading, onChoose, onMultiSource, onCancel }: ResearchChoicePanelProps) {
+function ResearchChoicePanel({ subject, loading, onChoose, onMultiSource, onCancel, defaultDetailLevel = 'synthese' }: ResearchChoicePanelProps) {
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>(defaultDetailLevel);
   return (
     <div style={{
       margin:       '16px 0',
@@ -2066,10 +2159,12 @@ function ResearchChoicePanel({ subject, loading, onChoose, onMultiSource, onCanc
           </span>
         </div>
       ) : (
+        <>
+        <DetailLevelPicker value={detailLevel} onChange={setDetailLevel} accent="#f59e0b" />
         <div style={{ display: 'flex', gap: 10 }}>
           <button
             type="button"
-            onClick={() => onChoose('synthese')}
+            onClick={() => onChoose('synthese', detailLevel)}
             className="font-mono"
             style={{
               flex:         1,
@@ -2097,7 +2192,7 @@ function ResearchChoicePanel({ subject, loading, onChoose, onMultiSource, onCanc
 
           <button
             type="button"
-            onClick={() => onChoose('actualite')}
+            onClick={() => onChoose('actualite', detailLevel)}
             className="font-mono"
             style={{
               flex:         1,
@@ -2123,6 +2218,7 @@ function ResearchChoicePanel({ subject, loading, onChoose, onMultiSource, onCanc
             </div>
           </button>
         </div>
+        </>
       )}
 
       {/* Multi-source shortcut — always visible, not blocked by loading */}

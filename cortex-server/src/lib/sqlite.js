@@ -289,6 +289,15 @@ export function initSqlite(sqlitePath) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS prompt_send_events (
+      id TEXT PRIMARY KEY,
+      generated_prompt_id TEXT NOT NULL,
+      destination_id TEXT NOT NULL,
+      destination_name TEXT NOT NULL,
+      prefill_used INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS video_job_segments (
       id TEXT PRIMARY KEY,
       job_id TEXT NOT NULL,
@@ -301,6 +310,75 @@ export function initSqlite(sqlitePath) {
       summary TEXT,
       summary_status TEXT NOT NULL DEFAULT 'pending',
       error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Module Professeur — apprentissage pas-à-pas + révision espacée.
+    -- Stockage entièrement séparé des neurones (pas un neurone par étape).
+    CREATE TABLE IF NOT EXISTS learning_paths (
+      id TEXT PRIMARY KEY,
+      subject TEXT NOT NULL,
+      register TEXT NOT NULL DEFAULT 'standard',
+      teacher_model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planning',
+      plan TEXT NOT NULL DEFAULT '[]',
+      current_step_index INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      recap_neuron_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS learning_path_steps (
+      id TEXT PRIMARY KEY,
+      path_id TEXT NOT NULL,
+      step_index INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      comprehension_check TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS review_items (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      question TEXT NOT NULL,
+      answer_hint TEXT NOT NULL DEFAULT '',
+      ease_factor REAL NOT NULL DEFAULT 2.5,
+      interval_days INTEGER NOT NULL DEFAULT 1,
+      next_review_at TEXT NOT NULL,
+      last_reviewed_at TEXT,
+      review_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS review_attempts (
+      id TEXT PRIMARY KEY,
+      review_item_id TEXT NOT NULL,
+      answered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      was_correct INTEGER NOT NULL,
+      user_answer TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS teacher_model_usage (
+      date TEXT NOT NULL,
+      model TEXT NOT NULL,
+      calls INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, model)
+    );
+
+    -- Bibliothèque de prompts CV sauvegardés — table dédiée, jamais un neurone.
+    CREATE TABLE IF NOT EXISTS candidature_saved_prompts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      prompt_text TEXT NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -366,6 +444,20 @@ export function initSqlite(sqlitePath) {
       ON generated_prompts(is_template DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_generated_prompts_outcome
       ON generated_prompts(outcome);
+    CREATE INDEX IF NOT EXISTS idx_prompt_send_events_generated_prompt_id
+      ON prompt_send_events(generated_prompt_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_learning_paths_status
+      ON learning_paths(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_learning_path_steps_path_id
+      ON learning_path_steps(path_id, step_index ASC);
+    CREATE INDEX IF NOT EXISTS idx_review_items_next_review_at
+      ON review_items(next_review_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_review_items_source
+      ON review_items(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_review_attempts_review_item_id
+      ON review_attempts(review_item_id, answered_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_candidature_saved_prompts_order
+      ON candidature_saved_prompts(order_index ASC);
   `);
 
   statements = {
@@ -1233,6 +1325,39 @@ export function markInboxConsumed(id) {
   statements.markInboxConsumed.run(id);
 }
 
+// ── Lecteur audio (lo-fi ambiant) ─────────────────────────────────────────────
+
+const AUDIO_PLAYER_META = 'audio_player_settings';
+
+// Verified 2026-09-06 with a real HTTP request (curl -A "Mozilla/5.0" -r 0-1024):
+// the old `ice.somafm.com/<id>` short-form URLs for gsclassic/lush/deepspaceone
+// returned 404 (dead). Replaced with the `ice1.somafm.com/<id>-128-mp3` mirror
+// form, same pattern already used successfully for groovesalad — confirmed 200.
+const SOMAFM_PRESETS = [
+  { id: 'groovesalad',        name: 'Groove Salad (SomaFM)',         url: 'https://ice5.somafm.com/groovesalad-128-mp3' },
+  { id: 'gsclassic',          name: 'Groove Salad Classic (SomaFM)', url: 'https://ice1.somafm.com/gsclassic-128-mp3' },
+  { id: 'lush',               name: 'Lush (SomaFM)',                 url: 'https://ice1.somafm.com/lush-128-mp3' },
+  { id: 'deepspaceone',       name: 'Deep Space One (SomaFM)',       url: 'https://ice1.somafm.com/deepspaceone-128-mp3' },
+];
+
+export function getAudioPlayerSettings() {
+  return getMeta(AUDIO_PLAYER_META, {
+    localFolder:      null,
+    customStreams:    [],
+    source:           'radio',
+    selectedRadioId:  SOMAFM_PRESETS[0].id,
+  });
+}
+
+export function setAudioPlayerSettings(updates) {
+  const current = getAudioPlayerSettings();
+  setMeta(AUDIO_PLAYER_META, { ...current, ...updates });
+}
+
+export function getAudioPlayerPresets() {
+  return SOMAFM_PRESETS;
+}
+
 // ── Fichiers déposés ────────────────────────────────────────────────────────
 
 export function getFileOriginals() {
@@ -1795,4 +1920,453 @@ export function getPromptGeneratorSettings() {
 export function setPromptGeneratorSettings(updates) {
   const current = getPromptGeneratorSettings();
   setMeta('prompt_generator_settings', { ...current, ...updates });
+}
+
+// ── Générateur de prompts — destinations d'envoi (KV, liste ordonnée) ────────
+
+const PROMPT_DESTINATIONS_META = 'prompt_destinations';
+
+function defaultPromptDestinations() {
+  const mk = (name, url, category, order) => ({
+    id: crypto.randomUUID(), name, url, category, urlTemplate: '', favorite: false, order,
+  });
+  let order = 0;
+  return [
+    mk('Replit',  'https://replit.com',          'DÉVELOPPEMENT / GÉNÉRATION D\'APPLICATIONS', order++),
+    mk('Lovable', 'https://lovable.dev',          'DÉVELOPPEMENT / GÉNÉRATION D\'APPLICATIONS', order++),
+    mk('Bolt',    'https://bolt.new',             'DÉVELOPPEMENT / GÉNÉRATION D\'APPLICATIONS', order++),
+    mk('v0',      'https://v0.dev',               'DÉVELOPPEMENT / GÉNÉRATION D\'APPLICATIONS', order++),
+    mk('GitHub',  'https://github.com',           'DÉVELOPPEMENT / GÉNÉRATION D\'APPLICATIONS', order++),
+    mk('Claude',   'https://claude.ai',           'ASSISTANTS IA (web)', order++),
+    mk('ChatGPT',  'https://chatgpt.com',         'ASSISTANTS IA (web)', order++),
+    mk('Gemini',   'https://gemini.google.com',   'ASSISTANTS IA (web)', order++),
+    mk('Mistral (Le Chat)', 'https://chat.mistral.ai', 'ASSISTANTS IA (web)', order++),
+    mk('Perplexity', 'https://www.perplexity.ai', 'ASSISTANTS IA (web)', order++),
+    mk('Groq',      'https://console.groq.com',   'ASSISTANTS IA (web)', order++),
+    mk('OpenRouter', 'https://openrouter.ai',     'ASSISTANTS IA (web)', order++),
+    mk('Claude Code',   '', 'OUTILS LOCAUX', order++),
+    mk('Aider',         '', 'OUTILS LOCAUX', order++),
+    mk('Cline / VS Codium', '', 'OUTILS LOCAUX', order++),
+  ];
+}
+
+export function getPromptDestinations() {
+  const stored = getMeta(PROMPT_DESTINATIONS_META, null);
+  if (stored && Array.isArray(stored) && stored.length > 0) return stored;
+  const seeded = defaultPromptDestinations();
+  setMeta(PROMPT_DESTINATIONS_META, seeded);
+  return seeded;
+}
+
+export function setPromptDestinations(list) {
+  setMeta(PROMPT_DESTINATIONS_META, list);
+  return list;
+}
+
+// ── Générateur de prompts — événements d'envoi (SQL, historique multiple) ────
+
+export function recordPromptSendEvent({ generatedPromptId, destinationId, destinationName, prefillUsed }) {
+  if (!database) return null;
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO prompt_send_events (id, generated_prompt_id, destination_id, destination_name, prefill_used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, generatedPromptId, destinationId, destinationName, prefillUsed ? 1 : 0, now);
+  return { id, generated_prompt_id: generatedPromptId, destination_id: destinationId, destination_name: destinationName, prefill_used: !!prefillUsed, created_at: now };
+}
+
+export function getPromptSendEventsForGeneration(generatedPromptId) {
+  if (!database) return [];
+  return database.prepare(`
+    SELECT * FROM prompt_send_events WHERE generated_prompt_id = ? ORDER BY created_at DESC
+  `).all(generatedPromptId).map(row => ({ ...row, prefill_used: row.prefill_used === 1 }));
+}
+
+// ── Exemples de style — réglage global (utiliser mes exemples de style) ──────
+
+export function getStyleExampleSettings() {
+  return getMeta('style_example_settings', { enabled: false });
+}
+
+export function setStyleExampleSettings(updates) {
+  const current = getStyleExampleSettings();
+  const next = { ...current, ...updates };
+  setMeta('style_example_settings', next);
+  return next;
+}
+
+// ── Candidature — bibliothèque de prompts sauvegardés (table dédiée) ─────────
+
+const DEFAULT_CANDIDATURE_PROMPTS = [
+  {
+    name: 'Bilan de compétences',
+    prompt_text: `Agis comme un coach de carrière spécialisé en bilan de compétences. Réalise une analyse transversale pour m'aider à comprendre ma valeur sur le marché :
+- Identifie les compétences qui ne sont pas liées à un métier précis mais qui sont exportables partout.
+- Au regard des tendances actuelles du marché du travail, quels sont les domaines où mon parcours présente des lacunes ?
+- Propose-moi 3 secteurs différents auxquels je n'aurais pas forcément pensé, où mes compétences actuelles seraient un avantage.`,
+  },
+  {
+    name: 'Valeurs fondamentales',
+    prompt_text: `À partir de mon parcours, déduis 5 valeurs fondamentales qui semblent guider mes décisions et mon épanouissement. Explique pourquoi tu les as choisies en te basant sur des éléments précis de mon parcours.
+Liste ensuite ce dont j'ai absolument besoin dans mon prochain poste pour rester motivé sur le long terme.`,
+  },
+  {
+    name: 'Objectif SMART',
+    prompt_text: `Agis comme un coach de carrière expert. Transforme mon intention de trouver un nouveau travail en un objectif SMART concret et réalisable : spécifique, mesurable, atteignable, réaliste et temporellement défini. Détaille chaque critère.`,
+  },
+  {
+    name: 'Métiers et opportunités',
+    prompt_text: `Quels métiers ou opportunités pourraient correspondre à mon profil ? Pour chacun, explique en quoi mon parcours colle, et ce qui me manquerait éventuellement.`,
+  },
+  {
+    name: "Ikigai — raison d'être professionnelle",
+    prompt_text: `Agis comme un coach spécialisé dans la méthode Ikigai (concept japonais signifiant 'raison d'être'). Cette méthode repose sur l'intersection de quatre piliers :
+1. CE QUE J'AIME — mes passions, ce qui me procure du plaisir
+2. CE DANS QUOI JE SUIS DOUÉ — mes compétences, talents et forces
+3. CE DONT LE MONDE A BESOIN — les causes qui me touchent, les besoins du marché et de la société
+4. CE POUR QUOI JE PEUX ÊTRE PAYÉ — mon potentiel économique, les opportunités viables
+
+À partir de mon parcours, analyse chacun des quatre piliers séparément, en citant des éléments PRÉCIS de mon CV pour chaque affirmation.
+Identifie ensuite les zones de CHEVAUCHEMENT entre ces piliers, et propose des pistes professionnelles situées au carrefour des quatre.
+
+IMPORTANT : mon CV te renseigne surtout sur les piliers 2 et 4. Pour les piliers 1 (ce que j'aime) et 3 (ce dont le monde a besoin), tu ne peux qu'émettre des HYPOTHÈSES à partir d'indices — signale-les clairement comme telles, et pose-moi les questions qui te permettraient de les affiner.`,
+  },
+];
+
+function parseCandidaturePrompt(row) {
+  if (!row) return null;
+  return { ...row };
+}
+
+function seedDefaultCandidaturePromptsIfEmpty() {
+  if (!database) return;
+  const { n } = database.prepare('SELECT COUNT(*) as n FROM candidature_saved_prompts').get();
+  if (n > 0) return;
+  const now = new Date().toISOString();
+  const insert = database.prepare(`
+    INSERT INTO candidature_saved_prompts (id, name, prompt_text, order_index, last_used_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?)
+  `);
+  DEFAULT_CANDIDATURE_PROMPTS.forEach((p, index) => {
+    insert.run(crypto.randomUUID(), p.name, p.prompt_text, index, now, now);
+  });
+}
+
+export function getAllCandidatePrompts() {
+  if (!database) return [];
+  seedDefaultCandidaturePromptsIfEmpty();
+  return database.prepare(`
+    SELECT * FROM candidature_saved_prompts ORDER BY order_index ASC, created_at ASC
+  `).all().map(parseCandidaturePrompt);
+}
+
+export function getCandidatePromptById(id) {
+  if (!database) return null;
+  return parseCandidaturePrompt(database.prepare('SELECT * FROM candidature_saved_prompts WHERE id = ?').get(id));
+}
+
+export function insertCandidatePrompt({ name, prompt_text, order_index }) {
+  if (!database) return null;
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  let orderIndex = order_index;
+  if (orderIndex === undefined || orderIndex === null) {
+    const { maxOrder } = database.prepare('SELECT MAX(order_index) as maxOrder FROM candidature_saved_prompts').get();
+    orderIndex = (maxOrder ?? -1) + 1;
+  }
+  database.prepare(`
+    INSERT INTO candidature_saved_prompts (id, name, prompt_text, order_index, last_used_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?)
+  `).run(id, name, prompt_text, orderIndex, now, now);
+  return getCandidatePromptById(id);
+}
+
+export function updateCandidatePrompt(id, updates) {
+  if (!database) return null;
+  const fields = [];
+  const vals   = [];
+  if (updates.name         !== undefined) { fields.push('name = ?');         vals.push(updates.name); }
+  if (updates.prompt_text  !== undefined) { fields.push('prompt_text = ?');  vals.push(updates.prompt_text); }
+  if (updates.order_index  !== undefined) { fields.push('order_index = ?');  vals.push(updates.order_index); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE candidature_saved_prompts SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  return getCandidatePromptById(id);
+}
+
+export function deleteCandidatePrompt(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM candidature_saved_prompts WHERE id = ?').run(id);
+}
+
+export function reorderCandidatePrompts(orderedIds) {
+  if (!database) return [];
+  const update = database.prepare('UPDATE candidature_saved_prompts SET order_index = ?, updated_at = ? WHERE id = ?');
+  const now = new Date().toISOString();
+  const txn = database.transaction((ids) => {
+    ids.forEach((id, index) => update.run(index, now, id));
+  });
+  txn(orderedIds);
+  return getAllCandidatePrompts();
+}
+
+export function touchCandidatePromptLastUsed(id) {
+  if (!database) return null;
+  database.prepare('UPDATE candidature_saved_prompts SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  return getCandidatePromptById(id);
+}
+
+// ── Veille — réglages (niveau de détail mémorisé) ─────────────────────────────
+
+export function getVeilleSettings() {
+  return getMeta('veille_settings', { detailLevel: 'synthese' });
+}
+
+export function setVeilleSettings(updates) {
+  const current = getVeilleSettings();
+  setMeta('veille_settings', { ...current, ...updates });
+}
+
+// ── Kiwix — réglages (chemin binaire, dossier archives, port) ────────────────
+
+export function getKiwixSettings() {
+  return getMeta('kiwix_settings', {
+    kiwixServePath: null,
+    archivesFolder: null,
+    port: 8090,
+    autoDetect: true,
+  });
+}
+
+export function setKiwixSettings(updates) {
+  const current = getKiwixSettings();
+  setMeta('kiwix_settings', { ...current, ...updates });
+}
+
+export function getKiwixSearchScope() {
+  return getMeta('kiwix_search_scope', 'neurones');
+}
+
+export function setKiwixSearchScope(scope) {
+  setMeta('kiwix_search_scope', scope);
+}
+
+// ── Module Professeur — réglages dédiés (modèle indépendant du router général) ─
+
+export function getTeacherSettings() {
+  return getMeta('teacher_settings', {
+    model: 'local',            // 'local' | 'groq:<model-id>'
+    defaultRegister: 'standard',
+  });
+}
+
+export function setTeacherSettings(updates) {
+  const current = getTeacherSettings();
+  setMeta('teacher_settings', { ...current, ...updates });
+}
+
+// ── Module Professeur — compteur d'appels quotidien par modèle (quota Groq) ───
+// Table dédiée plutôt que getMeta : on incrémente à chaque appel, une ligne
+// par (date, modèle) — évite de relire/réécrire tout un blob JSON à chaque appel.
+
+export function incrementTeacherModelUsage(model) {
+  if (!database) return;
+  const today = new Date().toISOString().slice(0, 10);
+  database.prepare(`
+    INSERT INTO teacher_model_usage (date, model, calls)
+    VALUES (?, ?, 1)
+    ON CONFLICT(date, model) DO UPDATE SET calls = calls + 1
+  `).run(today, model);
+}
+
+export function getTeacherModelUsageToday(model) {
+  if (!database) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  const row = database.prepare('SELECT calls FROM teacher_model_usage WHERE date = ? AND model = ?').get(today, model);
+  return row?.calls ?? 0;
+}
+
+// ── Module Professeur — parcours d'apprentissage ──────────────────────────────
+
+function parseLearningPath(row) {
+  if (!row) return null;
+  let plan = [];
+  try { plan = JSON.parse(row.plan); } catch { plan = []; }
+  return { ...row, plan };
+}
+
+export function insertLearningPath({ id, subject, register, teacher_model, status = 'planning', plan = [] }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO learning_paths (id, subject, register, teacher_model, status, plan, current_step_index, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).run(id, subject, register, teacher_model, status, JSON.stringify(plan), now, now);
+}
+
+export function updateLearningPath(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (updates.subject             !== undefined) { fields.push('subject = ?');             vals.push(updates.subject); }
+  if (updates.register            !== undefined) { fields.push('register = ?');            vals.push(updates.register); }
+  if (updates.teacher_model       !== undefined) { fields.push('teacher_model = ?');       vals.push(updates.teacher_model); }
+  if (updates.status              !== undefined) { fields.push('status = ?');              vals.push(updates.status); }
+  if (updates.plan                !== undefined) { fields.push('plan = ?');                vals.push(JSON.stringify(updates.plan)); }
+  if (updates.current_step_index  !== undefined) { fields.push('current_step_index = ?');  vals.push(updates.current_step_index); }
+  if (updates.completed_at        !== undefined) { fields.push('completed_at = ?');        vals.push(updates.completed_at); }
+  if (updates.recap_neuron_id     !== undefined) { fields.push('recap_neuron_id = ?');     vals.push(updates.recap_neuron_id); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE learning_paths SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getLearningPathById(id) {
+  if (!database) return null;
+  return parseLearningPath(database.prepare('SELECT * FROM learning_paths WHERE id = ?').get(id));
+}
+
+export function getAllLearningPaths({ status } = {}) {
+  if (!database) return [];
+  if (status) {
+    return database.prepare('SELECT * FROM learning_paths WHERE status = ? ORDER BY updated_at DESC').all(status).map(parseLearningPath);
+  }
+  return database.prepare('SELECT * FROM learning_paths ORDER BY updated_at DESC').all().map(parseLearningPath);
+}
+
+export function deleteLearningPath(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM learning_path_steps WHERE path_id = ?').run(id);
+  database.prepare('DELETE FROM learning_paths WHERE id = ?').run(id);
+}
+
+// ── Module Professeur — étapes d'un parcours ──────────────────────────────────
+
+function parseLearningPathStep(row) {
+  if (!row) return null;
+  let comprehension_check = [];
+  try { comprehension_check = JSON.parse(row.comprehension_check); } catch { comprehension_check = []; }
+  return { ...row, comprehension_check };
+}
+
+export function insertLearningPathStep({ id, path_id, step_index, title, content = '', status = 'pending', comprehension_check = [] }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO learning_path_steps (id, path_id, step_index, title, content, status, comprehension_check, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, path_id, step_index, title, content, status, JSON.stringify(comprehension_check), now, now);
+}
+
+export function updateLearningPathStep(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (updates.title                !== undefined) { fields.push('title = ?');                vals.push(updates.title); }
+  if (updates.content              !== undefined) { fields.push('content = ?');              vals.push(updates.content); }
+  if (updates.status               !== undefined) { fields.push('status = ?');               vals.push(updates.status); }
+  if (updates.comprehension_check  !== undefined) { fields.push('comprehension_check = ?');  vals.push(JSON.stringify(updates.comprehension_check)); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE learning_path_steps SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getStepsByPathId(pathId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM learning_path_steps WHERE path_id = ? ORDER BY step_index ASC').all(pathId).map(parseLearningPathStep);
+}
+
+export function getLearningPathStepById(id) {
+  if (!database) return null;
+  return parseLearningPathStep(database.prepare('SELECT * FROM learning_path_steps WHERE id = ?').get(id));
+}
+
+// ── Module Professeur — révision espacée ──────────────────────────────────────
+
+export function insertReviewItem({ id, source_type, source_id, question, answer_hint = '', next_review_at }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO review_items (id, source_type, source_id, question, answer_hint, ease_factor, interval_days, next_review_at, review_count, success_count, created_at)
+    VALUES (?, ?, ?, ?, ?, 2.5, 1, ?, 0, 0, ?)
+  `).run(id, source_type, source_id, question, answer_hint, next_review_at ?? now, now);
+}
+
+export function updateReviewItem(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (updates.ease_factor       !== undefined) { fields.push('ease_factor = ?');       vals.push(updates.ease_factor); }
+  if (updates.interval_days     !== undefined) { fields.push('interval_days = ?');     vals.push(updates.interval_days); }
+  if (updates.next_review_at    !== undefined) { fields.push('next_review_at = ?');    vals.push(updates.next_review_at); }
+  if (updates.last_reviewed_at  !== undefined) { fields.push('last_reviewed_at = ?');  vals.push(updates.last_reviewed_at); }
+  if (updates.review_count      !== undefined) { fields.push('review_count = ?');      vals.push(updates.review_count); }
+  if (updates.success_count     !== undefined) { fields.push('success_count = ?');     vals.push(updates.success_count); }
+  if (fields.length === 0) return;
+  vals.push(id);
+  database.prepare(`UPDATE review_items SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getReviewItemById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM review_items WHERE id = ?').get(id) ?? null;
+}
+
+// Éléments dus (next_review_at <= maintenant), les plus en retard d'abord,
+// plafonnés à `limit` (séance quotidienne — pas de liste illimitée).
+export function getDueReviewItems(limit = 8) {
+  if (!database) return [];
+  const now = new Date().toISOString();
+  return database.prepare(`
+    SELECT * FROM review_items
+    WHERE next_review_at <= ?
+    ORDER BY next_review_at ASC
+    LIMIT ?
+  `).all(now, limit);
+}
+
+export function countDueReviewItems() {
+  if (!database) return 0;
+  const now = new Date().toISOString();
+  return database.prepare('SELECT COUNT(*) as n FROM review_items WHERE next_review_at <= ?').get(now).n;
+}
+
+export function deleteReviewItem(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM review_attempts WHERE review_item_id = ?').run(id);
+  database.prepare('DELETE FROM review_items WHERE id = ?').run(id);
+}
+
+export function insertReviewAttempt({ id, review_item_id, was_correct, user_answer = '' }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO review_attempts (id, review_item_id, answered_at, was_correct, user_answer)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, review_item_id, now, was_correct ? 1 : 0, user_answer);
+}
+
+export function getReviewStats() {
+  if (!database) return { total_items: 0, due_now: 0, total_attempts: 0, success_rate: 0, subjects_studied: 0 };
+  const totalItems = database.prepare('SELECT COUNT(*) as n FROM review_items').get().n;
+  const dueNow = countDueReviewItems();
+  const attemptsRow = database.prepare(`
+    SELECT COUNT(*) as total, SUM(was_correct) as correct FROM review_attempts
+  `).get();
+  const totalAttempts = attemptsRow.total ?? 0;
+  const correct = attemptsRow.correct ?? 0;
+  const subjectsStudied = database.prepare(`
+    SELECT COUNT(DISTINCT subject) as n FROM learning_paths WHERE status = 'completed'
+  `).get().n;
+  return {
+    total_items: totalItems,
+    due_now: dueNow,
+    total_attempts: totalAttempts,
+    success_rate: totalAttempts > 0 ? Number((correct / totalAttempts).toFixed(3)) : 0,
+    subjects_studied: subjectsStudied,
+  };
 }

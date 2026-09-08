@@ -16,11 +16,13 @@ import {
   getVideoJobById, updateVideoJob, getSegmentsByJobId,
   insertVideoJobSegment, updateVideoJobSegment,
   getRouterSettings, getCloudKeys, savePageToStoreIfNewer,
+  getStyleExampleSettings,
 } from '../sqlite.js';
 import { chatCompletion } from '../ollama.js';
 import { completeWithCascade } from '../providers/gemini.js';
 import { complete as groqComplete } from '../providers/groq.js';
 import { registerJob, updateJob, finishJob } from '../../routes/jobs.js';
+import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from '../style-examples.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../..');
@@ -160,23 +162,10 @@ Résumé de l'extrait :`;
   return response.trim();
 }
 
-// ── Sélection d'exemples de style via recherche sémantique existante ───────
-
-async function findStyleExamples(services, resumeType, videoTitle) {
-  if (!services?.searchNeurons) return [];
-  try {
-    const query = resumeType && resumeType !== 'auto'
-      ? `résumé de type ${resumeType} : ${videoTitle ?? ''}`
-      : (videoTitle ?? 'résumé vidéo');
-    const result = await services.searchNeurons({ query, limit: 5, threshold: 0.15, filter_by_kind: ['exemple-resume'] });
-    return (result?.results ?? []).slice(0, 5);
-  } catch { return []; }
-}
+// ── Synthèse finale : construction du prompt (exemples de style via le module partagé) ──
 
 function buildSynthesisPrompt({ chunkSummaries, examples, resumeType, videoTitle }) {
-  const examplesBlock = examples.length > 0
-    ? `\n\nVoici ${examples.length} exemple(s) de résumés de référence, dans le style que tu dois reproduire (STRUCTURE, TON, NIVEAU DE DÉTAIL et MISE EN FORME uniquement — ne recopie jamais leurs mots ou leur contenu, ils portent sur un autre sujet) :\n\n${examples.map((e, i) => `--- Exemple ${i + 1} (${e.title}) ---\n${e.content_preview}`).join('\n\n')}`
-    : '';
+  const examplesBlock = buildStyleExamplesBlock(examples);
 
   return `Tu rédiges la synthèse finale du résumé d'une vidéo longue ("${videoTitle ?? 'vidéo'}", type : ${resumeType ?? 'auto'}), à partir des résumés successifs de chaque partie de la vidéo, ci-dessous.
 
@@ -330,8 +319,12 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
       throw new Error('Aucun segment n\'a pu être résumé — synthèse impossible.');
     }
 
-    const examples = await findStyleExamples(services, job.resume_type, job.title);
+    const styleSettings = getStyleExampleSettings();
+    const examples = styleSettings.enabled
+      ? await findStyleExamples(services, { type: job.resume_type, queryText: job.title })
+      : [];
     const prompt = buildSynthesisPrompt({ chunkSummaries, examples, resumeType: job.resume_type, videoTitle: job.title });
+    const usedExamples = describeUsedExamples(examples);
 
     // Cloud gating — verrou mode strict + confidentialité du job, avant tout appel cloud.
     let synthesisProvider = job.provider_synthesis ?? 'local';
@@ -403,6 +396,7 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
         job_id: jobId,
         disk_bytes: diskBytes,
         date: new Date().toISOString(),
+        ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}),
       },
     };
     savePageToStoreIfNewer(mainNeuron);

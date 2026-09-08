@@ -106,7 +106,7 @@ export function createImageRoute({ logger } = {}) {
     const id = c.req.param('id');
     if (!validateImageId(id)) return c.json({ error: 'ID invalide' }, 400);
     try {
-      deleteImageFile(id);
+      deleteImageFile(id, logger);
       if (logger) logger.info({ id }, 'IMAGE_DELETE');
       return c.json({ ok: true });
     } catch (err) {

@@ -54,7 +54,7 @@ export interface SearchResult {
 
 export interface AnswerResult {
   answer: string;
-  sources: Array<{ id: string; title: string; score: number; kind?: string }>;
+  sources: Array<{ id: string; title: string; score: number; kind?: string; isKiwix?: boolean; book?: string; articlePath?: string }>;
   latency_ms: number;
   model_used: string | null;
   router_level?: number | null;
@@ -340,12 +340,38 @@ export interface ResearchSource {
   url:   string;
 }
 
+export type DetailLevel = 'synthese' | 'standard' | 'pedagogique' | 'expert';
+
+export const DETAIL_LEVEL_LABELS: Record<DetailLevel, string> = {
+  synthese:    'Synthèse',
+  standard:    'Standard',
+  pedagogique: 'Pédagogique',
+  expert:      'Expert',
+};
+
+export interface StyleExampleUsed {
+  id:    string;
+  title: string;
+  type:  string | null;
+}
+
+export interface StyleExampleOptions {
+  useStyleExamples?: boolean;
+  styleExampleType?: string;
+}
+
+export interface StyleExampleSettings {
+  enabled: boolean;
+}
+
 export interface ResearchResult {
   content: string;
   model:   string;
   mode:    'synthese' | 'actualite';
   sources: ResearchSource[];
   warning?: string;
+  detailLevel?: DetailLevel;
+  usedExamples?: StyleExampleUsed[];
 }
 
 export interface ResearchQuota {
@@ -358,6 +384,7 @@ export interface DeepResearchOptions {
   format: 'document' | 'arborescence';
   depth:  5 | 10 | 15;
   source: 'ia' | 'web';
+  detailLevel?: DetailLevel;
 }
 
 export interface DeepResearchPlanResult {
@@ -369,6 +396,11 @@ export interface DeepResearchSectionResult {
   content: string;
   model:   string;
   sources: ResearchSource[];
+  detailLevel?: DetailLevel;
+}
+
+export interface VeilleSettings {
+  detailLevel: DetailLevel;
 }
 
 export interface DeepCaptureResult {
@@ -420,7 +452,7 @@ export interface ResummariseProgress {
   label?: string;
   done?:  boolean;
   error?: string;
-  result?: { summary: string; model_used: string };
+  result?: { summary: string; model_used: string; used_examples?: StyleExampleUsed[] };
 }
 
 export interface BackupEntry {
@@ -747,6 +779,25 @@ export interface PromptGeneratorSettings {
   default_review_provider: string | null;
 }
 
+export interface PromptDestination {
+  id:          string;
+  name:        string;
+  url:         string;
+  category:    string;
+  urlTemplate: string;
+  favorite:    boolean;
+  order:       number;
+}
+
+export interface PromptSendEvent {
+  id:                   string;
+  generated_prompt_id:  string;
+  destination_id:       string;
+  destination_name:     string;
+  prefill_used:         boolean;
+  created_at:           string;
+}
+
 export interface FileOriginalSummary {
   id: string;
   original_name: string;
@@ -1011,6 +1062,263 @@ export interface PreferenceFact {
   id:         string;
   fact:       string;
   created_at: string;
+}
+
+// ── Candidature — bibliothèque de prompts sauvegardés ──────────────────────────
+
+export interface CandidatureSavedPrompt {
+  id:            string;
+  name:          string;
+  prompt_text:   string;
+  order_index:   number;
+  last_used_at:  string | null;
+  created_at:    string;
+  updated_at:    string;
+}
+
+// ── Kiwix (archives ZIM) ──────────────────────────────────────────────────────
+
+export interface KiwixSettings {
+  kiwixServePath: string | null;
+  archivesFolder: string;
+  port:           number;
+  autoDetect:     boolean;
+  binaryFound:    boolean;
+  kiwixToolsUrl:  string;
+}
+
+export interface KiwixArchive {
+  name:      string;
+  fileName:  string;
+  path:      string;
+  sizeBytes: number;
+}
+
+export interface KiwixArchivesResult {
+  folder:     string;
+  archives:   KiwixArchive[];
+  totalBytes: number;
+}
+
+export interface KiwixStatus {
+  running:            boolean;
+  port:               number | null;
+  archives:           KiwixArchive[];
+  lastError:          string | null;
+  pid:                number | null;
+  externallyManaged?: boolean;
+}
+
+export interface KiwixStartResult {
+  ok:              boolean;
+  error?:          string;
+  message?:        string;
+  port?:           number;
+  archives?:       KiwixArchive[];
+  alreadyRunning?: boolean;
+}
+
+export interface KiwixSuggestion {
+  label: string;
+  value: string;
+  path:  string;
+  kind:  string;
+}
+
+export interface KiwixSearchResult {
+  title:    string;
+  path:     string;
+  snippet:  string;
+  bookName: string;
+}
+
+export interface KiwixArticleContent {
+  html:  string;
+  title: string;
+  text:  string;
+  book:  string;
+  path:  string;
+}
+
+export interface KiwixCatalogEntry {
+  id:          string;
+  name:        string;
+  title:       string;
+  description: string;
+  language:    string;
+  updated:     string;
+  sizeBytes:   number | null;
+  downloadUrl: string | null;
+}
+
+export type KiwixSearchScope = 'neurones' | 'archives' | 'les_deux';
+
+export interface KiwixDownloadProgress {
+  type:       'status' | 'progress' | 'done' | 'error';
+  message?:   string;
+  downloaded?: number;
+  total?:     number;
+  percent?:   number | null;
+  filePath?:  string;
+  fileName?:  string;
+}
+
+// ── Lecteur audio (lo-fi ambiant) ─────────────────────────────────────────────
+
+export interface AudioRadioPreset {
+  id:   string;
+  name: string;
+  url:  string;
+}
+
+export interface AudioCustomStream {
+  name: string;
+  url:  string;
+}
+
+export interface AudioPlayerSettings {
+  localFolder:     string | null;
+  customStreams:   AudioCustomStream[];
+  source:          'local' | 'radio';
+  selectedRadioId: string;
+  presets:         AudioRadioPreset[];
+}
+
+export interface AudioLocalFile {
+  name: string;
+  url:  string;
+}
+
+export interface AudioLocalFilesResult {
+  folder: string | null;
+  files:  AudioLocalFile[];
+  error?: string;
+}
+
+// ── Module Professeur ────────────────────────────────────────────────────
+
+export type TeacherRegister = 'enfant' | 'debutant' | 'standard' | 'expert' | 'socratique';
+export type LearningPathStatus = 'planning' | 'active' | 'completed' | 'abandoned';
+export type LearningStepStatus = 'pending' | 'active' | 'done';
+
+export interface TeacherSettings {
+  model: string; // 'local' | 'groq:<model-id>'
+  defaultRegister: TeacherRegister;
+}
+
+export interface TeacherQuotaInfo {
+  model: string;
+  provider: 'local' | 'groq';
+  used_today: number | null;
+  limit: number | null;
+  remaining: number | null;
+  unlimited_local: boolean;
+}
+
+export interface TeacherLocalModelOption {
+  id: string;
+  size_bytes: number | null;
+  size_label: string | null;
+}
+
+export interface TeacherGroqModelOption {
+  id: string;
+  configured: boolean;
+  disabled_reason: string | null;
+  used_today: number | null;
+  limit: number | null;
+  remaining: number | null;
+}
+
+// Même forme que TeacherGroqModelOption — Gemini et OpenRouter n'ont pas de
+// limite quotidienne connue/vérifiée dans ce codebase, donc used_today/limit/
+// remaining sont toujours null pour ces deux providers (pas de chiffre inventé).
+export type TeacherCloudModelOption = TeacherGroqModelOption;
+
+export interface TeacherCloudProviderModels {
+  available: boolean;
+  configured: boolean;
+  models: TeacherCloudModelOption[];
+}
+
+export interface TeacherAvailableModels {
+  strict_local_mode: boolean;
+  local: { available: boolean; reason: string | null; models: TeacherLocalModelOption[] };
+  cloud: {
+    groq: TeacherCloudProviderModels;
+    gemini: TeacherCloudProviderModels;
+    openrouter: TeacherCloudProviderModels;
+  };
+}
+
+export interface TeacherValidateModelResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface LearningPlanStep {
+  title: string;
+  summary: string;
+}
+
+export interface LearningPath {
+  id: string;
+  subject: string;
+  register: TeacherRegister;
+  teacher_model: string;
+  status: LearningPathStatus;
+  plan: LearningPlanStep[];
+  current_step_index: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  recap_neuron_id: string | null;
+}
+
+export interface ComprehensionExchange {
+  question: string;
+  answer: string;
+  evaluation: string;
+  reask: string | null;
+}
+
+export interface LearningPathStep {
+  id: string;
+  path_id: string;
+  step_index: number;
+  title: string;
+  content: string;
+  status: LearningStepStatus;
+  comprehension_check: ComprehensionExchange[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewItem {
+  id: string;
+  source_type: 'path_step' | 'neuron';
+  source_id: string;
+  question: string;
+  answer_hint: string;
+  ease_factor: number;
+  interval_days: number;
+  next_review_at: string;
+  last_reviewed_at: string | null;
+  review_count: number;
+  success_count: number;
+  created_at: string;
+}
+
+export interface TeacherStats {
+  total_items: number;
+  due_now: number;
+  total_attempts: number;
+  success_rate: number;
+  subjects_studied: number;
+  paths_in_progress: number;
+  paths_planning: number;
+  paths_completed: number;
+  paths_abandoned: number;
 }
 
 // ── Singleton client ───────────────────────────────────────────────────────
@@ -1748,6 +2056,94 @@ export const cortexClient = {
     return res.json() as Promise<{ adequation_score: string; adapted_cv: string; missing: string; keywords_used: string; model_used: string }>;
   },
 
+  async cvFreeQuestion(params: {
+    cvContent: string;
+    question: string;
+    chainHistory?: { question: string; answer: string }[];
+    powerful?: boolean;
+  }): Promise<{ answer: string; model_used: string; context_chars_estimate: number; context_tokens_estimate: number; context_warning: boolean }> {
+    const res = await apiFetch('/api/candidature/free-question', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        cv_content:     params.cvContent,
+        question:       params.question,
+        chain_history:  params.chainHistory ?? [],
+        powerful:       params.powerful ?? false,
+      }),
+    }, 180_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV free-question HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ answer: string; model_used: string; context_chars_estimate: number; context_tokens_estimate: number; context_warning: boolean }>;
+  },
+
+  async cvGetSavedPrompts(): Promise<{ prompts: CandidatureSavedPrompt[] }> {
+    const res = await apiFetch('/api/candidature/prompts', { method: 'GET' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompts list HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ prompts: CandidatureSavedPrompt[] }>;
+  },
+
+  async cvCreateSavedPrompt(name: string, promptText: string): Promise<{ prompt: CandidatureSavedPrompt }> {
+    const res = await apiFetch('/api/candidature/prompts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name, prompt_text: promptText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompt create HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ prompt: CandidatureSavedPrompt }>;
+  },
+
+  async cvUpdateSavedPrompt(id: string, updates: { name?: string; promptText?: string }): Promise<{ prompt: CandidatureSavedPrompt }> {
+    const res = await apiFetch(`/api/candidature/prompts/${encodeURIComponent(id)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ name: updates.name, prompt_text: updates.promptText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompt update HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ prompt: CandidatureSavedPrompt }>;
+  },
+
+  async cvDeleteSavedPrompt(id: string): Promise<void> {
+    const res = await apiFetch(`/api/candidature/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompt delete HTTP ${res.status}`);
+    }
+  },
+
+  async cvReorderSavedPrompts(orderedIds: string[]): Promise<{ prompts: CandidatureSavedPrompt[] }> {
+    const res = await apiFetch('/api/candidature/prompts/reorder', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ ordered_ids: orderedIds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompts reorder HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ prompts: CandidatureSavedPrompt[] }>;
+  },
+
+  async cvTouchSavedPrompt(id: string): Promise<{ prompt: CandidatureSavedPrompt }> {
+    const res = await apiFetch(`/api/candidature/prompts/${encodeURIComponent(id)}/touch`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error: string };
+      throw new Error(err.error ?? `CV prompt touch HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ prompt: CandidatureSavedPrompt }>;
+  },
+
   // ── CV import from PDF (100% local — personal CV data never sent to cloud) ───
 
   async importCvFromPdf(file: File): Promise<{ title: string; text: string; pages_count: number }> {
@@ -2122,17 +2518,110 @@ export const cortexClient = {
     return res.json() as Promise<{ review: string; model: string }>;
   },
 
-  async research(subject: string, mode: 'synthese' | 'actualite'): Promise<ResearchResult> {
+  async research(subject: string, mode: 'synthese' | 'actualite', detailLevel?: DetailLevel, style?: StyleExampleOptions): Promise<ResearchResult> {
     const res = await apiFetch('/api/research', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subject, mode }),
+      body:    JSON.stringify({ subject, mode, detailLevel, ...style }),
     }, 120_000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string };
       throw new Error(err.error ?? `Research HTTP ${res.status}`);
     }
     return res.json() as Promise<ResearchResult>;
+  },
+
+  async regenerateVeille(
+    subject: string, detailLevel: DetailLevel, sources: ResearchSource[] = [],
+    style?: StyleExampleOptions & { feedback?: string; bad_output?: string },
+  ): Promise<{ content: string; model: string; detailLevel: DetailLevel; sources: ResearchSource[]; usedExamples?: StyleExampleUsed[] }> {
+    const res = await apiFetch('/api/research/regenerate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ subject, detailLevel, sources, ...style }),
+    }, 120_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string; quota?: boolean };
+      throw Object.assign(new Error(err.error ?? `Regenerate HTTP ${res.status}`), { quota: err.quota });
+    }
+    return res.json() as Promise<{ content: string; model: string; detailLevel: DetailLevel; sources: ResearchSource[]; usedExamples?: StyleExampleUsed[] }>;
+  },
+
+  async getVeilleSettings(): Promise<VeilleSettings> {
+    try {
+      const res = await apiFetch('/api/research/settings', { method: 'GET' });
+      if (!res.ok) return { detailLevel: 'synthese' };
+      return res.json() as Promise<VeilleSettings>;
+    } catch {
+      return { detailLevel: 'synthese' };
+    }
+  },
+
+  async setVeilleSettings(detailLevel: DetailLevel): Promise<VeilleSettings> {
+    const res = await apiFetch('/api/research/settings', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ detailLevel }),
+    });
+    if (!res.ok) throw new Error(`Veille settings HTTP ${res.status}`);
+    return res.json() as Promise<VeilleSettings>;
+  },
+
+  async getStyleExampleSettings(): Promise<StyleExampleSettings> {
+    try {
+      const res = await apiFetch('/api/style-examples/settings', { method: 'GET' });
+      if (!res.ok) return { enabled: false };
+      return res.json() as Promise<StyleExampleSettings>;
+    } catch {
+      return { enabled: false };
+    }
+  },
+
+  async setStyleExampleSettings(enabled: boolean): Promise<StyleExampleSettings> {
+    const res = await apiFetch('/api/style-examples/settings', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error(`Style example settings HTTP ${res.status}`);
+    return res.json() as Promise<StyleExampleSettings>;
+  },
+
+  async getStyleExampleTypes(): Promise<string[]> {
+    try {
+      const res = await apiFetch('/api/style-examples/types', { method: 'GET' });
+      if (!res.ok) return [];
+      const data = await res.json() as { types?: string[] };
+      return data.types ?? [];
+    } catch {
+      return [];
+    }
+  },
+
+  async saveAsStyleExample(params: { title?: string; content: string; type: string; source_excerpt?: string }): Promise<{ id: string }> {
+    const res = await apiFetch('/api/style-examples/save', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(params),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Save style example HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ id: string }>;
+  },
+
+  async regenerateSummaryWithFeedback(params: { original_prompt: string; bad_output?: string; feedback: string }): Promise<{ summary: string; model_used: string }> {
+    const res = await apiFetch('/api/style-examples/regenerate-with-feedback', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(params),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Regenerate with feedback HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ summary: string; model_used: string }>;
   },
 
   async getResearchQuota(): Promise<ResearchQuota> {
@@ -2165,11 +2654,12 @@ export const cortexClient = {
     total:       number,
     source:      'ia' | 'web',
     otherTopics: string[],
+    detailLevel?: DetailLevel,
   ): Promise<DeepResearchSectionResult> {
     const res = await apiFetch('/api/research/deep/section', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subject, subtopic, index, total, source, otherTopics }),
+      body:    JSON.stringify({ subject, subtopic, index, total, source, otherTopics, detailLevel }),
     }, 120_000);
     if (!res.ok) {
       const raw = await res.json().catch(() => ({})) as { error?: string; quota?: boolean };
@@ -2184,11 +2674,12 @@ export const cortexClient = {
     subject: string,
     depth:   number,
     source:  'ia' | 'web',
+    detailLevel?: DetailLevel,
   ): Promise<DeepResearchSectionResult> {
     const res = await apiFetch('/api/research/deep/document', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subject, depth, source }),
+      body:    JSON.stringify({ subject, depth, source, detailLevel }),
     }, 180_000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string };
@@ -2212,11 +2703,11 @@ export const cortexClient = {
     return res.json() as Promise<{ angles: string[]; model: string }>;
   },
 
-  async multiResearchSource(subject: string, angle: string): Promise<{ content: string; model: string; sources: ResearchSource[]; angle: string }> {
+  async multiResearchSource(subject: string, angle: string, detailLevel?: DetailLevel): Promise<{ content: string; model: string; sources: ResearchSource[]; angle: string }> {
     const res = await apiFetch('/api/research/multi/source', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subject, angle }),
+      body:    JSON.stringify({ subject, angle, detailLevel }),
     }, 90_000);
     if (!res.ok) {
       const raw = await res.json().catch(() => ({})) as { error?: string; quota?: boolean; grounding_unavailable?: boolean };
@@ -2225,11 +2716,11 @@ export const cortexClient = {
     return res.json() as Promise<{ content: string; model: string; sources: ResearchSource[]; angle: string }>;
   },
 
-  async multiResearchCrosscheck(subject: string, sources: Array<{ angle: string; content: string }>): Promise<{ synthesis: string; model: string }> {
+  async multiResearchCrosscheck(subject: string, sources: Array<{ angle: string; content: string }>, detailLevel?: DetailLevel): Promise<{ synthesis: string; model: string }> {
     const res = await apiFetch('/api/research/multi/crosscheck', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ subject, sources }),
+      body:    JSON.stringify({ subject, sources, detailLevel }),
     }, 120_000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string; quota?: boolean };
@@ -2318,6 +2809,7 @@ export const cortexClient = {
       force_local_powerful?:  boolean;
       clarification_context?: Array<{ question: string; answer: string }>;
       scope?:                 CorpusScope;
+      kiwix_scope?:           KiwixSearchScope;
     } = {},
   ): Promise<AnswerResult> {
     const timeout = opts.force_local_powerful ? 180_000 : TIMEOUT_ANSWER;
@@ -2375,10 +2867,10 @@ export const cortexClient = {
   },
 
   async resummarise(
-    params:     { transcription: string; level: ResummariseLevel; focus?: string; use_powerful?: boolean },
+    params:     { transcription: string; level: ResummariseLevel; focus?: string; use_powerful?: boolean; style_example_type?: string },
     onProgress: (p: ResummariseProgress) => void,
     signal?:    AbortSignal,
-  ): Promise<{ summary: string; model_used: string }> {
+  ): Promise<{ summary: string; model_used: string; used_examples?: StyleExampleUsed[] }> {
     const res = await fetch(`${BASE}/api/capture/resummarise`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2709,6 +3201,78 @@ export const cortexClient = {
     return `${BASE}/api/prompt-generator/export/all`;
   },
 
+  async getPromptDestinations(): Promise<PromptDestination[]> {
+    const res = await apiFetch('/api/prompt-generator/destinations', { method: 'GET' });
+    const d = await res.json() as { destinations: PromptDestination[] };
+    return d.destinations;
+  },
+
+  async addPromptDestination(data: Omit<PromptDestination, 'id' | 'order'>): Promise<PromptDestination[]> {
+    const res = await apiFetch('/api/prompt-generator/destinations', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Add destination HTTP ${res.status}`);
+    }
+    const d = await res.json() as { destinations: PromptDestination[] };
+    return d.destinations;
+  },
+
+  async updatePromptDestination(id: string, data: Partial<Omit<PromptDestination, 'id' | 'order'>>): Promise<PromptDestination[]> {
+    const res = await apiFetch(`/api/prompt-generator/destinations/${encodeURIComponent(id)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Update destination HTTP ${res.status}`);
+    }
+    const d = await res.json() as { destinations: PromptDestination[] };
+    return d.destinations;
+  },
+
+  async deletePromptDestination(id: string): Promise<PromptDestination[]> {
+    const res = await apiFetch(`/api/prompt-generator/destinations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Delete destination HTTP ${res.status}`);
+    const d = await res.json() as { destinations: PromptDestination[] };
+    return d.destinations;
+  },
+
+  async reorderPromptDestinations(ids: string[]): Promise<PromptDestination[]> {
+    const res = await apiFetch('/api/prompt-generator/destinations/reorder', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error(`Reorder destinations HTTP ${res.status}`);
+    const d = await res.json() as { destinations: PromptDestination[] };
+    return d.destinations;
+  },
+
+  async sendGeneratedPrompt(id: string, data: { destinationId: string; prefillUsed: boolean }): Promise<{ event: PromptSendEvent; events: PromptSendEvent[] }> {
+    const res = await apiFetch(`/api/prompt-generator/${id}/send`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Send prompt HTTP ${res.status}`);
+    }
+    return await res.json() as { event: PromptSendEvent; events: PromptSendEvent[] };
+  },
+
+  async getPromptSendEvents(id: string): Promise<PromptSendEvent[]> {
+    const res = await apiFetch(`/api/prompt-generator/${id}/send-events`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Send events HTTP ${res.status}`);
+    const d = await res.json() as { events: PromptSendEvent[] };
+    return d.events;
+  },
+
   // ── Job tracking (survives Console close; enables TopBar indicator + reload) ─
 
   async getJobs(): Promise<ServerJob[]> {
@@ -2796,5 +3360,338 @@ export const cortexClient = {
   async deleteTodo(id: string): Promise<void> {
     const res = await apiFetch(`/api/todo/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`DeleteTodo HTTP ${res.status}`);
+  },
+
+  // ── Kiwix (bibliothèque d'archives ZIM) ────────────────────────────────────
+
+  async kiwixSettings(): Promise<KiwixSettings> {
+    const res = await apiFetch('/api/kiwix/settings', { method: 'GET' }, 8_000);
+    return await res.json() as KiwixSettings;
+  },
+
+  async setKiwixSettings(updates: Partial<Pick<KiwixSettings, 'kiwixServePath' | 'archivesFolder' | 'port' | 'autoDetect'>>): Promise<KiwixSettings> {
+    const res = await apiFetch('/api/kiwix/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates),
+    }, 8_000);
+    const d = await res.json() as { settings: KiwixSettings };
+    return d.settings;
+  },
+
+  async kiwixSearchScope(): Promise<KiwixSearchScope> {
+    const res = await apiFetch('/api/kiwix/search-scope', { method: 'GET' }, 8_000);
+    const d = await res.json() as { scope: KiwixSearchScope };
+    return d.scope;
+  },
+
+  async setKiwixSearchScope(scope: KiwixSearchScope): Promise<void> {
+    await apiFetch('/api/kiwix/search-scope', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope }),
+    }, 8_000);
+  },
+
+  async kiwixArchives(): Promise<KiwixArchivesResult> {
+    const res = await apiFetch('/api/kiwix/archives', { method: 'GET' }, 8_000);
+    return await res.json() as KiwixArchivesResult;
+  },
+
+  async deleteKiwixArchive(fileName: string): Promise<void> {
+    const res = await apiFetch(`/api/kiwix/archives/${encodeURIComponent(fileName)}`, { method: 'DELETE' }, 8_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `DeleteArchive HTTP ${res.status}`);
+    }
+  },
+
+  async kiwixStatus(): Promise<KiwixStatus> {
+    const res = await apiFetch('/api/kiwix/status', { method: 'GET' }, 8_000);
+    return await res.json() as KiwixStatus;
+  },
+
+  async startKiwix(): Promise<KiwixStartResult> {
+    const res = await apiFetch('/api/kiwix/start', { method: 'POST' }, 20_000);
+    return await res.json() as KiwixStartResult;
+  },
+
+  async stopKiwix(): Promise<{ ok: boolean }> {
+    const res = await apiFetch('/api/kiwix/stop', { method: 'POST' }, 8_000);
+    return await res.json() as { ok: boolean };
+  },
+
+  async kiwixSuggest(book: string, term: string): Promise<KiwixSuggestion[]> {
+    const q = new URLSearchParams({ book, term });
+    const res = await apiFetch(`/api/kiwix/suggest?${q.toString()}`, { method: 'GET' }, 8_000);
+    const d = await res.json() as { suggestions: KiwixSuggestion[] };
+    return d.suggestions ?? [];
+  },
+
+  async kiwixSearchArchives(book: string, pattern: string): Promise<KiwixSearchResult[]> {
+    const q = new URLSearchParams({ book, pattern });
+    const res = await apiFetch(`/api/kiwix/search?${q.toString()}`, { method: 'GET' }, 15_000);
+    const d = await res.json() as { results: KiwixSearchResult[] };
+    return d.results ?? [];
+  },
+
+  async kiwixArticle(book: string, articlePath: string): Promise<KiwixArticleContent> {
+    const cleanPath = articlePath.replace(/^\/+/, '');
+    const res = await apiFetch(`/api/kiwix/content/${encodeURIComponent(book)}/${cleanPath}`, { method: 'GET' }, 15_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `KiwixArticle HTTP ${res.status}`);
+    }
+    return await res.json() as KiwixArticleContent;
+  },
+
+  kiwixRawAssetUrl(book: string, assetPath: string): string {
+    const cleanPath = assetPath.replace(/^\/+/, '');
+    return `${BASE}/api/kiwix/raw/${encodeURIComponent(book)}/${cleanPath}`;
+  },
+
+  async kiwixCatalog(q: string, lang?: string): Promise<KiwixCatalogEntry[]> {
+    const params = new URLSearchParams({ q });
+    if (lang) params.set('lang', lang);
+    const res = await apiFetch(`/api/kiwix/catalog?${params.toString()}`, { method: 'GET' }, 20_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `KiwixCatalog HTTP ${res.status}`);
+    }
+    const d = await res.json() as { entries: KiwixCatalogEntry[] };
+    return d.entries ?? [];
+  },
+
+  async kiwixDiskSpace(): Promise<number | null> {
+    const res = await apiFetch('/api/kiwix/disk-space', { method: 'GET' }, 8_000);
+    const d = await res.json() as { freeBytes: number | null };
+    return d.freeBytes;
+  },
+
+  async downloadKiwixArchive(
+    entry: { url: string; fileName: string; sizeBytes: number },
+    onProgress: (p: KiwixDownloadProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await fetch(`${BASE}/api/kiwix/download`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(entry),
+      signal,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Download HTTP ${res.status}`);
+    }
+    if (!res.body) throw new Error('Réponse sans flux');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const line = part.replace(/^data:\s*/, '').trim();
+        if (!line) continue;
+        try {
+          const evt = JSON.parse(line) as KiwixDownloadProgress;
+          if (evt.type === 'error') throw new Error(evt.message ?? 'Erreur de téléchargement');
+          onProgress(evt);
+        } catch (e) {
+          if (e instanceof Error && e.message !== 'Unexpected end of JSON input') throw e;
+        }
+      }
+    }
+  },
+
+  async importKiwixArticle(data: { book: string; path: string; title: string; text?: string }): Promise<{ ok: boolean; neuronIds: string[]; chunkCount: number }> {
+    const res = await apiFetch('/api/kiwix/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `ImportKiwix HTTP ${res.status}`);
+    }
+    return await res.json() as { ok: boolean; neuronIds: string[]; chunkCount: number };
+  },
+
+  // ── Lecteur audio (lo-fi ambiant) ────────────────────────────────────────────
+
+  async getAudioPlayerSettings(): Promise<AudioPlayerSettings> {
+    const res = await apiFetch('/api/audio-player/settings', { method: 'GET' }, 10_000);
+    if (!res.ok) throw new Error(`Audio player settings HTTP ${res.status}`);
+    return res.json() as Promise<AudioPlayerSettings>;
+  },
+
+  async setAudioPlayerSettings(updates: Partial<Omit<AudioPlayerSettings, 'presets'>>): Promise<{ ok: boolean; settings: AudioPlayerSettings }> {
+    const res = await apiFetch('/api/audio-player/settings', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(updates),
+    }, 10_000);
+    if (!res.ok) throw new Error(`Set audio player settings HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; settings: AudioPlayerSettings }>;
+  },
+
+  async getAudioLocalFiles(): Promise<AudioLocalFilesResult> {
+    const res = await apiFetch('/api/audio-player/local-files', { method: 'GET' }, 10_000);
+    return res.json() as Promise<AudioLocalFilesResult>;
+  },
+
+  getAudioFileUrl(filePath: string): string {
+    return `${BASE}/api/audio-player/file?path=${encodeURIComponent(filePath)}`;
+  },
+
+  // ── Module Professeur ──────────────────────────────────────────────────
+
+  async getTeacherSettings(): Promise<TeacherSettings> {
+    const res = await apiFetch('/api/teacher/settings', { method: 'GET' });
+    return await res.json() as TeacherSettings;
+  },
+
+  async setTeacherSettings(data: Partial<TeacherSettings>): Promise<TeacherSettings> {
+    const res = await apiFetch('/api/teacher/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+    return await res.json() as TeacherSettings;
+  },
+
+  async getTeacherQuota(): Promise<TeacherQuotaInfo> {
+    const res = await apiFetch('/api/teacher/quota', { method: 'GET' });
+    return await res.json() as TeacherQuotaInfo;
+  },
+
+  async getTeacherAvailableModels(): Promise<TeacherAvailableModels> {
+    const res = await apiFetch('/api/teacher/available-models', { method: 'GET' }, 15_000);
+    if (!res.ok) throw new Error(`Available models HTTP ${res.status}`);
+    return await res.json() as TeacherAvailableModels;
+  },
+
+  async validateTeacherModel(model: string): Promise<TeacherValidateModelResult> {
+    const res = await apiFetch('/api/teacher/settings/validate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }),
+    }, 30_000);
+    return await res.json() as TeacherValidateModelResult;
+  },
+
+  async getTeacherRegisters(): Promise<{ registers: { id: TeacherRegister; label: string }[] }> {
+    const res = await apiFetch('/api/teacher/registers', { method: 'GET' });
+    return await res.json() as { registers: { id: TeacherRegister; label: string }[] };
+  },
+
+  async listLearningPaths(status?: LearningPathStatus): Promise<{ paths: LearningPath[] }> {
+    const qs = status ? `?status=${status}` : '';
+    const res = await apiFetch(`/api/teacher/paths${qs}`, { method: 'GET' });
+    return await res.json() as { paths: LearningPath[] };
+  },
+
+  async getLearningPath(id: string): Promise<{ path: LearningPath; steps: LearningPathStep[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${id}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Parcours introuvable (HTTP ${res.status})`);
+    return await res.json() as { path: LearningPath; steps: LearningPathStep[] };
+  },
+
+  async createLearningPath(subject: string, register: TeacherRegister): Promise<{ path: LearningPath; model_used: string; forced_local: boolean }> {
+    const res = await apiFetch('/api/teacher/paths', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subject, register }),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Création du parcours HTTP ${res.status}`);
+    }
+    return await res.json() as { path: LearningPath; model_used: string; forced_local: boolean };
+  },
+
+  async updateLearningPathPlan(id: string, plan: LearningPlanStep[]): Promise<{ path: LearningPath }> {
+    const res = await apiFetch(`/api/teacher/paths/${id}/plan`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Mise à jour du plan HTTP ${res.status}`);
+    }
+    return await res.json() as { path: LearningPath };
+  },
+
+  async startLearningPath(id: string): Promise<{ path: LearningPath; steps: LearningPathStep[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${id}/start`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Démarrage HTTP ${res.status}`);
+    }
+    return await res.json() as { path: LearningPath; steps: LearningPathStep[] };
+  },
+
+  async abandonLearningPath(id: string): Promise<{ path: LearningPath }> {
+    const res = await apiFetch(`/api/teacher/paths/${id}/abandon`, { method: 'POST' });
+    return await res.json() as { path: LearningPath };
+  },
+
+  async deleteLearningPath(id: string): Promise<void> {
+    await apiFetch(`/api/teacher/paths/${id}`, { method: 'DELETE' });
+  },
+
+  async explainStep(pathId: string, stepId: string): Promise<{ step: LearningPathStep; model_used: string; forced_local: boolean; sources_used?: { id: string; title: string }[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/explain`, { method: 'POST' }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string; quota_hit?: boolean };
+      throw new Error(err.error ?? `Explication HTTP ${res.status}`);
+    }
+    return await res.json() as { step: LearningPathStep; model_used: string; forced_local: boolean; sources_used?: { id: string; title: string }[] };
+  },
+
+  async answerStepQuestion(pathId: string, stepId: string, answer: string): Promise<{ step: LearningPathStep; evaluation: string; validated: boolean; model_used: string; forced_local: boolean }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Évaluation HTTP ${res.status}`);
+    }
+    return await res.json() as { step: LearningPathStep; evaluation: string; validated: boolean; model_used: string; forced_local: boolean };
+  },
+
+  async advanceStep(pathId: string, stepId: string): Promise<{ path: LearningPath; steps: LearningPathStep[]; finished: boolean }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/advance`, { method: 'POST' });
+    return await res.json() as { path: LearningPath; steps: LearningPathStep[]; finished: boolean };
+  },
+
+  async backStep(pathId: string, stepId: string): Promise<{ path: LearningPath; steps: LearningPathStep[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/back`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Retour HTTP ${res.status}`);
+    }
+    return await res.json() as { path: LearningPath; steps: LearningPathStep[] };
+  },
+
+  async createRecapNeuron(pathId: string): Promise<{ path: LearningPath; neuron_id: string; review_items_created: number }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/recap`, { method: 'POST' }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Création de la fiche HTTP ${res.status}`);
+    }
+    return await res.json() as { path: LearningPath; neuron_id: string; review_items_created: number };
+  },
+
+  async getDueReviewItems(limit = 5): Promise<{ items: ReviewItem[]; count_due: number }> {
+    const res = await apiFetch(`/api/teacher/review/due?limit=${limit}`, { method: 'GET' });
+    return await res.json() as { items: ReviewItem[]; count_due: number };
+  },
+
+  async answerReviewItem(itemId: string, answer: string): Promise<{ correct: boolean; feedback: string; next_review_at: string; interval_days: number; item: ReviewItem }> {
+    const res = await apiFetch(`/api/teacher/review/${itemId}/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
+    }, 60_000);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(err.error ?? `Évaluation HTTP ${res.status}`);
+    }
+    return await res.json() as { correct: boolean; feedback: string; next_review_at: string; interval_days: number; item: ReviewItem };
+  },
+
+  async getTeacherStats(): Promise<TeacherStats> {
+    const res = await apiFetch('/api/teacher/stats', { method: 'GET' });
+    return await res.json() as TeacherStats;
   },
 };

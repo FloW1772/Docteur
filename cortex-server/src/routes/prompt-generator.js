@@ -4,6 +4,8 @@ import {
   insertGeneratedPrompt, updateGeneratedPrompt, deleteGeneratedPrompt,
   searchGeneratedPrompts, getPromptGeneratorSettings, setPromptGeneratorSettings,
   getRouterSettings, getCloudKeys,
+  getPromptDestinations, setPromptDestinations,
+  recordPromptSendEvent, getPromptSendEventsForGeneration,
 } from '../lib/sqlite.js';
 import {
   listAvailableModels, callModel, buildDraftMessages, buildReviewMessages, parseReviewOutput,
@@ -15,6 +17,11 @@ const MAX_PROMPTS       = 500;
 function resolveProvider(modelId, requestedProvider) {
   if (requestedProvider) return requestedProvider;
   return 'local';
+}
+
+function isValidDestinationUrl(url) {
+  if (url === '' || url === null || url === undefined) return true;
+  return /^https?:\/\//i.test(url);
 }
 
 export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
@@ -45,6 +52,83 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       default_review_provider: body.default_review_provider ?? null,
     });
     return c.json(getPromptGeneratorSettings());
+  });
+
+  // ── GET /prompt-generator/destinations — list (seeded on first read) ────────
+  route.get('/prompt-generator/destinations', (c) => c.json({ destinations: getPromptDestinations() }));
+
+  // ── POST /prompt-generator/destinations — add one ───────────────────────────
+  route.post('/prompt-generator/destinations', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const name = String(body?.name ?? '').trim();
+    if (!name) return c.json({ error: 'name requis' }, 400);
+    const url = String(body?.url ?? '').trim();
+    if (!isValidDestinationUrl(url)) return c.json({ error: 'url doit être http/https ou vide' }, 400);
+
+    const list = getPromptDestinations();
+    const destination = {
+      id: crypto.randomUUID(),
+      name,
+      url,
+      category: String(body?.category ?? '').trim() || 'AUTRES',
+      urlTemplate: String(body?.urlTemplate ?? '').trim(),
+      favorite: !!body?.favorite,
+      order: list.length,
+    };
+    const next = [...list, destination];
+    setPromptDestinations(next);
+    return c.json({ destinations: next, destination }, 201);
+  });
+
+  // ── PUT /prompt-generator/destinations/reorder — declared before /:id ───────
+  route.put('/prompt-generator/destinations/reorder', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const ids = Array.isArray(body?.ids) ? body.ids : null;
+    if (!ids) return c.json({ error: 'ids (tableau) requis' }, 400);
+
+    const list = getPromptDestinations();
+    const byId = new Map(list.map(d => [d.id, d]));
+    const reordered = ids.map(id => byId.get(id)).filter(Boolean);
+    for (const d of list) if (!ids.includes(d.id)) reordered.push(d);
+    const next = reordered.map((d, i) => ({ ...d, order: i }));
+    setPromptDestinations(next);
+    return c.json({ destinations: next });
+  });
+
+  // ── PUT /prompt-generator/destinations/:id — edit one ───────────────────────
+  route.put('/prompt-generator/destinations/:id', async (c) => {
+    const id = c.req.param('id');
+    const list = getPromptDestinations();
+    const existing = list.find(d => d.id === id);
+    if (!existing) return c.json({ error: 'Destination introuvable' }, 404);
+
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'body requis' }, 400);
+
+    const updated = { ...existing };
+    if (body.name        !== undefined) updated.name = String(body.name).trim();
+    if (body.url         !== undefined) {
+      const url = String(body.url).trim();
+      if (!isValidDestinationUrl(url)) return c.json({ error: 'url doit être http/https ou vide' }, 400);
+      updated.url = url;
+    }
+    if (body.category    !== undefined) updated.category = String(body.category).trim() || 'AUTRES';
+    if (body.urlTemplate !== undefined) updated.urlTemplate = String(body.urlTemplate).trim();
+    if (body.favorite    !== undefined) updated.favorite = !!body.favorite;
+
+    const next = list.map(d => d.id === id ? updated : d);
+    setPromptDestinations(next);
+    return c.json({ destinations: next, destination: updated });
+  });
+
+  // ── DELETE /prompt-generator/destinations/:id ───────────────────────────────
+  route.delete('/prompt-generator/destinations/:id', (c) => {
+    const id = c.req.param('id');
+    const list = getPromptDestinations();
+    if (!list.some(d => d.id === id)) return c.json({ error: 'Destination introuvable' }, 404);
+    const next = list.filter(d => d.id !== id);
+    setPromptDestinations(next);
+    return c.json({ destinations: next, ok: true });
   });
 
   // ── GET /prompt-generator — list with filters ───────────────────────────────
@@ -260,6 +344,34 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
     }
 
     return c.json({ ok: true, imported, total: body.prompts.length, errors });
+  });
+
+  // ── POST /prompt-generator/:id/send — record a send event ──────────────────
+  route.post('/prompt-generator/:id/send', async (c) => {
+    const id = c.req.param('id');
+    if (!getGeneratedPromptById(id)) return c.json({ error: 'Prompt introuvable' }, 404);
+
+    const body = await c.req.json().catch(() => null);
+    const destinationId = String(body?.destinationId ?? '').trim();
+    if (!destinationId) return c.json({ error: 'destinationId requis' }, 400);
+
+    const destination = getPromptDestinations().find(d => d.id === destinationId);
+    if (!destination) return c.json({ error: 'Destination introuvable' }, 404);
+
+    const event = recordPromptSendEvent({
+      generatedPromptId: id,
+      destinationId,
+      destinationName: destination.name,
+      prefillUsed: !!body?.prefillUsed,
+    });
+    return c.json({ event, events: getPromptSendEventsForGeneration(id) }, 201);
+  });
+
+  // ── GET /prompt-generator/:id/send-events — send history for a generation ──
+  route.get('/prompt-generator/:id/send-events', (c) => {
+    const id = c.req.param('id');
+    if (!getGeneratedPromptById(id)) return c.json({ error: 'Prompt introuvable' }, 404);
+    return c.json({ events: getPromptSendEventsForGeneration(id) });
   });
 
   return route;

@@ -78,7 +78,8 @@ export function createCaptureRoute({ services, logger }) {
       c.set('requestPayload', { text: text.slice(0, 80), source, url });
       try {
         const started = Date.now();
-        const result  = await services.deepCaptureText(text, source, url || undefined);
+        const styleExampleType = body?.style_example_type ? String(body.style_example_type).trim() : undefined;
+        const result  = await services.deepCaptureText(text, source, url || undefined, styleExampleType);
         c.set('modelUsed', result.model_used ?? 'deep-capture-text');
         if (logger) {
           logger.info({ source, url, word_count: result.child?.metadata?.word_count, latency_ms: Date.now() - started }, 'DEEP_CAPTURE_TEXT_DONE');
@@ -200,6 +201,7 @@ export function createCaptureRoute({ services, logger }) {
     const level         = String(body?.level ?? 'standard');
     const focus         = String(body?.focus ?? '').trim();
     const usePowerful   = body?.use_powerful === true;
+    const styleExampleType = body?.style_example_type ? String(body.style_example_type).trim() : undefined;
 
     if (!transcription) {
       return c.json({ error: 'Transcription manquante' }, 400);
@@ -209,7 +211,7 @@ export function createCaptureRoute({ services, logger }) {
       const send = (data) => s.write(`data: ${JSON.stringify(data)}\n\n`);
       try {
         const result = await services.resummariseTranscription({
-          transcription, level, focus, usePowerful,
+          transcription, level, focus, usePowerful, styleExampleType,
           onProgress: (p) => void send(p),
         });
         await send({ done: true, result });

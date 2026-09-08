@@ -8,7 +8,7 @@ const TIMEOUT_MS      = 90_000;
 
 // Modèle gratuit fixe : 120B paramètres, 262K contexte, ~72 t/s.
 // Le suffixe :free est OBLIGATOIRE — OpenRouter refuse de facturer ces requêtes.
-const FREE_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
+export const FREE_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free';
 
 export const PROVIDER_ID = 'openrouter';
 

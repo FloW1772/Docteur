@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Clapperboard, Cog, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2 } from 'lucide-react';
+import { Bot, Clapperboard, Cog, GraduationCap, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2, Library } from 'lucide-react';
 import type { VoiceState } from '../../hooks/useVoiceActivation';
 import type { GestureState } from '../../hooks/useGestureCamera';
 import type { ScreenShareState } from '../../hooks/useScreenShare';
@@ -24,6 +24,8 @@ interface Props {
   readonly onVideoSummaryOpen?: () => void;
   readonly onSkillsOpen:     () => void;
   readonly onPromptGeneratorOpen: () => void;
+  readonly onKiwixOpen:      () => void;
+  readonly onTeacherOpen:    () => void;
   readonly onTodoOpen:       () => void;
   readonly todoPendingCount?: number;
   readonly voiceEnabled?:    boolean;
@@ -59,6 +61,8 @@ export default function TopBar({
   onVideoSummaryOpen,
   onSkillsOpen,
   onPromptGeneratorOpen,
+  onTeacherOpen,
+  onKiwixOpen,
   onTodoOpen,
   todoPendingCount = 0,
   voiceEnabled = false,
@@ -357,6 +361,14 @@ export default function TopBar({
 
         <button className="topbar-action topbar-action--icon" type="button" title="Générateur de prompts" onClick={onPromptGeneratorOpen}>
           <Wand2 size={12} />
+        </button>
+
+        <button className="topbar-action topbar-action--icon" type="button" title="Bibliothèque (archives ZIM hors-ligne)" onClick={onKiwixOpen}>
+          <Library size={12} />
+        </button>
+
+        <button className="topbar-action topbar-action--icon" type="button" title="Professeur (apprentissage & révision)" onClick={onTeacherOpen}>
+          <GraduationCap size={12} />
         </button>
 
         <button

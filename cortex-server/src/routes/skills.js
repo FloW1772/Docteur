@@ -24,9 +24,15 @@ async function runWithModel(model, messages, services) {
   if (model === 'local') {
     return services.runLocalStandard(messages);
   }
-  // Cloud — use runLocalStandard as fallback (cloud path TBD per provider setup)
-  // For now route cloud through runLocalStandard with a note — keeps the guard clean
-  return services.runLocalStandard(messages);
+  // Cloud path is not implemented yet. The UI lets a non-private skill be
+  // marked "cloud" and even warns the user "le contenu sera envoyé au
+  // fournisseur cloud" — silently falling back to the local model here would
+  // make that warning false and mislead the user about where their data goes.
+  // Fail loudly instead until a real cloud provider path is wired.
+  throw Object.assign(
+    new Error('Exécution cloud non implémentée pour les compétences — repasse cette compétence en local dans ses réglages.'),
+    { cloud_not_implemented: true },
+  );
 }
 
 // ── Route ─────────────────────────────────────────────────────────────────────

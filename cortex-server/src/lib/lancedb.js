@@ -203,6 +203,7 @@ export async function getAllNeurons(lancedbPath) {
       kind:            String(row.kind ?? 'note'),
       content:         String(row.content ?? ''),
       content_preview: String(row.content_preview ?? ''),
+      metadata:        (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })(),
     }));
   } catch {
     return [];

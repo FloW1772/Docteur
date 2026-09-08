@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TMP_DIR, ensureTmpDir, transcribeAudioFile } from '../lib/whisper.js';
 import { transcribeWithGroq } from '../lib/whisper-groq.js';
-import { getMeta, setMeta, getCloudKeys } from '../lib/sqlite.js';
+import { getMeta, setMeta, getCloudKeys, getRouterSettings } from '../lib/sqlite.js';
 
 const VOICE_SETTINGS_KEY   = 'voice_settings';
 const PORCUPINE_MODEL_KEY  = 'voice_porcupine_model';
@@ -75,11 +75,19 @@ export function createVoiceRoute({ logger }) {
   app.post('/voice/transcribe', async (c) => {
     const formData = await c.req.formData();
     const audio    = formData.get('audio');
-    const provider = (formData.get('provider') ?? 'local').toString();
+    let provider   = (formData.get('provider') ?? 'local').toString();
     const model    = (formData.get('model')    ?? 'small').toString();
 
     if (!audio || typeof audio === 'string') {
       return c.json({ error: 'Audio manquant' }, 400);
+    }
+
+    // strict_local_mode must win regardless of what the client requested —
+    // re-checked here, at the point of the actual call, not only when the
+    // voice settings toggle is saved (which the client can bypass entirely
+    // by sending provider=groq directly on this request).
+    if (provider === 'groq' && getRouterSettings()?.strict_local_mode === true) {
+      provider = 'local';
     }
 
     ensureTmpDir();

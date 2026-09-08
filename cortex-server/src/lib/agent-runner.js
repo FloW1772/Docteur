@@ -16,6 +16,7 @@ import {
   insertAgentOutput, updateAgentLastOutput,
   getCloudKeys, getRouterSettings,
   insertVideoJob, getActiveVideoJob,
+  getStyleExampleSettings,
 } from './sqlite.js';
 import { estimateVideo, runVideoPipeline } from './video-pipeline/pipeline.js';
 import { hasActiveJobs } from '../routes/jobs.js';
@@ -24,6 +25,8 @@ import {
 } from './providers/gemini.js';
 import { buildPersonaToneNote, getPersonaSettings } from './persona.js';
 import { assertSafeUrl } from './url-security.js';
+import { DETAIL_LEVELS, DETAIL_LEVEL_LABELS, normalizeDetailLevel, detailLevelInstruction } from './detail-level.js';
+import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from './style-examples.js';
 
 const MAX_ACTIVE_AGENTS  = 10;
 const AGENT_TIMEOUT_MS   = 5 * 60 * 1000; // 5 min max per agent run
@@ -46,10 +49,12 @@ function isDue(agent, lastRun) {
 // ── Veille (research) execution logic ────────────────────────────────────────
 // Re-uses the same Gemini prompts / providers as research.js — no duplication.
 
-function synthesePrompt(subject) {
+function synthesePrompt(subject, detailLevel = 'synthese', styleBlock = '') {
   return `Tu es un expert en veille stratégique et prospective. En te basant sur tes connaissances, produis une synthèse structurée en français sur le sujet suivant :
 
 **${subject}**
+
+${detailLevelInstruction(detailLevel)}${styleBlock}
 
 ## Vue d'ensemble
 [3-5 phrases de contexte général]
@@ -70,12 +75,14 @@ function synthesePrompt(subject) {
 *Synthèse basée sur les connaissances de l'IA — informations à vérifier pour les données récentes.*`;
 }
 
-function actualitePrompt(subject) {
+function actualitePrompt(subject, detailLevel = 'synthese', styleBlock = '') {
   return `Fais une recherche web et synthétise les actualités récentes (derniers mois) sur le sujet suivant :
 
 **${subject}**
 
 IMPÉRATIF : Pour chaque information importante, cite la source avec un lien cliquable au format [Titre de la source](URL). Ne mentionne que des faits avec une source web vérifiable.
+
+${detailLevelInstruction(detailLevel)}${styleBlock}
 
 ## Actualités récentes
 [Informations récentes avec sources]
@@ -129,7 +136,7 @@ function contentSimilarity(a, b) {
 // nothing new and re-serving near-identical text).
 const SIMILARITY_THRESHOLD = 0.55; // above this, treated as "essentially the same result"
 
-async function runVeille({ subject, mode }, { logger }) {
+async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleExampleType }, { logger, services }) {
   const settings = getRouterSettings();
   if (settings?.strict_local_mode === true) {
     throw Object.assign(new Error('Mode strictement local activé — agent veille cloud désactivé.'), { strict_local: true });
@@ -141,6 +148,16 @@ async function runVeille({ subject, mode }, { logger }) {
   }
 
   setGeminiRpm(settings.gemini_rpm ?? 10);
+  const level = normalizeDetailLevel(detailLevel);
+
+  const styleSettings = getStyleExampleSettings();
+  let styleBlock = '';
+  let usedExamples = [];
+  if (styleSettings.enabled && useStyleExamples) {
+    const examples = await findStyleExamples(services, { type: styleExampleType, queryText: subject });
+    styleBlock = buildStyleExamplesBlock(examples);
+    usedExamples = describeUsedExamples(examples);
+  }
 
   // Includes the time (not just the date) so two manual runs on the same day
   // — very common while testing — still get distinct titles.
@@ -155,7 +172,7 @@ async function runVeille({ subject, mode }, { logger }) {
       apiKey:    keys.gemini_key,
       messages:  [
         { role: 'system', content: toneNote },
-        { role: 'user',   content: synthesePrompt(subject) },
+        { role: 'user',   content: synthesePrompt(subject, level, styleBlock) },
       ],
       maxTokens: 8192,
       logger,
@@ -165,6 +182,7 @@ async function runVeille({ subject, mode }, { logger }) {
       title,
       content: `# ${title}\n*Veille automatique · ${modeLabel} · ${now}*\n\n${result.text}`,
       kind:    'recherche',
+      metadata: { subject, detailLevel: level, ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}) },
     };
   }
 
@@ -172,12 +190,13 @@ async function runVeille({ subject, mode }, { logger }) {
   let lastErr;
   for (const model of GROUNDING_MODELS) {
     try {
-      const result = await completeWithGrounding({ apiKey: keys.gemini_key, model, prompt: actualitePrompt(subject) });
+      const result = await completeWithGrounding({ apiKey: keys.gemini_key, model, prompt: actualitePrompt(subject, level, styleBlock) });
       const title  = `Veille — ${subject} (${now})`;
       return {
         title,
         content: `# ${title}\n*Veille automatique · ${modeLabel} · ${now}*\n\n${result.text}`,
         kind:    'recherche',
+        metadata: { subject, detailLevel: level, sources: result.sources ?? [], ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}) },
       };
     } catch (err) {
       lastErr = err;
@@ -241,8 +260,17 @@ export const AGENT_TYPES = {
         { value: 'non', label: 'Créer quand même le neurone' },
         { value: 'oui', label: 'Ne pas créer de neurone (juste le signaler)' },
       ], default: 'non' },
+      { key: 'detailLevel', label: 'Niveau de détail', type: 'select', options: DETAIL_LEVELS.map(value => ({
+        value, label: DETAIL_LEVEL_LABELS[value],
+      })), default: 'synthese' },
+      { key: 'useStyleExamples', label: 'Utiliser mes exemples de style (si activé dans les réglages)', type: 'select', options: [
+        { value: 'non', label: 'Non' },
+        { value: 'oui', label: 'Oui' },
+      ], default: 'non' },
     ],
-    execute: ({ params, logger }) => runVeille(params, { logger }),
+    execute: ({ params, logger, services }) => runVeille({
+      ...params, useStyleExamples: params?.useStyleExamples === 'oui',
+    }, { logger, services }),
   },
   video_summary: {
     label:       'Résumé de vidéo longue',

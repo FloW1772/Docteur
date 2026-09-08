@@ -2,10 +2,10 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { exportAllToServer } from '../../lib/storage';
 import { cortexClient } from '../../lib/cortex/client';
-import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats } from '../../lib/cortex/client';
+import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings } from '../../lib/cortex/client';
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files';
+type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -91,6 +91,11 @@ export default function SettingsModal({
   onEasterEggEnabledChange,
 }: Props) {
   const [tab, setTab] = useState<Tab>('models');
+  const [audioSettings, setAudioSettings] = useState<AudioPlayerSettings | null>(null);
+  const [audioError, setAudioError]       = useState<string | null>(null);
+  const [audioFolderDraft, setAudioFolderDraft] = useState('');
+  const [newStreamName, setNewStreamName] = useState('');
+  const [newStreamUrl, setNewStreamUrl]   = useState('');
   const [imageStats, setImageStats] = useState<{ count: number; totalMb: number } | null>(null);
   const [privacyViolations, setPrivacyViolations]     = useState<PrivacyViolation[]>([]);
   const [privacyTestResult,  setPrivacyTestResult]    = useState<PrivacyTestResult | null>(null);
@@ -186,16 +191,18 @@ export default function SettingsModal({
   const [indexStats, setIndexStats]     = useState<IndexFragmentStats | null>(null);
   const [optimizing, setOptimizing]     = useState(false);
   const [optimizeResult, setOptimizeResult] = useState<string | null>(null);
+  const [styleExamplesEnabled, setStyleExamplesEnabled] = useState(false);
 
   const fetchStatus = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const [statusRes, statsRes, rpm, ollamaRes] = await Promise.all([
+      const [statusRes, statsRes, rpm, ollamaRes, styleSettings] = await Promise.all([
         cortexClient.routerStatus(),
         cortexClient.routerStats(),
         cortexClient.getGeminiRpm(),
         cortexClient.ollamaModels(),
+        cortexClient.getStyleExampleSettings(),
       ]);
       setStatuses(statusRes.statuses);
       setSettings(statusRes.settings);
@@ -204,6 +211,7 @@ export default function SettingsModal({
       setStats(statsRes.stats);
       setCloudMonth(statsRes.cloud_month ?? []);
       setGeminiRpm(rpm);
+      setStyleExamplesEnabled(styleSettings.enabled);
       if (statusRes.cloud_keys) setCloudKeys(statusRes.cloud_keys);
     } catch (e) {
       setError('Serveur cognitif inaccessible');
@@ -236,6 +244,47 @@ export default function SettingsModal({
     setInboxError(null);
     cortexClient.getInboxSettings().then(setInboxSettings).catch(() => setInboxError('Cortex indisponible'));
   }, [tab]);
+
+  useEffect(() => {
+    if (tab !== 'audio') return;
+    setAudioError(null);
+    cortexClient.getAudioPlayerSettings()
+      .then((s) => { setAudioSettings(s); setAudioFolderDraft(s.localFolder ?? ''); })
+      .catch(() => setAudioError('Réglages audio indisponibles'));
+  }, [tab]);
+
+  async function saveAudioFolder() {
+    try {
+      const res = await cortexClient.setAudioPlayerSettings({ localFolder: audioFolderDraft.trim() || null });
+      setAudioSettings(res.settings);
+    } catch {
+      setAudioError('Impossible d\'enregistrer le dossier.');
+    }
+  }
+
+  async function addAudioStream() {
+    if (!audioSettings || !newStreamName.trim() || !/^https?:\/\//i.test(newStreamUrl.trim())) return;
+    const customStreams = [...audioSettings.customStreams, { name: newStreamName.trim(), url: newStreamUrl.trim() }];
+    try {
+      const res = await cortexClient.setAudioPlayerSettings({ customStreams });
+      setAudioSettings(res.settings);
+      setNewStreamName('');
+      setNewStreamUrl('');
+    } catch {
+      setAudioError('Impossible d\'ajouter ce flux.');
+    }
+  }
+
+  async function removeAudioStream(index: number) {
+    if (!audioSettings) return;
+    const customStreams = audioSettings.customStreams.filter((_, i) => i !== index);
+    try {
+      const res = await cortexClient.setAudioPlayerSettings({ customStreams });
+      setAudioSettings(res.settings);
+    } catch {
+      setAudioError('Impossible de supprimer ce flux.');
+    }
+  }
 
   useEffect(() => {
     if (tab !== 'files') return;
@@ -483,6 +532,16 @@ export default function SettingsModal({
     }
   }
 
+  async function handleToggleStyleExamples() {
+    setSaving(true);
+    try {
+      const res = await cortexClient.setStyleExampleSettings(!styleExamplesEnabled);
+      setStyleExamplesEnabled(res.enabled);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleFallbackChange(model: string) {
     setSaving(true);
     try {
@@ -633,7 +692,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files'] as const).map(t => (
+          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -645,7 +704,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : 'FICHIERS'}
+              {t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -811,6 +870,43 @@ export default function SettingsModal({
                     left: settings.strict_local_mode ? 22 : 3,
                     width: 16, height: 16, borderRadius: '50%',
                     background: settings.strict_local_mode ? '#f472b6' : '#5a4a7a',
+                    transition: 'all 0.2s',
+                  }} />
+                </button>
+              </div>
+
+              {/* Style examples toggle — utiliser mes exemples de style dans les résumés */}
+              <div
+                className="flex items-center justify-between py-3 px-4 rounded"
+                style={{
+                  background: styleExamplesEnabled ? 'rgba(94,231,255,0.06)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${styleExamplesEnabled ? 'rgba(94,231,255,0.3)' : 'rgba(255,255,255,0.07)'}`,
+                }}
+              >
+                <div>
+                  <p className="font-grotesk font-semibold text-sm" style={{ color: styleExamplesEnabled ? '#5ee7ff' : '#f0eaff' }}>
+                    ✎ Utiliser mes exemples de style
+                  </p>
+                  <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
+                    Réutilise le style (structure, ton, mise en forme) de tes neurones « Exemple de résumé » lors des résumés — capture, veille, vidéo longue
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={handleToggleStyleExamples}
+                  style={{
+                    width: 44, height: 24, borderRadius: 12, position: 'relative', flexShrink: 0,
+                    background: styleExamplesEnabled ? 'rgba(94,231,255,0.3)' : 'rgba(255,255,255,0.08)',
+                    border: `1px solid ${styleExamplesEnabled ? 'rgba(94,231,255,0.5)' : 'rgba(255,255,255,0.12)'}`,
+                    cursor: saving ? 'default' : 'pointer', transition: 'all 0.2s',
+                  }}
+                >
+                  <div style={{
+                    position: 'absolute', top: 3,
+                    left: styleExamplesEnabled ? 22 : 3,
+                    width: 16, height: 16, borderRadius: '50%',
+                    background: styleExamplesEnabled ? '#5ee7ff' : '#5a4a7a',
                     transition: 'all 0.2s',
                   }} />
                 </button>
@@ -2859,6 +2955,111 @@ export default function SettingsModal({
                     </>
                   )}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {!loading && !error && tab === 'audio' && (
+            <div className="px-5 py-4 flex flex-col gap-5">
+              {audioError && (
+                <div style={{ padding: '8px 12px', background: 'rgba(255,77,88,0.08)', border: '1px solid rgba(255,77,88,0.2)', borderRadius: 6, fontSize: 12, color: '#ff4d58', fontFamily: 'monospace' }}>
+                  {audioError}
+                </div>
+              )}
+
+              <div>
+                <p className="font-mono mb-2" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>DOSSIER LOCAL (musique lo-fi)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={audioFolderDraft}
+                    onChange={(e) => setAudioFolderDraft(e.target.value)}
+                    placeholder="C:\Musique\lofi"
+                    className="font-mono text-xs"
+                    style={{
+                      flex: 1, padding: '8px 10px', borderRadius: 6,
+                      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)',
+                      color: '#e2e8f0',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void saveAudioFolder()}
+                    className="font-mono text-xs px-3 py-2 rounded"
+                    style={{ background: 'rgba(94,231,255,0.08)', border: '1px solid rgba(94,231,255,0.2)', color: '#5ee7ff' }}
+                  >
+                    Enregistrer
+                  </button>
+                </div>
+                <p className="font-mono text-xs mt-1" style={{ color: '#7a6c9a' }}>
+                  Fichiers .mp3, .ogg, .wav, .flac — scannés uniquement à l'ouverture du lecteur.
+                </p>
+              </div>
+
+              <div>
+                <p className="font-mono mb-2" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>RADIOS PRÉ-CONFIGURÉES (SomaFM)</p>
+                <div className="flex flex-col gap-1">
+                  {(audioSettings?.presets ?? []).map(p => (
+                    <div key={p.id} className="font-mono text-xs" style={{ color: '#7a6c9a', padding: '4px 0' }}>
+                      {p.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="font-mono mb-2" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>FLUX RADIO PERSONNALISÉS</p>
+                {(audioSettings?.customStreams ?? []).length === 0 ? (
+                  <p className="font-mono text-xs" style={{ color: '#5a4a7a' }}>Aucun flux ajouté.</p>
+                ) : (
+                  <div className="flex flex-col gap-2 mb-3">
+                    {audioSettings!.customStreams.map((s, i) => (
+                      <div key={`${s.url}-${i}`} className="flex items-center justify-between gap-2" style={{ padding: '8px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs truncate" style={{ color: '#e2e8f0' }}>{s.name}</p>
+                          <p className="font-mono text-[10px] truncate" style={{ color: '#5a4a7a' }}>{s.url}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void removeAudioStream(i)}
+                          className="font-mono text-xs px-2 py-1 rounded"
+                          style={{ background: 'rgba(255,77,88,0.08)', border: '1px solid rgba(255,77,88,0.18)', color: '#ff4d58', flexShrink: 0 }}
+                        >
+                          Supprimer
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newStreamName}
+                    onChange={(e) => setNewStreamName(e.target.value)}
+                    placeholder="Nom"
+                    className="font-mono text-xs"
+                    style={{ width: 120, padding: '8px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', color: '#e2e8f0' }}
+                  />
+                  <input
+                    type="text"
+                    value={newStreamUrl}
+                    onChange={(e) => setNewStreamUrl(e.target.value)}
+                    placeholder="https://…"
+                    className="font-mono text-xs"
+                    style={{ flex: 1, padding: '8px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', color: '#e2e8f0' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void addAudioStream()}
+                    className="font-mono text-xs px-3 py-2 rounded"
+                    style={{ background: 'rgba(61,255,170,0.08)', border: '1px solid rgba(61,255,170,0.2)', color: '#3dffaa' }}
+                  >
+                    Ajouter
+                  </button>
+                </div>
+                <p className="font-mono text-xs mt-2" style={{ color: '#7a6c9a' }}>
+                  Utilise uniquement des flux radio publics et librement accessibles (pas de compte requis).
+                </p>
               </div>
             </div>
           )}

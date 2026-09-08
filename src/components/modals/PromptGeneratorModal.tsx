@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Wand2, X, Copy, Check, RefreshCw, Trash2, Star, Search } from 'lucide-react';
+import { Wand2, X, Copy, Check, RefreshCw, Trash2, Star, Search, Send, Settings, Plus, ArrowUp, ArrowDown } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
-import type { GeneratedPrompt, PromptGeneratorModelOption, PromptOutcome } from '../../lib/cortex/client';
+import type { GeneratedPrompt, PromptGeneratorModelOption, PromptOutcome, PromptDestination, PromptSendEvent } from '../../lib/cortex/client';
+
+const MAX_PREFILL_URL_LENGTH = 2000;
 
 interface Props {
   onClose: () => void;
@@ -97,6 +99,224 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+function sortDestinations(list: PromptDestination[]): PromptDestination[] {
+  return [...list].sort((a, b) => {
+    if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+    return a.order - b.order;
+  });
+}
+
+function groupDestinationsByCategory(list: PromptDestination[]): Array<{ category: string; items: PromptDestination[] }> {
+  const sorted = sortDestinations(list);
+  const groups: Array<{ category: string; items: PromptDestination[] }> = [];
+  for (const d of sorted) {
+    let group = groups.find(g => g.category === d.category);
+    if (!group) { group = { category: d.category, items: [] }; groups.push(group); }
+    group.items.push(d);
+  }
+  return groups;
+}
+
+interface SendPanelProps {
+  destinations: PromptDestination[];
+  events: PromptSendEvent[];
+  onSend: (d: PromptDestination) => void;
+  notice: { text: string; link?: string } | null;
+  onClose: () => void;
+}
+
+function SendPanel({ destinations, events, onSend, notice, onClose }: SendPanelProps) {
+  const groups = groupDestinationsByCategory(destinations);
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(94,231,255,0.2)', borderRadius: 6, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={labelStyle}>ENVOYER VERS…</span>
+        <button type="button" style={iconBtnStyle} onClick={onClose}><X size={13} /></button>
+      </div>
+
+      {groups.length === 0 && <div style={{ fontSize: 12, color: '#64748b' }}>Aucune destination configurée.</div>}
+
+      {groups.map(g => (
+        <div key={g.category}>
+          <div style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', letterSpacing: '0.04em', marginBottom: 4 }}>{g.category}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {g.items.map(d => (
+              <button
+                key={d.id}
+                type="button"
+                style={{ ...btnStyle, padding: '4px 10px', background: d.favorite ? 'rgba(255,181,71,0.1)' : btnStyle.background, borderColor: d.favorite ? 'rgba(255,181,71,0.3)' : (btnStyle.border as string) }}
+                onClick={() => onSend(d)}
+                title={d.url || 'Copie uniquement'}
+              >
+                {d.favorite && <Star size={10} color="#ffb547" fill="#ffb547" />}
+                {d.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {notice && (
+        <div style={{ fontSize: 12, color: '#3dffaa', background: 'rgba(61,255,170,0.08)', border: '1px solid rgba(61,255,170,0.2)', borderRadius: 6, padding: '6px 10px' }}>
+          {notice.text}
+          {notice.link && (
+            <>
+              {' — '}
+              <a href={notice.link} target="_blank" rel="noreferrer" style={{ color: '#5ee7ff' }}>ouvrir le lien</a>
+            </>
+          )}
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <span style={{ ...labelStyle, marginBottom: 0 }}>HISTORIQUE D'ENVOI</span>
+          {events.map(e => (
+            <div key={e.id} style={{ fontSize: 11, color: '#94a3b8' }}>
+              {e.destination_name} · {formatDate(e.created_at)} {e.prefill_used && <span style={{ color: '#5ee7ff' }}>· préremplis</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface DestinationFormState {
+  id: string | null;
+  name: string;
+  url: string;
+  category: string;
+  urlTemplate: string;
+  favorite: boolean;
+}
+
+const EMPTY_DEST_FORM: DestinationFormState = { id: null, name: '', url: '', category: '', urlTemplate: '', favorite: false };
+
+function DestinationsManager({
+  destinations, categories, onReload,
+}: {
+  destinations: PromptDestination[];
+  categories: string[];
+  onReload: (list: PromptDestination[]) => void;
+}) {
+  const [form, setForm] = useState<DestinationFormState>(EMPTY_DEST_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
+  const groups = groupDestinationsByCategory(destinations);
+
+  async function handleSubmit() {
+    setFormError(null);
+    if (!form.name.trim()) { setFormError('Nom requis'); return; }
+    try {
+      const payload = {
+        name: form.name.trim(),
+        url: form.url.trim(),
+        category: form.category.trim() || 'AUTRES',
+        urlTemplate: form.urlTemplate.trim(),
+        favorite: form.favorite,
+      };
+      const list = form.id
+        ? await cortexClient.updatePromptDestination(form.id, payload)
+        : await cortexClient.addPromptDestination(payload);
+      onReload(list);
+      setForm(EMPTY_DEST_FORM);
+    } catch (err) {
+      setFormError((err as Error).message);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      const list = await cortexClient.deletePromptDestination(id);
+      onReload(list);
+    } catch { /* ignore */ }
+  }
+
+  async function handleFavoriteToggle(d: PromptDestination) {
+    try {
+      const list = await cortexClient.updatePromptDestination(d.id, { favorite: !d.favorite });
+      onReload(list);
+    } catch { /* ignore */ }
+  }
+
+  async function handleMove(id: string, direction: -1 | 1) {
+    const ids = sortDestinations(destinations).map(d => d.id);
+    const idx = ids.indexOf(id);
+    const swapWith = idx + direction;
+    if (swapWith < 0 || swapWith >= ids.length) return;
+    [ids[idx], ids[swapWith]] = [ids[swapWith], ids[idx]];
+    try {
+      const list = await cortexClient.reorderPromptDestinations(ids);
+      onReload(list);
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 11, color: '#64748b' }}>
+        Gère les destinations proposées dans « Envoyer vers… ». Le préremplissage n'est possible que si le site le permet
+        via un paramètre d'URL — essaie d'ouvrir <code>https://chatgpt.com/?q=test</code> et regarde si le champ se prérempli.
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: 10 }}>
+        <span style={labelStyle}>{form.id ? 'MODIFIER LA DESTINATION' : 'AJOUTER UNE DESTINATION'}</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input style={selectStyle} placeholder="Nom" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+          <input style={selectStyle} placeholder="URL (optionnelle, http/https)" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} />
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input style={selectStyle} placeholder="Catégorie" list="prompt-dest-categories" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} />
+          <datalist id="prompt-dest-categories">
+            {categories.map(c => <option key={c} value={c} />)}
+          </datalist>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={form.favorite} onChange={e => setForm({ ...form, favorite: e.target.checked })} />
+            Favori
+          </label>
+        </div>
+        <div>
+          <input style={selectStyle} placeholder="Modèle d'URL de préremplissage, ex: https://chatgpt.com/?q={prompt}" value={form.urlTemplate} onChange={e => setForm({ ...form, urlTemplate: e.target.value })} />
+          <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>
+            Essaie d'ouvrir https://chatgpt.com/?q=test et regarde si le champ se prérempli.
+          </div>
+        </div>
+        {formError && <div style={{ fontSize: 11, color: '#ff4d58' }}>{formError}</div>}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" style={btnStyle} onClick={() => void handleSubmit()}>
+            <Plus size={12} /> {form.id ? 'Enregistrer' : 'Ajouter'}
+          </button>
+          {form.id && <button type="button" style={iconBtnStyle} onClick={() => setForm(EMPTY_DEST_FORM)}>Annuler</button>}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {groups.map(g => (
+          <div key={g.category}>
+            <div style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', letterSpacing: '0.04em', marginBottom: 4 }}>{g.category}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {g.items.map(d => (
+                <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '6px 8px' }}>
+                  <button type="button" style={iconBtnStyle} onClick={() => void handleFavoriteToggle(d)} title="Favori">
+                    <Star size={12} color={d.favorite ? '#ffb547' : '#64748b'} fill={d.favorite ? '#ffb547' : 'none'} />
+                  </button>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: '#e2e8f0' }}>{d.name}</div>
+                    <div style={{ fontSize: 10, color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.url || 'copie uniquement'}</div>
+                  </div>
+                  <button type="button" style={iconBtnStyle} onClick={() => void handleMove(d.id, -1)} title="Monter"><ArrowUp size={12} /></button>
+                  <button type="button" style={iconBtnStyle} onClick={() => void handleMove(d.id, 1)} title="Descendre"><ArrowDown size={12} /></button>
+                  <button type="button" style={iconBtnStyle} onClick={() => setForm({ id: d.id, name: d.name, url: d.url, category: d.category, urlTemplate: d.urlTemplate, favorite: d.favorite })} title="Modifier"><Settings size={12} /></button>
+                  <button type="button" style={iconBtnStyle} onClick={() => void handleDelete(d.id)} title="Supprimer"><Trash2 size={12} color="#ff4d58" /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props) {
   const [request, setRequest]     = useState('');
   const [localModels, setLocalModels] = useState<PromptGeneratorModelOption[]>([]);
@@ -112,7 +332,78 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
   const [outcomeFilter, setOutcomeFilter] = useState('');
   const [modelFilter, setModelFilter] = useState('');
 
+  const [destinations, setDestinations] = useState<PromptDestination[]>([]);
+  const [showSendPanel, setShowSendPanel] = useState(false);
+  const [sendEvents, setSendEvents] = useState<PromptSendEvent[]>([]);
+  const [sendNotice, setSendNotice] = useState<{ text: string; link?: string } | null>(null);
+  const [showDestinationSettings, setShowDestinationSettings] = useState(false);
+
   const allModels = [...localModels, ...cloudModels];
+
+  const loadDestinations = useCallback(async () => {
+    try {
+      const list = await cortexClient.getPromptDestinations();
+      setDestinations(list);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { void loadDestinations(); }, [loadDestinations]);
+
+  const loadSendEvents = useCallback(async (promptId: string) => {
+    try {
+      const events = await cortexClient.getPromptSendEvents(promptId);
+      setSendEvents(events);
+    } catch { setSendEvents([]); }
+  }, []);
+
+  useEffect(() => {
+    setSendNotice(null);
+    setShowSendPanel(false);
+    if (current?.id) void loadSendEvents(current.id);
+    else setSendEvents([]);
+  }, [current?.id, loadSendEvents]);
+
+  function keptText(p: GeneratedPrompt): string {
+    if (p.kept_version === 'draft') return p.draft_text;
+    if (p.kept_version === 'reviewed') return p.reviewed_text;
+    return p.reviewed_text || p.draft_text;
+  }
+
+  async function handleSend(p: GeneratedPrompt, destination: PromptDestination) {
+    const text = keptText(p);
+    void navigator.clipboard.writeText(text);
+
+    let urlToOpen: string | null = destination.url || null;
+    let prefillUsed = false;
+    let overflowFallback = false;
+
+    if (destination.urlTemplate) {
+      if (text.length <= MAX_PREFILL_URL_LENGTH) {
+        urlToOpen = destination.urlTemplate.replace('{prompt}', encodeURIComponent(text));
+        prefillUsed = true;
+      } else {
+        overflowFallback = true;
+      }
+    }
+
+    let notice: { text: string; link?: string };
+    if (!urlToOpen) {
+      notice = { text: 'Prompt copié — colle-le dans ton terminal' };
+    } else {
+      const win = window.open(urlToOpen, '_blank');
+      const blocked = !win || win.closed || typeof win.closed === 'undefined';
+      const baseText = overflowFallback
+        ? 'Prompt trop long pour le préremplissage — copié dans le presse-papier'
+        : `Prompt copié — colle-le dans ${destination.name}`;
+      notice = blocked ? { text: `${baseText} (fenêtre bloquée)`, link: urlToOpen } : { text: baseText };
+    }
+    setSendNotice(notice);
+
+    try {
+      const result = await cortexClient.sendGeneratedPrompt(p.id, { destinationId: destination.id, prefillUsed });
+      setSendEvents(result.events);
+    } catch { /* ignore — copy/open already happened */ }
+  }
 
   const loadModels = useCallback(async () => {
     try {
@@ -245,16 +536,41 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
     setRequest(p.request);
   }
 
+  function openSendFromHistory(p: GeneratedPrompt) {
+    setCurrent(p);
+    setRequest(p.request);
+    setShowSendPanel(true);
+  }
+
   return (
     <div style={modalStyle} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={panelStyle}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 8 }}>
           <Wand2 size={14} color="#5ee7ff" />
           <span style={{ fontFamily: 'monospace', fontSize: 13, letterSpacing: '0.05em', color: '#e2e8f0', flex: 1 }}>GÉNÉRATEUR DE PROMPTS</span>
+          <button
+            type="button"
+            title="Destinations de prompts"
+            style={{ ...iconBtnStyle, color: showDestinationSettings ? '#5ee7ff' : '#94a3b8' }}
+            onClick={() => setShowDestinationSettings(v => !v)}
+          >
+            <Settings size={15} />
+          </button>
           <button type="button" onClick={onClose} style={iconBtnStyle}><X size={16} /></button>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {showDestinationSettings && (
+            <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 14 }}>
+              <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#e2e8f0', letterSpacing: '0.04em', display: 'block', marginBottom: 8 }}>DESTINATIONS DE PROMPTS</span>
+              <DestinationsManager
+                destinations={destinations}
+                categories={[...new Set(destinations.map(d => d.category))]}
+                onReload={setDestinations}
+              />
+            </div>
+          )}
 
           {strictLocalMode && (
             <div style={{ fontSize: 11, color: '#ffb547', background: 'rgba(255,181,71,0.08)', border: '1px solid rgba(255,181,71,0.2)', borderRadius: 6, padding: '6px 10px' }}>
@@ -324,8 +640,21 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
                       {OUTCOME_LABELS[o]}
                     </button>
                   ))}
+                  <button type="button" style={btnStyle} onClick={() => setShowSendPanel(v => !v)}>
+                    <Send size={12} /> Envoyer vers…
+                  </button>
                 </div>
               </div>
+
+              {showSendPanel && (
+                <SendPanel
+                  destinations={destinations}
+                  events={sendEvents}
+                  notice={sendNotice}
+                  onSend={d => void handleSend(current, d)}
+                  onClose={() => setShowSendPanel(false)}
+                />
+              )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -405,6 +734,9 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
                   </div>
                   <button type="button" title="Favori / modèle" style={iconBtnStyle} onClick={() => void handleTemplate(p)}>
                     <Star size={13} color={p.is_template ? '#ffb547' : '#64748b'} fill={p.is_template ? '#ffb547' : 'none'} />
+                  </button>
+                  <button type="button" title="Envoyer vers…" style={iconBtnStyle} onClick={() => openSendFromHistory(p)}>
+                    <Send size={13} />
                   </button>
                   <button type="button" title="Régénérer" style={iconBtnStyle} onClick={() => void handleRegenerate(p)}>
                     <RefreshCw size={13} />
