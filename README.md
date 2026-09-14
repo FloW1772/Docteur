@@ -1,30 +1,70 @@
 # 🧠 Docteur
 
-> Assistant personnel qui centralise tes connaissances, tes documents et plusieurs modèles d'IA (locaux et cloud) dans une interface unique, avec un mode strictement local pour bloquer les appels cloud quand tu le souhaites.
+> Assistant IA personnel local et hybride pour organiser tes connaissances, interroger plusieurs modèles et automatiser tes tâches depuis une seule interface.
 
-![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)
-![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)
-![SQLite](https://img.shields.io/badge/SQLite-embarqu%C3%A9-003B57?logo=sqlite&logoColor=white)
-![Windows](https://img.shields.io/badge/Plateforme-Windows-0078D6?logo=windows&logoColor=white)
+<p align="center">
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js >= 20">
+  <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React 18">
+  <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5">
+  <img src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white" alt="Vite 8">
+  <img src="https://img.shields.io/badge/SQLite-embarqu%C3%A9-003B57?logo=sqlite&logoColor=white" alt="SQLite">
+  <img src="https://img.shields.io/badge/Plateforme-Windows-0078D6?logo=windows&logoColor=white" alt="Windows">
+</p>
 
-## Table des matières
+<p align="center">
+  <img src="screenshot_render.png" alt="Interface de Docteur" width="900">
+</p>
 
-- [Aperçu](#-aperçu)
+## ✨ Pourquoi Docteur ?
+
+🧠 **Mémoire personnelle**
+Neurones, documents, recherche sémantique et connaissances centralisées dans une base locale.
+
+🔒 **Local-first**
+Chat, vision, transcription et embeddings peuvent tourner entièrement sur ta machine via Ollama, sans connexion Internet.
+
+🤖 **Multi-provider**
+Claude Code, Codex, Groq, Gemini, OpenRouter, Anthropic API, OpenAI API et autres intégrations configurables.
+
+🧭 **Mode Strict Local**
+Bloque les chemins applicatifs identifiés comme cloud lorsqu'il est activé, pour garder le contrôle sur où vont tes données.
+
+⚙️ **Automatisation**
+Agents planifiables, veille thématique, génération de prompts et outils spécialisés (CV, professeur).
+
+🎥 **Multimédia**
+Résumé vidéo, transcription, analyse d'image et OCR.
+
+## 🚀 Démarrage rapide
+
+```powershell
+git clone https://github.com/FloW1772/Docteur.git
+cd Docteur
+npm install
+cd cortex-server
+npm install
+```
+
+Puis démarre le backend (`npm run dev` dans `cortex-server/`) et le frontend (`npm run dev` à la racine) dans deux terminaux, ou utilise le launcher Windows fourni (`Docteur-Launcher.bat`).
+
+> [!NOTE]
+> Le launcher Windows peut nécessiter d'adapter son chemin de projet si le dépôt n'est pas installé à l'emplacement prévu.
+
+Détails complets dans la section [Installation](#-installation-détaillée) plus bas.
+
+<details>
+<summary><strong>📚 Table des matières</strong></summary>
+
 - [Qu'est-ce que Docteur ?](#-quest-ce-que-docteur-)
-- [Philosophie local / hybride](#-philosophie-local--hybride)
 - [Fonctionnalités principales](#-fonctionnalités-principales)
 - [Architecture](#-architecture)
-- [Routage IA](#-routage-ia)
 - [Providers IA](#-providers-ia)
+- [Routage IA](#-routage-ia)
 - [Mode Strict Local](#-mode-strict-local)
-- [Prérequis](#-prérequis)
-- [Installation](#-installation)
-- [Démarrer Docteur](#-démarrer-docteur)
+- [Installation détaillée](#-installation-détaillée)
 - [Configuration des IA](#-configuration-des-ia)
-- [Sécurité et confidentialité](#-sécurité-et-confidentialité)
 - [Données et stockage](#-données-et-stockage)
+- [Sécurité et confidentialité](#-sécurité-et-confidentialité)
 - [Formats supportés](#-formats-supportés)
 - [Vidéo et transcription](#-vidéo-et-transcription)
 - [Caméra et gestes](#-caméra-et-gestes)
@@ -41,92 +81,55 @@
 - [Licence](#-licence)
 - [Technologies principales](#-technologies-principales)
 
-## 🖼️ Aperçu
-
-![Docteur — écran d'accueil](screenshot_render.png)
-
-<!-- Ajouter ici une capture montrant des neurones remplis et une réponse du chat -->
+</details>
 
 ## 🧠 Qu'est-ce que Docteur ?
 
-Docteur est une application personnelle (frontend web + serveur local) qui te permet de rassembler dans un même endroit : des notes et documents (appelés **neurones**), une recherche dans ce que tu y as stocké, et l'accès à plusieurs modèles d'IA — installés sur ta machine ou fournis par un service cloud.
+Docteur est une application personnelle (frontend web + serveur local) qui rassemble dans un même endroit : des notes et documents (appelés **neurones**), une recherche dans ce que tu y as stocké, et l'accès à plusieurs modèles d'IA — installés sur ta machine ou fournis par un service cloud.
 
 L'idée de départ : au lieu d'ouvrir dix outils différents (une note, un chat IA, un lecteur PDF, un résumé de vidéo…), tout passe par la même interface, avec le choix explicite d'utiliser un modèle local (Ollama) ou un modèle distant selon la tâche et tes préférences de confidentialité.
 
 Docteur tourne en local sur ta machine : un serveur backend (`cortex-server`) répond sur `127.0.0.1`, et l'interface est une application web (React) que tu ouvres dans ton navigateur.
 
-## 🔀 Philosophie local / hybride
-
-- **Local** : le chat, la vision (analyse d'image), la transcription audio et la recherche dans tes neurones peuvent fonctionner entièrement sur ta machine via [Ollama](https://ollama.com), sans connexion Internet, à condition d'avoir installé les modèles nécessaires.
-- **Hybride** : certaines fonctionnalités (veille/recherche web, comparaison de modèles, transcription accélérée) peuvent s'appuyer sur des services cloud si tu les configures — mais rien n'est envoyé au cloud sans que tu aies fourni une configuration (clé API, session CLI, etc.) pour ce provider.
-- **Cloud optionnel** : aucun provider cloud n'est activé par défaut. Tu choisis lesquels configurer, et le [mode Strict Local](#-mode-strict-local) permet de désactiver les chemins cloud pris en charge par ce mode.
-
 Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans Ollama installé et sans modèle local téléchargé, les fonctions IA n'ont rien à interroger.
 
 ## ✨ Fonctionnalités principales
 
-### 🧠 Neurones et mémoire
+### 🧠 Connaissances
 
-- Création, édition et suppression de neurones (notes, liens, vidéos, CV, etc.).
-- Persistance dans une base SQLite locale, avec chargement rapide au démarrage (les neurones récents d'abord, le reste à la demande).
-- Liens entre neurones et navigation dans l'arborescence.
-- Certains neurones peuvent être créés automatiquement par un **agent** planifié (voir plus bas), à partir d'un contenu généré par un modèle IA.
+- Création, édition et suppression de neurones (notes, liens, vidéos, CV, etc.), avec liens entre eux.
+- Persistance SQLite locale, avec chargement rapide au démarrage (neurones récents d'abord, reste à la demande).
+- Recherche par similarité vectorielle (embeddings Ollama, index LanceDB).
+- Import documentaire : `.xlsx`, `.csv`, `.txt`, `.md`, `.json`, avec chunking pour le contexte envoyé au modèle.
 
-### 💬 Intelligence artificielle
+### 🤖 IA
 
 - Chat avec un modèle local via Ollama.
-- Un routeur central choisit ou bascule entre providers selon la disponibilité, les clés configurées et le mode Strict Local (détails dans [Routage IA](#-routage-ia)).
-- Comparaison de plusieurs modèles sur la même question (« Comparaison de modèles »).
+- Routeur central qui choisit ou bascule entre providers selon disponibilité, clés configurées et mode Strict Local.
+- Comparaison de plusieurs modèles sur la même question.
+- Support Claude Code, Codex et providers API (Groq, Gemini, OpenRouter, Anthropic, OpenAI, FreeLLMAPI, PAIR).
 
-### 📚 RAG et documents
+### ⚙️ Outils
 
-- Import documentaire générique : `.xlsx`, `.csv`, `.txt`, `.md`, `.json`, avec extraction de contenu.
-- PDF : import/analyse de CV et export PDF de contenu — pas d'import PDF générique dans le corpus documentaire à ce jour.
-- Recherche par similarité vectorielle dans les neurones stockés (embeddings via Ollama, index [LanceDB](https://lancedb.com/)).
-- Un corpus de documents peut être découpé en fragments (chunking) pour alimenter le contexte envoyé au modèle.
+- Agents planifiables qui exécutent une tâche récurrente et déposent leur résultat sous forme de neurone.
+- Veille thématique et recherche web avec génération de synthèses.
+- Module Professeur : parcours pédagogiques, répétition espacée, modèle IA dédié.
+- Prompt Generator : aide à la rédaction de prompts avec sélection de provider/modèle.
+- Import/analyse de CV (PDF) et génération de contenu pour candidature.
 
-### 🎥 Vidéo et transcription
+### 🎥 Multimédia
 
-- Téléchargement audio d'une vidéo (via [yt-dlp](https://github.com/yt-dlp/yt-dlp)) puis transcription et résumé.
-- Transcription locale (Whisper local, découpage audio via `ffmpeg`) ou via l'API Groq (Whisper cloud) si configurée.
-
-### 👁️ Vision
-
-- Analyse d'image 100 % locale via Ollama (modèle `llava` par défaut), avec bascule vers l'OCR en cas de dépassement de délai.
-
-### ✋ Caméra et gestes — 🧪 expérimental
-
-- Reconnaissance de gestes de la main (via la caméra du navigateur) pour naviguer entre les neurones, basée sur MediaPipe.
-- Fonctionnalité sensible à l'éclairage, à la position de la main et aux performances de la machine — considérée comme expérimentale.
-
-### 🔎 Recherche et veille
-
-- Recherche web et veille thématique, avec génération de synthèses.
-- Agents planifiables (fréquence configurable) qui peuvent exécuter une tâche récurrente et déposer leur résultat sous forme de neurone.
-
-### 🧑‍🏫 Professeur
-
-- Module dédié à l'apprentissage : parcours pédagogiques, choix d'un modèle IA dédié (local ou cloud selon configuration), système de répétition espacée pour réviser.
-
-### 📄 CV / candidature
-
-- Import et analyse de CV (PDF), génération/retouche de contenu pour une candidature.
-
-### 🪄 Prompt Generator
-
-- Aide à la rédaction de prompts, avec sélection de provider/modèle et suivi des destinations d'envoi.
-
-### ⚖️ Comparaison de modèles
-
-- Envoi de la même question à plusieurs providers/modèles en parallèle pour comparer les réponses.
+- Résumé vidéo : téléchargement audio (yt-dlp), transcription (Whisper local ou Groq cloud), résumé.
+- Analyse d'image 100 % locale via Ollama (`llava` par défaut), avec bascule OCR en cas de dépassement de délai.
+- Reconnaissance de gestes par caméra — 🧪 expérimental.
 
 ## 🏗️ Architecture
 
 **Frontend** — React + TypeScript, servi par Vite. Communique avec le backend via une API HTTP locale (`http://localhost:3001` par défaut).
 
-**Backend (`cortex-server`)** — Serveur Node.js (framework [Hono](https://hono.dev)), organisé en routes par fonctionnalité (neurones, recherche, vidéo, agents, etc.).
+**Cortex Server** — Serveur Node.js (framework [Hono](https://hono.dev)), organisé en routes par fonctionnalité (neurones, recherche, vidéo, agents, etc.).
 
-**Données** — SQLite (`better-sqlite3`) pour les neurones, réglages et journaux ; LanceDB pour l'index vectoriel utilisé par la recherche sémantique.
+**Données** — SQLite (`better-sqlite3`) pour les neurones, réglages et journaux ; [LanceDB](https://lancedb.com/) pour l'index vectoriel utilisé par la recherche sémantique.
 
 **IA** — Un routeur central (`router.js`) sélectionne un provider local ou cloud selon la configuration ; certaines fonctionnalités (veille, professeur) appellent directement un provider cloud spécifique plutôt que de passer par ce routeur (voir [Routage IA](#-routage-ia)).
 
@@ -141,7 +144,8 @@ flowchart LR
     PAIR[PAIR - endpoint local ou distant]
     CLAUDE[Claude Code CLI]
     CODEX[Codex CLI]
-    CLOUD[Providers cloud - Groq / Gemini / OpenRouter / Anthropic / OpenAI / FreeLLMAPI]
+    CLOUD[Providers cloud - Groq / Gemini / OpenRouter / Anthropic / OpenAI]
+    FREELLM[FreeLLMAPI - instance externe optionnelle]
 
     UI --> API
     API --> DB
@@ -152,7 +156,23 @@ flowchart LR
     ROUTER --> CLAUDE
     ROUTER --> CODEX
     ROUTER --> CLOUD
+    ROUTER -.-> FREELLM
 ```
+
+## 🤖 Providers IA
+
+| Provider | Type | Auth | Usage |
+|---|---|---|---|
+| **Ollama** | Local | Aucune | Nécessite une installation séparée et au moins un modèle téléchargé |
+| **Claude Code** | Abonnement (CLI) | Session officielle `claude` | ≠ Anthropic API — pas de clé requise en mode abonnement |
+| **Codex** | Abonnement ChatGPT (CLI) | Session officielle `codex` | ≠ OpenAI API — pas de clé requise en mode abonnement |
+| **Groq** | Cloud (API) | Clé API | |
+| **Gemini** | Cloud (API) | Clé API | |
+| **OpenRouter** | Cloud (API) | Clé API | |
+| **Anthropic API** | Cloud (API, payant) | Clé API | Distinct de Claude Code |
+| **OpenAI API** | Cloud (API, payant) | Clé API | Distinct de Codex |
+| **FreeLLMAPI** | Cloud (API compatible OpenAI, optionnel) | Endpoint + clé selon l'instance | Instance à déployer séparément ; capacités limitées au texte (pas d'image/vidéo/audio) |
+| **PAIR** (NVIDIA) | Endpoint distribué / local (optionnel) | Aucune (endpoint réseau) | Traité comme local par Docteur (alternative à Ollama) ; endpoint par défaut `localhost`, configurable vers une autre machine |
 
 ## 🧭 Routage IA
 
@@ -164,66 +184,43 @@ La majorité des fonctionnalités passent par un routeur central qui :
 
 Certaines fonctionnalités (la veille/recherche et le module Professeur, par exemple) appellent directement un provider cloud plutôt que de passer par ce routeur central — chacune applique néanmoins sa propre vérification du mode Strict Local avant tout appel cloud. **Le projet ne prétend pas que 100 % des chemins passent par un unique routeur.**
 
-## 🤖 Providers IA
-
-| Provider | Type | Authentification | Remarque |
-|---|---|---|---|
-| **Ollama** | Local | Aucune | Nécessite une installation séparée et au moins un modèle téléchargé |
-| **Claude Code** | Abonnement (CLI) | Session officielle `claude` | ≠ Anthropic API — pas de clé requise en mode abonnement |
-| **Codex** | Abonnement ChatGPT (CLI) | Session officielle `codex` | ≠ OpenAI API — pas de clé requise en mode abonnement |
-| **Groq** | Cloud (API) | Clé API | |
-| **Gemini** | Cloud (API) | Clé API | |
-| **OpenRouter** | Cloud (API) | Clé API | |
-| **Anthropic API** | Cloud (API, payant) | Clé API | Distinct de Claude Code |
-| **OpenAI API** | Cloud (API, payant) | Clé API | Distinct de Codex |
-| **FreeLLMAPI** | Cloud (API compatible OpenAI, optionnel) | Endpoint + clé selon l'instance | Nécessite une instance FreeLLMAPI déjà déployée séparément ; capacités déclarées limitées au texte (pas d'image/vidéo/audio dans l'intégration actuelle) |
-| **PAIR** (NVIDIA) | Endpoint distribué / externe (optionnel) | Aucune (endpoint réseau) | Service d'inférence traité comme local par Docteur (alternative à Ollama) ; endpoint par défaut `localhost`, configurable vers une autre machine du réseau |
-
 ## 🔒 Mode Strict Local
 
-Quand le mode Strict Local est activé dans les réglages, Docteur bloque l'utilisation des providers cloud sur les chemins qui vérifient ce réglage (chat, veille, professeur, génération de prompts, comparaison de modèles, etc.) et retombe sur Ollama.
+> [!IMPORTANT]
+> Le mode Strict Local bloque les chemins cloud identifiés dans l'application. Il ne constitue pas une isolation réseau du système entier.
 
-Ce mode dépend des modèles réellement installés en local : si Ollama n'a pas le modèle attendu, la fonctionnalité concernée peut devenir indisponible plutôt que de basculer silencieusement vers le cloud. Le mode Strict Local n'isole pas le système au niveau réseau — il désactive les appels aux chemins applicatifs identifiés comme cloud dans le code, pas une garantie d'isolation système complète.
+Quand ce mode est activé dans les réglages, Docteur bloque l'utilisation des providers cloud sur les chemins qui vérifient ce réglage (chat, veille, professeur, génération de prompts, comparaison de modèles, etc.) et retombe sur Ollama.
 
-## 📋 Prérequis
+Ce mode dépend des modèles réellement installés en local : si Ollama n'a pas le modèle attendu, la fonctionnalité concernée peut devenir indisponible plutôt que de basculer silencieusement vers le cloud.
 
-### Obligatoires
+## 🚀 Installation détaillée
+
+### Prérequis obligatoires
 
 - Windows (plateforme principale visée par les scripts fournis)
 - [Node.js](https://nodejs.org/) ≥ 20
 - npm
 
-### Optionnels (selon les fonctionnalités que tu veux utiliser)
+### Prérequis optionnels (selon les fonctionnalités souhaitées)
 
 - [Ollama](https://ollama.com) — pour le chat, la vision et la recherche 100 % locaux
 - [Claude Code CLI](https://github.com/anthropics/claude-code) — pour utiliser Claude via ton abonnement
 - [Codex CLI](https://github.com/openai/codex) — pour utiliser Codex via ton abonnement ChatGPT
 - `ffmpeg` — pour le découpage audio (transcription vidéo)
-- `yt-dlp` — pour le téléchargement audio des vidéos à résumer
+- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) — pour le téléchargement audio des vidéos à résumer
 - Une caméra — pour la fonctionnalité expérimentale de gestes
 - Des clés API — pour Groq, Gemini, OpenRouter, Anthropic API, OpenAI API si tu veux les utiliser
 - Une instance FreeLLMAPI et/ou un endpoint PAIR déjà déployés, si tu veux les configurer
 
-## 🚀 Installation
+### Frontend et backend
 
 ```powershell
 git clone https://github.com/FloW1772/Docteur.git
 cd Docteur
 npm install
-```
-
-Le backend a ses propres dépendances, à installer séparément :
-
-```powershell
 cd cortex-server
 npm install
 ```
-
-## ▶️ Démarrer Docteur
-
-Le dépôt fournit un launcher Windows (`Docteur-Launcher.bat`) qui propose plusieurs modes (usage local, accès réseau, mode mobile/PWA). C'est la façon la plus simple de démarrer l'ensemble (backend + frontend) sans lancer les commandes manuellement.
-
-> Le launcher Windows peut nécessiter d'adapter son chemin de projet si le dépôt n'est pas installé à l'emplacement prévu.
 
 ### Démarrage manuel (mode développement)
 
@@ -241,6 +238,13 @@ npm run dev
 ```
 
 L'interface est ensuite disponible sur `http://localhost:5173`, et communique avec le backend sur `http://localhost:3001`.
+
+### Launcher Windows
+
+Le dépôt fournit un launcher Windows (`Docteur-Launcher.bat`) qui propose plusieurs modes (usage local, accès réseau, mode mobile/PWA) et démarre l'ensemble (backend + frontend) sans lancer les commandes manuellement.
+
+> [!NOTE]
+> Le launcher peut nécessiter d'adapter son chemin de projet si le dépôt n'est pas installé à l'emplacement prévu.
 
 ### Build
 
@@ -288,6 +292,15 @@ Certains providers (Groq, Gemini, OpenRouter, Anthropic API, OpenAI API) nécess
 YOUR_API_KEY
 ```
 
+## 💾 Données et stockage
+
+- Les neurones, réglages et journaux d'activité sont stockés dans une base SQLite locale (mode WAL activé).
+- L'index de recherche sémantique est stocké dans LanceDB, également en local.
+- Les clés API cloud sont chiffrées avant d'être écrites en base.
+- Un mécanisme de sauvegarde/restauration (backup) est disponible depuis l'interface.
+
+Aucun chemin ni identifiant personnel n'est indiqué ici : l'emplacement exact des données dépend de ton installation.
+
 ## 🛡️ Sécurité et confidentialité
 
 - Le backend écoute sur `127.0.0.1` par défaut (pas d'exposition réseau sans configuration explicite).
@@ -298,16 +311,10 @@ YOUR_API_KEY
 - Les appels aux CLI Claude Code et Codex se font sans interprétation shell des arguments dynamiques.
 - Contrôle de taille et de format sur les fichiers importés.
 
-**Important — ce que Docteur ne fait pas** : l'application considère la session Windows courante comme un environnement de confiance. **L'authentification d'un processus local arbitraire n'est pas prise en charge** : un programme malveillant exécuté sous le même compte Windows que Docteur sort du modèle de menace actuel (comme pour la base SQLite ou les clés chiffrées, qui restent lisibles par tout processus tournant sous ce même compte).
+> [!IMPORTANT]
+> Docteur considère la session Windows courante comme un environnement de confiance.
 
-## 💾 Données et stockage
-
-- Les neurones, réglages et journaux d'activité sont stockés dans une base SQLite locale (mode WAL activé).
-- L'index de recherche sémantique est stocké dans LanceDB, également en local.
-- Les clés API cloud sont chiffrées avant d'être écrites en base.
-- Un mécanisme de sauvegarde/restauration (backup) est disponible depuis l'interface.
-
-Aucun chemin ni identifiant personnel n'est indiqué ici : l'emplacement exact des données dépend de ton installation.
+**L'authentification d'un processus local arbitraire n'est pas prise en charge** : un programme malveillant exécuté sous le même compte Windows que Docteur sort du modèle de menace actuel (comme pour la base SQLite ou les clés chiffrées, qui restent lisibles par tout processus tournant sous ce même compte).
 
 ## 📁 Formats supportés
 
@@ -316,10 +323,10 @@ Aucun chemin ni identifiant personnel n'est indiqué ici : l'emplacement exact d
 | `.xlsx` | ✅ |
 | `.csv` | ✅ |
 | `.txt` / `.md` / `.json` | ✅ |
-| PDF | ✅ (import CV, export de neurones) |
+| PDF | ✅ limité aux fonctions documentées (import/analyse de CV, export de neurones) |
 | `.xls` (ancien format Excel) | ❌ |
 
-Le format legacy `.xls` n'est plus accepté (dépendance associée retirée pour des raisons de sécurité). Convertis le fichier en `.xlsx` ou `.csv` avant import.
+Il n'y a pas d'import PDF générique dans le corpus documentaire à ce jour. Le format legacy `.xls` n'est plus accepté (dépendance associée retirée pour des raisons de sécurité) — convertis le fichier en `.xlsx` ou `.csv` avant import.
 
 ## 🎥 Vidéo et transcription
 
@@ -333,7 +340,7 @@ Le temps de traitement dépend de la durée de la vidéo. Certaines plateformes 
 
 ## ✋ Caméra et gestes
 
-🧪 **Fonction expérimentale.** La reconnaissance de gestes demande l'autorisation d'accès à la caméra dans le navigateur, et sert à naviguer entre les neurones sans clavier ni souris. La fiabilité dépend de l'éclairage, de la position de la main devant la caméra et des performances de la machine.
+🧪 **Fonction expérimentale.** La reconnaissance de gestes de la main (via la caméra du navigateur, basée sur MediaPipe) sert à naviguer entre les neurones sans clavier ni souris. La fiabilité dépend de l'éclairage, de la position de la main devant la caméra et des performances de la machine.
 
 ## 📚 RAG et documents
 
@@ -343,11 +350,17 @@ Docteur peut retrouver des éléments pertinents dans les connaissances déjà s
 
 État constaté à la dernière vérification (suites isolées, sans appel réseau ni donnée réelle) :
 
-- **175 tests passés, 0 échec**, répartis sur 11 suites (fallback/routage IA, providers, résolution sécurisée des CLI Codex/Claude, mode Strict Local, import de fichiers, agents externes, FreeLLMAPI, transcription vidéo, etc.).
-- Build (`tsc && vite build`) : validé.
-- Vérification de types (`tsc --noEmit`) : validée, 0 erreur.
-- Certaines suites end-to-end (navigateur, serveur de développement déjà lancé) ne sont pas exécutées automatiquement et nécessitent un environnement complet.
-- Aucun appel à un provider cloud réel n'a lieu pendant l'exécution des tests standards.
+| Vérification | Résultat |
+|---|---|
+| Tests standards | ✅ 175 / 175, 11 suites |
+| Build (`tsc && vite build`) | ✅ |
+| TypeScript (`tsc --noEmit`) | ✅ 0 erreur |
+| Appels cloud pendant les tests standards | ✅ 0 |
+| Couverture end-to-end | 🚧 Partielle |
+
+Les suites couvrent notamment : fallback/routage IA, providers, résolution sécurisée des CLI Codex/Claude, mode Strict Local, import de fichiers, agents externes, FreeLLMAPI, transcription vidéo. Certaines suites end-to-end (navigateur, serveur de développement déjà lancé) ne sont pas exécutées automatiquement et nécessitent un environnement complet.
+
+Les tests unitaires/intégration ne remplacent pas une validation end-to-end complète.
 
 ## 📁 Structure du projet
 
@@ -422,12 +435,20 @@ Ce message signifie qu'aucun endpoint valide n'a été renseigné dans les régl
 
 ## 🚦 État du projet
 
-- ✅ Neurones, chat local, recherche, vidéo/transcription, RAG documentaire, mode Strict Local, routage multi-providers
-- 🧪 Reconnaissance de gestes par caméra
-- ⚙️ FreeLLMAPI et PAIR (nécessitent une instance externe déployée séparément)
-- 🚧 Couverture de tests end-to-end encore partielle
+| Composant | État |
+|---|---|
+| Neurones | ✅ |
+| Chat local | ✅ |
+| RAG | ✅ |
+| Vidéo / transcription | ✅ |
+| Providers multiples | ✅ |
+| Strict Local | ✅ |
+| Gestes caméra | 🧪 |
+| FreeLLMAPI | ⚙️ nécessite configuration |
+| PAIR | ⚙️ nécessite endpoint |
+| End-to-end complet | 🚧 |
 
-Docteur est un projet personnel activement développé — il n'est pas présenté comme "production ready" au sens d'un logiciel distribué à grande échelle.
+Docteur est un projet personnel activement développé — il n'est pas présenté comme « production ready » au sens d'un logiciel distribué à grande échelle.
 
 ## ⚠️ Limitations connues
 
@@ -452,13 +473,11 @@ Pistes d'amélioration identifiées, sans garantie ni date :
 
 Le dépôt ne contient pas encore de guide de contribution dédié. Pour proposer une modification :
 
-1. Fork du dépôt
-2. Créer une branche dédiée à ta modification
-3. Faire un changement ciblé et cohérent
-4. Lancer les tests concernés (`node --test <fichier>` dans `cortex-server/`, `npm run build` à la racine)
-5. Ouvrir une Pull Request avec une description claire
-
-Privilégie des commits petits et lisibles, et explique le "pourquoi" du changement dans la description.
+1. Fork du dépôt.
+2. Crée une branche dédiée à ta modification.
+3. Fais un changement ciblé et cohérent.
+4. Lance les tests concernés (`node --test <fichier>` dans `cortex-server/`, `npm run build` à la racine).
+5. Ouvre une Pull Request avec une description claire.
 
 ## 🔐 Signaler un problème de sécurité
 
@@ -466,7 +485,7 @@ Le dépôt ne contient pas encore de fichier `SECURITY.md` dédié. Si tu identi
 
 ## 📜 Licence
 
-Le dépôt ne contient actuellement pas de fichier de licence explicite.
+> Le dépôt ne contient actuellement pas de licence explicite. En l'absence de licence, aucun droit de réutilisation n'est accordé automatiquement.
 
 ## ❤️ Technologies principales
 
