@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TMP_DIR, ensureTmpDir, transcribeAudioFile } from '../lib/whisper.js';
 import { transcribeWithGroq } from '../lib/whisper-groq.js';
-import { getMeta, setMeta, getCloudKeys, getRouterSettings } from '../lib/sqlite.js';
+import { getMeta, setMeta, getCloudKeys } from '../lib/sqlite.js';
+import { isStrictLocalMode } from '../lib/strict-local.js';
 
 const VOICE_SETTINGS_KEY   = 'voice_settings';
 const PORCUPINE_MODEL_KEY  = 'voice_porcupine_model';
@@ -86,7 +87,7 @@ export function createVoiceRoute({ logger }) {
     // re-checked here, at the point of the actual call, not only when the
     // voice settings toggle is saved (which the client can bypass entirely
     // by sending provider=groq directly on this request).
-    if (provider === 'groq' && getRouterSettings()?.strict_local_mode === true) {
+    if (provider === 'groq' && isStrictLocalMode()) {
       provider = 'local';
     }
 

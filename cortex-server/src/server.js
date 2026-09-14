@@ -9,10 +9,11 @@ import { serve } from '@hono/node-server';
 import dotenv from 'dotenv';
 import { createLogger } from './lib/logger.js';
 import { createOllamaClient, embedText, chatCompletion, chatCompletionPowerful, unloadModel, getInstalledModels, verifyModelAvailability } from './lib/ollama.js';
-import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
-import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
+import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, needsCompaction, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
+import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from './lib/style-examples.js';
 import { routedCompletion } from './lib/router.js';
+import { loadPairEndpointFromStorage } from './lib/providers/pair.js';
 import { completeWithCascade as geminiCascade } from './lib/providers/gemini.js';
 import * as groqProvider       from './lib/providers/groq.js';
 import * as openrouterProvider from './lib/providers/openrouter.js';
@@ -41,6 +42,8 @@ import { createPdfRoute }       from './routes/pdf.js';
 import { createCandidatureRoute } from './routes/candidature.js';
 import { createCvImportRoute }    from './routes/cv-import.js';
 import { createAgentsRoute }      from './routes/agents.js';
+import { createExternalAgentsRoute } from './routes/external-agents.js';
+import { ExternalAgents } from './lib/external-agents.js';
 import { createVideoSummaryRoute } from './routes/video-summary.js';
 import { startAgentScheduler }    from './lib/agent-runner.js';
 import { createInboxRoute }       from './routes/inbox.js';
@@ -48,6 +51,7 @@ import { startInboxWatcher }      from './lib/inbox-watcher.js';
 import { buildPersonaPrompt, buildPersonaToneNote, getPersonaSettings } from './lib/persona.js';
 import { markPrivate }             from './lib/privacy-guard.js';
 import { createPrivacyRoute }      from './routes/privacy.js';
+import { createSecretScanRoute }   from './routes/secret-scan.js';
 import { createVoiceRoute }        from './routes/voice.js';
 import { createCompareRoute }      from './routes/compare.js';
 import { createWebAnswerRoute }    from './routes/web-answer.js';
@@ -143,6 +147,10 @@ process.on('uncaughtException', (err) => {
 
 initSqlite(env.SQLITE_PATH);
 setMeta('boot_at', new Date().toISOString());
+
+// Reload PAIR endpoint from persisted settings (survives restart) before any
+// request can reach the router — see lib/providers/pair.js for priority order.
+loadPairEndpointFromStorage(getMeta, logger);
 
 // Purge activity log entries past the retention window (default 90 days) on every boot.
 {
@@ -698,7 +706,21 @@ async function answerQuestion(payload) {
   };
 }
 
-const CLOUD_COMPARE_IDS = new Set(['gemini', 'groq', 'openrouter', 'anthropic', 'openai']);
+// Only providers callOneModel() actually implements below. anthropic/openai
+// were previously listed here but had no implementation branch — requesting
+// them would fall through to "Provider inconnu", and the compare UI
+// (CompareModal.tsx) never offers them as choices in the first place. Not a
+// security issue (paying_apis_enabled was never bypassed, since the call
+// would just throw), but misleading; removed rather than adding a new paid
+// code path here.
+// Only providers callOneModel() actually implements below. anthropic/openai
+// were previously listed here but had no implementation branch — requesting
+// them would fall through to "Provider inconnu", and the compare UI
+// (CompareModal.tsx) never offers them as choices in the first place. Not a
+// security issue (paying_apis_enabled was never bypassed, since the call
+// would just throw), but misleading; removed rather than adding a new paid
+// code path here.
+const CLOUD_COMPARE_IDS = new Set(['gemini', 'groq', 'openrouter']);
 const MAX_COMPARE_MODELS = 5;
 
 async function compareModels({ question, models, max_context, onEvent }) {
@@ -1524,6 +1546,21 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 
+// Destructive routes (DELETE methods, POST /api/backup/import) are protected
+// by loopback binding (127.0.0.1 by default) + strict CORS/Origin validation
+// above + exact HTTP method/path matching in each route + input validation
+// in each handler. An X-Docteur-Token mechanism was tried here in an earlier
+// pass and removed: Origin is a client-supplied header that only a real
+// browser is prevented from forging (enforced by the browser itself, not the
+// server) — any non-browser local process (curl, malware under the same
+// Windows account) can set an arbitrary Origin and obtain the token exactly
+// as easily as it could call a destructive route directly, so the token
+// added no real barrier beyond what CORS already provides, at the cost of
+// extra complexity. LOCAL PROCESS AUTHENTICATION IS NOT SUPPORTED — a
+// process already running under the same Windows account as Docteur is
+// trusted, consistent with the rest of the app's local-only threat model
+// (the SQLite DB and DPAPI-encrypted keys carry the same exposure).
+
 app.use('*', async (c, next) => {
   const started = Date.now();
   try {
@@ -1563,7 +1600,7 @@ app.route('/api', createIndexRoute({ services, logger }));
 app.route('/api', createCaptureRoute({ services, logger }));
 app.route('/api', createSearchRoute({ services }));
 app.route('/api', createAnswerRoute({ services }));
-app.route('/api', createNeuronRoute({ services }));
+app.route('/api', createNeuronRoute({ services, logger }));
 app.route('/api', createJobsRoute());
 app.route('/api', createCompareRoute({ services }));
 app.route('/api', createWebAnswerRoute({ services, logger }));
@@ -1593,12 +1630,22 @@ app.route('/api', createCandidatureRoute({
 }));
 app.route('/api', createCvImportRoute({ logger }));
 app.route('/api', createAgentsRoute({ logger, ollamaClient, services }));
+const externalAgents = new ExternalAgents({
+  projectRoot: path.resolve(rootDir, '..'),
+  dataDir: path.resolve(rootDir, 'data/external-agents'),
+  strictLocal: () => getRouterSettings()?.strict_local_mode === true,
+});
+app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+  void externalAgents.shutdown().finally(() => process.exit(0));
+});
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());
 app.route('/api', createPrivacyRoute({ logger }));
+app.route('/api', createSecretScanRoute({ logger }));
 app.route('/api', createVoiceRoute({ logger }));
 app.route('/api', createInboxRoute({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger }));
 app.route('/api', createKiwixRoute({ services, logger }));
@@ -1637,15 +1684,26 @@ serve({
   scheduleDailyBackup(env.LANCEDB_PATH, logger);
   startAgentScheduler({ logger, ollamaClient, services });
   startInboxWatcher({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger });
-  // Auto-compact LanceDB if highly fragmented (>1000 fragments = many small files slowing upserts).
+  // Compact at 1000 active fragments or when obsolete versions occupy disk.
   // Runs in background so startup is not blocked.
-  getFragmentStats(env.LANCEDB_PATH).then(stats => {
-    if (!stats || stats.numFragments <= 1000) return;
-    logger.info({ fragments: stats.numFragments }, 'LANCEDB_AUTO_COMPACT_START');
-    return optimizeTable(env.LANCEDB_PATH).then(r =>
-      logger.info({ before: r.before?.fragments, after: r.after?.fragments }, 'LANCEDB_AUTO_COMPACT_DONE'),
-    );
-  }).catch(err => logger.warn({ error: err.message }, 'LANCEDB_AUTO_COMPACT_FAILED'));
+  let checkingCompaction = false;
+  const checkCompaction = async () => {
+    if (checkingCompaction) return;
+    checkingCompaction = true;
+    try {
+      const stats = await getFragmentStats(env.LANCEDB_PATH);
+      if (!needsCompaction(stats)) return;
+      logger.info({ fragments: stats.numFragments, diskBytes: stats.diskBytes }, 'LANCEDB_AUTO_COMPACT_START');
+      const result = await optimizeTable(env.LANCEDB_PATH);
+      logger.info(result, 'LANCEDB_AUTO_COMPACT_DONE');
+    } catch (err) {
+      logger.warn({ error: err.message }, 'LANCEDB_AUTO_COMPACT_FAILED');
+    } finally { checkingCompaction = false; }
+  };
+  void checkCompaction();
+  // Recheck during long-running capture/import sessions, including obsolete
+  // versions that can consume disk even when active fragments are below 1000.
+  setInterval(() => void checkCompaction(), 5 * 60_000).unref();
   // Clean up orphan subtitle temp dirs older than 1h (left by crashed downloads)
   try {
     const tmpDir  = os.tmpdir();
@@ -1670,5 +1728,10 @@ serve({
   checkYtDlp().then(v => {
     if (v) logger.info({ version: v }, 'yt-dlp trouvé');
     else    logger.warn('yt-dlp introuvable — téléchargement vidéo désactivé. Installe avec : winget install yt-dlp');
+  }).catch(err => {
+    // checkYtDlp() itself never rejects today (every failure path resolves
+    // null — see lib/ytdlp.js), but this call is defended anyway so a future
+    // change to that function can never produce an unhandled rejection here.
+    logger.warn({ err: err?.message }, 'yt-dlp check échouée de façon inattendue — téléchargement vidéo probablement désactivé');
   });
 });

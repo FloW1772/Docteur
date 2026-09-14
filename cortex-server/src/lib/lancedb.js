@@ -6,6 +6,27 @@ const TABLE_NAME = 'neurons';
 
 let database;
 let tablePromise;
+let optimizationPromise;
+export const AUTO_COMPACT_FRAGMENTS = 1000;
+
+export function needsCompaction(stats) {
+  return !!stats && (stats.numFragments >= AUTO_COMPACT_FRAGMENTS ||
+    stats.diskBytes >= Math.max(256 * 1024 * 1024, stats.totalBytes * 3));
+}
+
+async function diskBytes(directory) {
+  let bytes = 0;
+  for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
+    const filename = path.join(directory, entry.name);
+    try {
+      if (entry.isDirectory()) bytes += await diskBytes(filename);
+      else if (entry.isFile()) bytes += (await fs.promises.stat(filename)).size;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return bytes;
+}
 
 function ensureParentDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -119,14 +140,24 @@ export async function upsertNeuron(lancedbPath, neuron) {
 // Compact all fragments into a single file and clean up old versions.
 // Run at startup or via Settings button when the table is highly fragmented.
 export async function optimizeTable(lancedbPath) {
+  if (optimizationPromise) return optimizationPromise;
+  optimizationPromise = runOptimization(lancedbPath).finally(() => { optimizationPromise = null; });
+  return optimizationPromise;
+}
+
+async function runOptimization(lancedbPath) {
   const table = await getTable(lancedbPath);
   if (!table) return { skipped: true };
-  const before = await table.stats();
-  await table.optimize({ cleanupOlderThan: new Date(0) });
-  const after = await table.stats();
+  const started = Date.now();
+  const before = await getFragmentStats(lancedbPath);
+  // Remove obsolete versions, retaining the current version and unverified
+  // transaction files (the SDK's default protection for concurrent writers).
+  await table.optimize({ cleanupOlderThan: new Date() });
+  const after = await getFragmentStats(lancedbPath);
   return {
-    before: { fragments: before.fragmentStats.numFragments, rows: before.numRows },
-    after:  { fragments: after.fragmentStats.numFragments,  rows: after.numRows },
+    before: { fragments: before.numFragments, rows: before.numRows, bytes: before.diskBytes },
+    after:  { fragments: after.numFragments, rows: after.numRows, bytes: after.diskBytes },
+    durationMs: Date.now() - started,
   };
 }
 
@@ -141,6 +172,8 @@ export async function getFragmentStats(lancedbPath) {
     numRows:           s.numRows,
     numIndices:        s.numIndices,
     totalBytes:        s.totalBytes,
+    diskBytes:         await diskBytes(path.resolve(lancedbPath)),
+    autoCompactThreshold: AUTO_COMPACT_FRAGMENTS,
   };
 }
 

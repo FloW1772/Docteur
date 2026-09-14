@@ -281,6 +281,8 @@ export function useGestureCamera({
     rawGesture: null, swipeDist: 0, swipeThreshold: SWIPE_MIN_DIST, confidence: null, metrics: null,
   });
 
+  const debugRef = useRef(debugEnabled);
+  debugRef.current = debugEnabled;
   const videoRef     = useRef<HTMLVideoElement | null>(null);
   const streamRef    = useRef<MediaStream | null>(null);
   const detectorRef  = useRef<HandLandmarkerInstance | null>(null);
@@ -306,6 +308,12 @@ export function useGestureCamera({
   // as soon as the pose breaks so re-raising the finger can trigger again.
   const middleOnlyStreakRef = useRef(0);
   const easterEggFiredRef   = useRef(false);
+
+  // 1-finger swipe gesture: state machine to ensure one swipe per finger raise
+  // previousConfirmedFinger: tracks the previous confirmed finger count for swipe state
+  const previousConfirmedFingerRef = useRef<number | null>(null);
+  // swipeTriggered: ensures only one swipe action per finger raise cycle
+  const swipeTriggeredRef = useRef(false);
 
   const settingsRef   = useRef(settings);
   settingsRef.current = settings;
@@ -342,7 +350,7 @@ export function useGestureCamera({
     try {
       result = detector.detectForVideo(video, timestamp);
     } catch (err) {
-      if (debugEnabled) console.warn('[gesture] detectForVideo failed:', err);
+      if (debugRef.current) console.warn('[gesture] detectForVideo failed:', err);
       return;
     }
 
@@ -358,6 +366,8 @@ export function useGestureCamera({
       confirmedRef.current   = null;
       middleOnlyStreakRef.current = 0;
       easterEggFiredRef.current  = false;
+      previousConfirmedFingerRef.current = null;
+      swipeTriggeredRef.current = false;
       setLastGesture(null);
       setDebugInfo({
         handsDetected, fingerCount: null, confirmedCount: null, position: null,
@@ -372,14 +382,14 @@ export function useGestureCamera({
     // hysteresis/gesture logic as if it were reliable. The debug panel still
     // reflects the low score so it's visible, not silently dropped.
     if (confidence !== null && confidence < CONFIDENCE_THRESHOLD) {
-      if (debugEnabled) console.debug('[gesture] low-confidence frame skipped', { confidence });
+      if (debugRef.current) console.debug('[gesture] low-confidence frame skipped', { confidence });
       setDebugInfo(prev => ({ ...prev, handsDetected, confidence, videoSize: { w: video.videoWidth, h: video.videoHeight } }));
       return;
     }
 
     const fingers     = analyzeFingers(lm);
     const fingerCount = fingers.count;
-    if (debugEnabled) console.debug('[gesture] raw finger count:', fingerCount);
+    if (debugRef.current) console.debug('[gesture] DETECTION_OK', { fingerCount, gestureState: confirmedRef.current });
 
     // ── Easter egg: middle-finger-only, independent of the count hysteresis ──
     const s0 = settingsRef.current;
@@ -387,7 +397,7 @@ export function useGestureCamera({
       middleOnlyStreakRef.current++;
       if (middleOnlyStreakRef.current >= EASTER_EGG_HOLD_FRAMES && !easterEggFiredRef.current) {
         easterEggFiredRef.current = true;
-        if (debugEnabled) console.info('[gesture] middle finger only → easter egg');
+        if (debugRef.current) console.info('[gesture] middle finger only → easter egg');
         onEasterEggRef.current();
       }
     } else {
@@ -417,6 +427,27 @@ export function useGestureCamera({
       prevFingerYRef.current = null;
       swipeStartRef.current  = null;
       smoothRef.current      = { dx: 0, dy: 0 };
+      // 1-finger swipe state machine: detect rising edge (from non-1 to 1) for index-only
+      // This ensures the swipe gesture is only armed once per finger raise cycle
+      const wasOneFinger = previousConfirmed === 1;
+      const nowOneFinger = confirmed === 1;
+
+
+      // Rising edge: transition from non-1 (or null) to 1, and it's index-only
+      if (nowOneFinger && !wasOneFinger && isIndexOnly(fingers)) {
+        // Arm the swipe - will be triggered on first valid movement
+        swipeTriggeredRef.current = false;
+        previousConfirmedFingerRef.current = 1;
+        if (debugRef.current) console.info('[gesture] 1 finger RAISED (index only) - swipe armed');
+      } else if (!nowOneFinger) {
+        // Any transition away from 1 finger: reset swipe arming
+        swipeTriggeredRef.current = false;
+        previousConfirmedFingerRef.current = confirmed;
+        if (debugRef.current) console.info('[gesture] finger released or changed - swipe disarmed');
+      } else if (wasOneFinger) {
+        // Still at 1 finger, update tracking
+        previousConfirmedFingerRef.current = confirmed;
+      }
     }
 
     const stableName = gestureNameForCount(confirmed);
@@ -438,12 +469,12 @@ export function useGestureCamera({
           smoothRef.current.dx = smoothRef.current.dx * (1 - SMOOTH) + dx * SMOOTH;
           smoothRef.current.dy = smoothRef.current.dy * (1 - SMOOTH) + dy * SMOOTH;
           onRotateRef.current(smoothRef.current.dx, smoothRef.current.dy);
-          if (debugEnabled) console.info('[gesture] 5 fingers → rotate', { dx: smoothRef.current.dx.toFixed(4), dy: smoothRef.current.dy.toFixed(4), sensitivity });
+          if (debugRef.current) console.info('[gesture] 5 fingers → rotate', { dx: smoothRef.current.dx.toFixed(4), dy: smoothRef.current.dy.toFixed(4), sensitivity });
         } else {
           smoothRef.current = { dx: 0, dy: 0 };
         }
       }
-      prevWristRef.current = { x: wrist.x, y: wrist.y };
+      if (!prevWristRef.current || Math.abs(wrist.x - prevWristRef.current.x) > DEAD_ZONE || Math.abs(wrist.y - prevWristRef.current.y) > DEAD_ZONE) prevWristRef.current = { x: wrist.x, y: wrist.y };
     } else if (confirmed === 2 && s.cortex3dEnabled) {
       // ── 2 fingers: zoom via vertical movement (up = in, down = out) ─────────
       const fingerY = (lm[8].y + lm[12].y) / 2; // index + middle tip average
@@ -452,7 +483,7 @@ export function useGestureCamera({
         if (Math.abs(rawDelta) > DEAD_ZONE) {
           const delta = rawDelta * sensitivity * ZOOM_BASE;
           onZoomRef.current(delta);
-          if (debugEnabled) console.info('[gesture] 2 fingers → zoom', { delta: delta.toFixed(4), sensitivity });
+          if (debugRef.current) console.info('[gesture] 2 fingers → zoom', { delta: delta.toFixed(4), sensitivity });
         }
       }
       prevFingerYRef.current = fingerY;
@@ -460,22 +491,50 @@ export function useGestureCamera({
       // ── 1 finger: horizontal swipe → next/prev neuron ────────────────────────
       // Gated on isIndexOnly (not just the count) so a middle-finger-only pose
       // — same count of 1 — never triggers navigation, and vice versa.
+      //
+      // State machine: only trigger ONE swipe per finger raise/lower cycle
+      // - swipe is armed when transitioning from non-1 to 1 (handled in justSwitched block)
+      // - only the first valid swipe movement triggers the action
+      // - swipe is disarmed when finger is lowered or count changes
       const tip = lm[8];
+
+      // Initialize swipe start position if not set (should happen after arming)
       if (!swipeStartRef.current) {
         swipeStartRef.current = { x: tip.x, y: tip.y, time: timestamp };
+        if (debugRef.current) console.debug('[gesture] 1-finger swipe start initialized');
       } else {
         const elapsed = timestamp - swipeStartRef.current.time;
         const deltaX  = tip.x - swipeStartRef.current.x;
         const deltaY  = tip.y - swipeStartRef.current.y;
         swipeDist = Math.abs(deltaX);
-        if (elapsed >= SWIPE_MIN_MS && elapsed <= SWIPE_MAX_MS && Math.abs(deltaX) > SWIPE_MIN_DIST && Math.abs(deltaX) > Math.abs(deltaY)) {
+
+        // Check if this is a valid swipe movement AND we haven't triggered yet this cycle
+        if (!swipeTriggeredRef.current &&
+            elapsed >= SWIPE_MIN_MS &&
+            Math.abs(deltaX) > SWIPE_MIN_DIST &&
+            Math.abs(deltaX) > Math.abs(deltaY)) {
+
+          // Trigger the action
+          if (debugRef.current) console.debug('[gesture] GESTURE_ACCEPTED', { fingerCount, gestureState: confirmed, action: deltaX < 0 ? 'prev' : 'next' });
           if (deltaX < 0) onPrevRef.current(); else onNextRef.current();
-          if (debugEnabled) console.info('[gesture] 1 finger swipe →', deltaX < 0 ? 'prev' : 'next', { dist: swipeDist.toFixed(3) });
+          if (debugRef.current) console.info('[gesture] 1 finger swipe →', deltaX < 0 ? 'prev' : 'next', { dist: swipeDist.toFixed(3) });
+
+          // Mark as triggered and disarm
+          swipeTriggeredRef.current = true;
           swipeStartRef.current = null;
-        } else if (elapsed > SWIPE_MAX_MS) {
+
+        } else if (elapsed > SWIPE_MAX_MS && swipeDist < 0.01) {
+          // Timeout: reset start position but keep swipe armed for next movement
           swipeStartRef.current = { x: tip.x, y: tip.y, time: timestamp };
-        } else if (debugEnabled) {
-          console.debug('[gesture] 1-finger tracking', { elapsed, dist: swipeDist.toFixed(3), threshold: SWIPE_MIN_DIST });
+          if (debugRef.current) console.debug('[gesture] 1-finger swipe timeout, reset start position');
+        } else if (debugRef.current) {
+          console.debug('[gesture] GESTURE_BLOCKED', {
+            reason: swipeTriggeredRef.current ? 'already fired; release hand' : 'movement threshold or duration', fingerCount, gestureState: confirmed,
+            elapsed: elapsed.toFixed(0),
+            dist: swipeDist.toFixed(3),
+            threshold: SWIPE_MIN_DIST,
+            triggered: swipeTriggeredRef.current
+          });
         }
       }
     } else if (confirmed === 3 && s.navigationEnabled) {
@@ -488,18 +547,20 @@ export function useGestureCamera({
         const deltaX  = tip.x - swipeStartRef.current.x;
         const deltaY  = tip.y - swipeStartRef.current.y;
         swipeDist = Math.abs(deltaY);
-        if (elapsed >= SWIPE_MIN_MS && elapsed <= SWIPE_MAX_MS && Math.abs(deltaY) > SWIPE_MIN_DIST && Math.abs(deltaY) > Math.abs(deltaX)) {
+        if (!swipeTriggeredRef.current && elapsed >= SWIPE_MIN_MS && Math.abs(deltaY) > SWIPE_MIN_DIST && Math.abs(deltaY) > Math.abs(deltaX)) {
+          swipeTriggeredRef.current = true;
+          if (debugRef.current) console.debug('[gesture] GESTURE_ACCEPTED', { fingerCount, gestureState: confirmed, action: 'scroll' });
           onScrollRef.current(deltaY > 0 ? 1 : -1);
-          if (debugEnabled) console.info('[gesture] 3 fingers swipe → scroll', deltaY > 0 ? 'down' : 'up', { dist: swipeDist.toFixed(3) });
+          if (debugRef.current) console.info('[gesture] 3 fingers swipe → scroll', deltaY > 0 ? 'down' : 'up', { dist: swipeDist.toFixed(3) });
           swipeStartRef.current = null;
-        } else if (elapsed > SWIPE_MAX_MS) {
+        } else if (elapsed > SWIPE_MAX_MS && swipeDist < 0.01) {
           swipeStartRef.current = { x: tip.x, y: tip.y, time: timestamp };
-        } else if (debugEnabled) {
+        } else if (debugRef.current) {
           console.debug('[gesture] 3-finger tracking', { elapsed, dist: swipeDist.toFixed(3), threshold: SWIPE_MIN_DIST });
         }
       }
     } else if (confirmed === 0) {
-      if (debugEnabled && justSwitched) console.info('[gesture] fist → release control');
+      if (debugRef.current && justSwitched) console.info('[gesture] fist → release control');
     }
 
     setDebugInfo({
@@ -514,7 +575,7 @@ export function useGestureCamera({
       confidence,
       metrics: fingers.metrics,
     });
-  }, [debugEnabled]);
+  }, []);
 
   const stop = useCallback(() => {
     activeRef.current = false;
@@ -533,6 +594,8 @@ export function useGestureCamera({
     confirmedRef.current   = null;
     middleOnlyStreakRef.current = 0;
     easterEggFiredRef.current  = false;
+    previousConfirmedFingerRef.current = null;
+    swipeTriggeredRef.current = false;
     setGestureState('idle');
     setLastGesture(null);
     setError(null);
@@ -666,6 +729,8 @@ export function useGestureCamera({
       confirmedRef.current   = null;
       middleOnlyStreakRef.current = 0;
       easterEggFiredRef.current  = false;
+      previousConfirmedFingerRef.current = null;
+      swipeTriggeredRef.current = false;
       setLastGesture(null);
     } else {
       setGestureState('loading');

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
+import * as secretStore from './secret-store.js';
 
 let database;
 let statements;
@@ -705,8 +706,7 @@ export function getWhisperStats() {
   };
 }
 
-export function getRouterSettings() {
-  return getMeta('router_settings', {
+const ROUTER_SETTINGS_DEFAULTS = {
     router_enabled:      true,
     fallback_model:      'llama3.2:3b',
     cloud_enabled:       true,
@@ -715,6 +715,29 @@ export function getRouterSettings() {
     cloud_preference:    'local',   // 'local' | 'balanced' | 'quality'
     strict_local_mode:   false,     // when true: NO cloud call ever, regardless of router config
     groq_model:          'openai/gpt-oss-120b',
+    // Claude/OpenAI each have two mutually-exclusive backends: a subscription
+    // mode (Claude Code CLI / Codex CLI — no per-token API cost to Docteur)
+    // and an API-key mode (ANTHROPIC_API_KEY / OPENAI_API_KEY — billed).
+    // Only the selected mode's provider is ever added to the router's
+    // candidates — never both, no ambiguity, no silent API fallback.
+    claude_mode:         'subscription', // 'subscription' (claude-oauth/CLI) | 'api' (anthropic key)
+    openai_mode:         'subscription', // 'subscription' (codex/CLI)        | 'api' (openai key)
+    freellmapi: {
+      enabled: false,
+      baseUrl: '',
+      timeout: 90000,
+      mode: 'auto',
+      allowText: true,
+      allowImage: false,
+      allowVideo: false,
+      allowAudio: false,
+      allowFallback: true,
+      freeOnly: false,
+      textModel: 'auto',
+      imageModel: 'auto',
+      videoModel: 'auto',
+      audioModel: 'auto',
+    },
     // "Mode puissant" model — quantized q3_K_M by default (~7.3 Go) so it
     // actually fits an 8 Go card; the unquantized qwen2.5:14b (~9 Go) stays
     // selectable in Settings but overflows VRAM and reloads cold each time.
@@ -722,7 +745,19 @@ export function getRouterSettings() {
     // "Mode conversation" model — quantized for the same 8 Go VRAM budget as
     // powerful_model above.
     chat_model:          'mistral-nemo:12b-instruct-2407-q4_K_M',
-  });
+};
+
+export function getRouterSettings() {
+  // Merge onto defaults (not just "use defaults if the whole key is absent")
+  // so a settings row saved before a new field existed (e.g. claude_mode/
+  // openai_mode, added later) still reports that field's real default
+  // instead of undefined.
+  const stored = getMeta('router_settings', {});
+  return {
+    ...ROUTER_SETTINGS_DEFAULTS,
+    ...stored,
+    freellmapi: { ...ROUTER_SETTINGS_DEFAULTS.freellmapi, ...(stored.freellmapi ?? {}) },
+  };
 }
 
 export function setRouterSettings(updates) {
@@ -730,23 +765,33 @@ export function setRouterSettings(updates) {
   setMeta('router_settings', { ...current, ...updates });
 }
 
-// ── Cloud API keys — stored in metadata, never logged in clear ────────────────
+// ── Cloud API keys — encrypted at rest via DPAPI, never logged in clear ───────
+// Actual ciphertext lives under `secret_dpapi:<provider>` (see secret-store.js).
+// getCloudKeys() decrypts on read so existing call sites keep working unchanged.
 
-const CLOUD_KEYS_META = 'cloud_api_keys';
+const CLOUD_PROVIDERS = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'freellmapi'];
 
 export function getCloudKeys() {
-  return getMeta(CLOUD_KEYS_META, {
-    gemini_key:     null,
-    groq_key:       null,
-    openrouter_key: null,
-    anthropic_key:  null,
-    openai_key:     null,
-  });
+  const result = {};
+  for (const provider of CLOUD_PROVIDERS) {
+    result[`${provider}_key`] = secretStore.getSecret(provider);
+  }
+  return result;
+}
+
+// 'absent' | 'valid' | 'invalid' per provider — 'invalid' means a blob is
+// stored but cannot be decrypted (corrupted, or written under a different
+// Windows user/machine), distinct from never having configured a key.
+export function getCloudKeyStatuses() {
+  const result = {};
+  for (const provider of CLOUD_PROVIDERS) {
+    result[provider] = secretStore.getSecretStatus(provider);
+  }
+  return result;
 }
 
 export function setCloudKey(provider, key) {
-  const current = getCloudKeys();
-  setMeta(CLOUD_KEYS_META, { ...current, [`${provider}_key`]: key || null });
+  secretStore.setSecret(provider, key || null);
 }
 
 // ── Site shortcuts ────────────────────────────────────────────────────────────
@@ -779,11 +824,13 @@ export function getCloudKeysMasked() {
     openrouter_key: mask(keys.openrouter_key),
     anthropic_key:  mask(keys.anthropic_key),
     openai_key:     mask(keys.openai_key),
+    freellmapi_key: mask(keys.freellmapi_key),
     gemini_active:     !!keys.gemini_key,
     groq_active:       !!keys.groq_key,
     openrouter_active: !!keys.openrouter_key,
     anthropic_active:  !!keys.anthropic_key,
     openai_active:     !!keys.openai_key,
+    freellmapi_active: !!keys.freellmapi_key,
   };
 }
 

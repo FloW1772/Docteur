@@ -1,3 +1,4 @@
+import { agentPageData } from './lib/agent-page';
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen } from 'lucide-react';
 import { usePages } from './hooks/usePages';
@@ -1235,7 +1236,7 @@ function CandidatureLetterModal({
 
 // ─── Page Editor ──────────────────────────────────────────────────────────────
 
-function PageEditor({
+export function PageEditor({
   page,
   allPages,
   onUpdate,
@@ -1243,7 +1244,7 @@ function PageEditor({
   onOpenLinkPicker,
   onRemoveLink,
   onNavigateTo,
-  onClose,
+  onClose = () => {},
   onExportPdf,
   onReviewPage,
   reviewLoading,
@@ -1312,7 +1313,7 @@ function PageEditor({
   const [corpusSummarizing, setCorpusSummarizing]   = useState(false);
   const [corpusSummaryError, setCorpusSummaryError] = useState<string | null>(null);
   const [regenerateMenuOpen, setRegenerateMenuOpen] = useState(false);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const menuRef  = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1874,9 +1875,21 @@ function PageEditor({
               aria-label="Fermer la vue détail"
               onClick={onClose}
               className="flex items-center justify-center w-7 h-7 rounded transition-colors"
-              style={{ color: '#5a4a7a' }}
-              onMouseEnter={e => (e.currentTarget.style.color = '#e8d9ff')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#5a4a7a')}
+              style={{ 
+                color: '#5a4a7a', 
+                background: 'rgba(90,74,122,0.12)',
+                border: '1px solid rgba(90,74,122,0.2)'
+              }}
+              onMouseEnter={e => { 
+                e.currentTarget.style.color = '#e8d9ff';
+                e.currentTarget.style.background = 'rgba(94,231,255,0.12)';
+                e.currentTarget.style.borderColor = 'rgba(94,231,255,0.3)';
+              }}
+              onMouseLeave={e => { 
+                e.currentTarget.style.color = '#5a4a7a';
+                e.currentTarget.style.background = 'rgba(90,74,122,0.12)';
+                e.currentTarget.style.borderColor = 'rgba(90,74,122,0.2)';
+              }}
             >
               <X size={14} />
             </button>
@@ -1935,9 +1948,9 @@ function PageEditor({
           </div>
         </div>
 
-        <input
+        <textarea
           ref={titleRef}
-          type="text"
+          rows={3}
           value={page.title}
           placeholder="Titre du neurone"
           className="w-full bg-transparent border-0 outline-0 font-grotesk font-bold"
@@ -2012,6 +2025,7 @@ function PageEditor({
             setAlwaysReading(next);
             localStorage.setItem(ALWAYS_READING_KEY, String(next));
           }}
+          onClose={onClose}
         />
       ) : (
         <div className="flex-1 px-8 py-5" onPaste={e => void handlePaste(e)}>
@@ -2343,40 +2357,9 @@ export default function App() {
       }
       gestureInputRef.current(0, 0, delta);
     }, []),
-    onNext:    useCallback(() => {
-      if (pages.length === 0) {
-        console.warn('[gesture] onNext fired but pages list is empty — nothing to select');
-        return;
-      }
-      setSelectedId(prev => {
-        const idx  = pages.findIndex(p => p.id === prev);
-        const next = pages[Math.min(idx + 1, pages.length - 1)]?.id ?? prev;
-        if (next === prev) console.info('[gesture] onNext: already at the last neuron, selection unchanged');
-        return next;
-      });
-    }, [pages]),
-    onPrev:    useCallback(() => {
-      if (pages.length === 0) {
-        console.warn('[gesture] onPrev fired but pages list is empty — nothing to select');
-        return;
-      }
-      setSelectedId(prev => {
-        const idx  = pages.findIndex(p => p.id === prev);
-        const next = pages[Math.max(idx - 1, 0)]?.id ?? prev;
-        if (next === prev) console.info('[gesture] onPrev: already at the first neuron, selection unchanged');
-        return next;
-      });
-    }, [pages]),
-    onScroll:  useCallback((direction: 1 | -1) => {
-      // Scroll the currently open neuron's content — falls back to the window
-      // when no detail panel is open (nothing selected).
-      const scrollable = document.querySelector<HTMLElement>('.flex-1.px-8.py-5');
-      if (scrollable) {
-        scrollable.scrollBy({ top: direction * 160, behavior: 'smooth' });
-      } else {
-        window.scrollBy({ top: direction * 160, behavior: 'smooth' });
-      }
-    }, []),
+    onNext: useCallback(() => { window.dispatchEvent(new CustomEvent('docteur-sidebar-gesture', { detail: { action: 'next', gestureInputPresent: !!gestureInputRef.current } })); }, []),
+    onPrev: useCallback(() => { window.dispatchEvent(new CustomEvent('docteur-sidebar-gesture', { detail: { action: 'prev', gestureInputPresent: !!gestureInputRef.current } })); }, []),
+    onScroll: useCallback((direction: 1 | -1) => { window.dispatchEvent(new CustomEvent('docteur-sidebar-gesture', { detail: { action: 'scroll', direction, gestureInputPresent: !!gestureInputRef.current } })); }, []),
     onEasterEgg: handleEasterEgg,
   });
   gestureStopRef.current = gesture.stop;
@@ -3662,9 +3645,9 @@ export default function App() {
 
   const handleUpdatePage = useCallback(
     (id: string, updates: Partial<Omit<Page, 'id' | 'createdAt'>>) => {
-      updatePage(id, updates);
-      const current = pagesRef.current.find(p => p.id === id);
-      if (current) cortexScheduleIndex({ ...current, ...updates, updatedAt: Date.now() });
+      void updatePage(id, updates).then(current => {
+        if (current) cortexScheduleIndex(current);
+      }).catch(error => setToast(String(error.message)));
     },
     [updatePage, cortexScheduleIndex],
   );
@@ -3790,22 +3773,15 @@ export default function App() {
 
   // Creates a neuron from an agent run output (manual or pending scheduled output)
   const handleAgentOutput = useCallback(async (output: { title: string; content: string; kind: string; run_id?: string; id?: string }) => {
-    const newPage = await createPage((output.kind as PageKind) ?? 'recherche');
-    const blocks: Block[] = [
-      ...output.content.split('\n\n').filter(s => s.trim()).map(s => ({
-        id:      generateId(),
-        type:    'paragraph' as const,
-        content: s.trim(),
-      })),
-    ];
-    handleUpdatePage(newPage.id, { title: output.title, blocks });
+    const newPage = await createPageFromData(agentPageData(output));
+    cortexScheduleIndex(newPage);
     setSelectedId(newPage.id);
     // If this was a scheduled output, mark it consumed
     if (output.id) {
       cortexClient.consumeAgentOutput(output.id, newPage.id).catch(() => {});
     }
     return newPage;
-  }, [createPage, handleUpdatePage]);
+  }, [createPageFromData, cortexScheduleIndex]);
 
   // On mount, pick up any inbox files processed at startup
   useEffect(() => {
@@ -3857,7 +3833,7 @@ export default function App() {
     handleUpdatePage(newPage.id, { title, blocks, kind: 'cv', private: true });
     setSelectedId(newPage.id);
     setToast(`CV importé · ${result.pages_count} page${result.pages_count !== 1 ? 's' : ''} · neurone privé créé`);
-  }, [createPage, handleUpdatePage]);
+  }, [createPageFromData, cortexScheduleIndex]);
 
   const handleCvAnalyze = useCallback(async (page: Page, powerful = false) => {
     setCvBusyId(page.id);
@@ -4535,25 +4511,23 @@ export default function App() {
 
       {/* Sidebar : hidden on mobile when editor is open */}
       <div className={`shell-sidebar${isMobile && selectedId ? ' mobile-hidden' : ''}`}>
-        <div style={{ pointerEvents: 'auto' }}>
-          <Sidebar
-            pages={pages}
-            selectedPageId={selectedId}
-            loading={loading}
-            cortexAvailable={cortex.available}
-            onSelectPage={setSelectedId}
-            onNewPage={handleNewPage}
-            onDeletePage={handleRequestDelete}
-            onRequestReindex={() => { setReindexProgress(0); setShowReindex(true); }}
-            showHomeScreen={showHomeScreen}
-            onToggleHomeScreen={setShowHomeScreen}
-            onCaptureOpen={() => setCaptureOpen(true)}
-            onSearchOpen={() => setConsoleOpen(true)}
-            pageCounts={pageCounts}
-            allMetaLoaded={allMetaLoaded}
-            onLoadAllPages={loadAllMeta}
-          />
-        </div>
+        <Sidebar
+          pages={pages}
+          selectedPageId={selectedId}
+          loading={loading}
+          cortexAvailable={cortex.available}
+          onSelectPage={setSelectedId}
+          onNewPage={handleNewPage}
+          onDeletePage={handleRequestDelete}
+          onRequestReindex={() => { setReindexProgress(0); setShowReindex(true); }}
+          showHomeScreen={showHomeScreen}
+          onToggleHomeScreen={setShowHomeScreen}
+          onCaptureOpen={() => setCaptureOpen(true)}
+          onSearchOpen={() => setConsoleOpen(true)}
+          pageCounts={pageCounts}
+          allMetaLoaded={allMetaLoaded}
+          onLoadAllPages={loadAllMeta}
+        />
       </div>
 
       {selectedPage && (
@@ -4561,20 +4535,12 @@ export default function App() {
           className="shell-editor" 
           style={{ 
             position: 'fixed',
-            top: 0,
-            right: 20,
-            bottom: 36,
-            width: 420,
-            height: '100vh',
-            maxHeight: '100vh',
-            overflowY: 'auto',
             zIndex: 50,
           }}
-          ref={(el) => {}}
         >
           {pageContentLoading && (
             <div style={{
-              position: 'absolute', inset: 0, zIndex: 10,
+              position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               background: 'rgba(10,8,20,0.6)', backdropFilter: 'blur(4px)',
             }}>
@@ -4590,7 +4556,10 @@ export default function App() {
             onOpenLinkPicker={() => setLinkPickerForId(selectedPage.id)}
             onRemoveLink={handleRemoveLink}
             onNavigateTo={setSelectedId}
-            onClose={() => setSelectedId(null)}
+            onClose={() => {
+              if (localStorage.getItem('docteur-gesture-debug') === 'true') console.debug('[editor] CLOSE_CLICK', { neuronId: selectedPage.id });
+              setSelectedId(null);
+            }}
             onExportPdf={() => setPdfExportPage({ pageId: selectedPage.id, title: selectedPage.title })}
             onReviewPage={() => handleReviewPage(selectedPage)}
             reviewLoading={reviewingId === selectedPage.id}
@@ -4814,7 +4783,10 @@ export default function App() {
       {agentsOpen && (
         <AgentsModal
           onClose={() => setAgentsOpen(false)}
-          onAgentOutput={async (output) => { await handleAgentOutput(output); }}
+          onAgentOutput={async (output) => {
+            await handleAgentOutput(output);
+            setAgentsOpen(false);
+          }}
         />
       )}
 

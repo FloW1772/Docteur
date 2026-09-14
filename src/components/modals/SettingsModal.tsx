@@ -1,16 +1,48 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { exportAllToServer } from '../../lib/storage';
+import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
 import { cortexClient } from '../../lib/cortex/client';
-import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings } from '../../lib/cortex/client';
+import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
+
+const PROVIDER_STATE_LABELS: Record<ProviderHealthState, string> = {
+  ready:              'CONNECTÉ',
+  rate_limited:       'LIMITE DE DÉBIT',
+  quota_exhausted:    'QUOTA ÉPUISÉ',
+  auth_required:      'AUTH REQUISE',
+  offline:            'HORS LIGNE',
+  model_unavailable:  'MODÈLE INDISPONIBLE',
+  error:              'ERREUR',
+  degraded:           'DÉGRADÉ',
+  timeout:            'TIMEOUT',
+};
+
+const PROVIDER_STATE_COLORS: Record<ProviderHealthState, string> = {
+  ready:             '#3dffaa',
+  rate_limited:      '#f59e0b',
+  quota_exhausted:   '#f59e0b',
+  auth_required:     '#ff4d58',
+  offline:           '#ff4d58',
+  model_unavailable: '#ff4d58',
+  error:             '#ff4d58',
+  degraded:          '#f59e0b',
+  timeout:           '#f59e0b',
+};
+
+function formatCooldown(ms: number): string {
+  if (ms <= 0) return '';
+  const totalSec = Math.ceil(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  return `${Math.ceil(totalSec / 60)}min`;
+}
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio';
+type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
 interface ProviderDef {
-  id:    'gemini' | 'groq' | 'openrouter' | 'anthropic' | 'openai';
+  id:    'gemini' | 'groq' | 'openrouter' | 'anthropic' | 'openai' | 'freellmapi' | 'claude-oauth' | 'codex';
   label: string;
   note:  string;
   color: string;
@@ -23,6 +55,9 @@ const CLOUD_PROVIDERS: ProviderDef[] = [
   { id: 'openrouter', label: 'OpenRouter',      note: 'nemotron-120b:free (dernier recours)', color: '#3dffaa', free: true  },
   { id: 'anthropic',  label: 'Anthropic Claude',note: 'claude-haiku (payant)',      color: '#a78bfa', free: false },
   { id: 'openai',     label: 'OpenAI',          note: 'gpt-4o-mini (payant)',       color: '#f59e0b', free: false },
+  { id: 'freellmapi', label: 'FreeLLMAPI',      note: 'Gateway configurable ; gratuité non garantie par l API', color: '#22d3ee', free: false },
+  { id: 'claude-oauth', label: 'Claude Code',   note: 'OAuth (payant)',            color: '#8b5cf6', free: false },
+  { id: 'codex',      label: 'Codex',           note: 'OpenAI Codex (payant)',      color: '#0ea5e9', free: false },
 ];
 
 interface Props {
@@ -161,14 +196,21 @@ export default function SettingsModal({
     groq_model:       'openai/gpt-oss-120b',
     powerful_model:   'qwen2.5:14b-instruct-q3_K_M',
     chat_model:       'mistral-nemo:12b-instruct-2407-q4_K_M',
+    freellmapi: {
+      enabled: false, baseUrl: '', timeout: 90000, mode: 'auto', allowText: true,
+      allowImage: false, allowVideo: false, allowAudio: false, allowFallback: true,
+      freeOnly: false, textModel: 'auto', imageModel: 'auto', videoModel: 'auto', audioModel: 'auto',
+    },
   });
   const [stats, setStats]             = useState<RouterStat[]>([]);
   const [cloudMonth, setCloudMonth]   = useState<CloudMonthStat[]>([]);
   const [cloudKeys, setCloudKeys]     = useState<CloudKeysMasked | null>(null);
+  const [providersOverview, setProvidersOverview] = useState<ProvidersOverviewResult | null>(null);
   const [keyDrafts, setKeyDrafts]     = useState<Record<string, string>>({});
   const [keyVisible, setKeyVisible]   = useState<Record<string, boolean>>({});
   const [keyTesting, setKeyTesting]   = useState<Record<string, boolean>>({});
   const [keyTestResult, setKeyTestResult] = useState<Record<string, { ok: boolean; msg: string } | null>>({});
+  const [freeModels, setFreeModels] = useState<Array<{ id: string; free?: boolean; capabilities: string[] }>>([]);
   const [geminiRpm, setGeminiRpm]     = useState<number>(10);
   const [ollamaOk, setOllamaOk]      = useState(true);
   const [ollamaModels, setOllamaModels] = useState<OllamaModelsResult | null>(null);
@@ -197,12 +239,13 @@ export default function SettingsModal({
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const [statusRes, statsRes, rpm, ollamaRes, styleSettings] = await Promise.all([
+      const [statusRes, statsRes, rpm, ollamaRes, styleSettings, providersRes] = await Promise.all([
         cortexClient.routerStatus(),
         cortexClient.routerStats(),
         cortexClient.getGeminiRpm(),
         cortexClient.ollamaModels(),
         cortexClient.getStyleExampleSettings(),
+        cortexClient.getProvidersOverview().catch(() => null),
       ]);
       setStatuses(statusRes.statuses);
       setSettings(statusRes.settings);
@@ -213,6 +256,7 @@ export default function SettingsModal({
       setGeminiRpm(rpm);
       setStyleExamplesEnabled(styleSettings.enabled);
       if (statusRes.cloud_keys) setCloudKeys(statusRes.cloud_keys);
+      if (providersRes) setProvidersOverview(providersRes);
     } catch (e) {
       setError('Serveur cognitif inaccessible');
     } finally {
@@ -522,6 +566,26 @@ export default function SettingsModal({
     }
   }
 
+  async function handleSetClaudeMode(mode: 'subscription' | 'api') {
+    setSaving(true);
+    try {
+      const res = await cortexClient.updateRouterSettings({ claude_mode: mode });
+      setSettings(res.settings);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSetOpenaiMode(mode: 'subscription' | 'api') {
+    setSaving(true);
+    try {
+      const res = await cortexClient.updateRouterSettings({ openai_mode: mode });
+      setSettings(res.settings);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleToggleStrictLocal() {
     setSaving(true);
     try {
@@ -691,8 +755,8 @@ export default function SettingsModal({
         </div>
 
         {/* Tabs */}
-        <div className="flex" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio'] as const).map(t => (
+        <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
+          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -704,13 +768,14 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : 'AUDIO'}
             </button>
           ))}
         </div>
 
         {/* Body */}
         <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+          {tab === 'external' && <ExternalAgentsPanel />}
           {loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />
@@ -870,6 +935,53 @@ export default function SettingsModal({
                     left: settings.strict_local_mode ? 22 : 3,
                     width: 16, height: 16, borderRadius: '50%',
                     background: settings.strict_local_mode ? '#f472b6' : '#5a4a7a',
+                    transition: 'all 0.2s',
+                  }} />
+                </button>
+              </div>
+
+              {/* Paying cloud APIs toggle — no silent paid fallback without explicit opt-in */}
+              <div
+                className="flex items-center justify-between py-3 px-4 rounded"
+                style={{
+                  background: settings.paying_apis_enabled ? 'rgba(245,158,11,0.08)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${settings.paying_apis_enabled ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.07)'}`,
+                }}
+              >
+                <div>
+                  <p className="font-grotesk font-semibold text-sm flex items-center gap-2" style={{ color: settings.paying_apis_enabled ? '#f59e0b' : '#f0eaff' }}>
+                    💳 Fallback cloud payant (Claude / OpenAI)
+                  </p>
+                  <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
+                    {settings.paying_apis_enabled
+                      ? 'AUTORISÉ — le routeur peut basculer vers une API payante en dernier recours'
+                      : 'DÉSACTIVÉ par défaut — jamais de bascule payante silencieuse'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={async () => {
+                    setSaving(true);
+                    try {
+                      const res = await cortexClient.updateRouterSettings({ paying_apis_enabled: !settings.paying_apis_enabled });
+                      setSettings(res.settings);
+                    } finally {
+                      setSaving(false);
+                    }
+                  }}
+                  style={{
+                    width: 44, height: 24, borderRadius: 12, position: 'relative', flexShrink: 0,
+                    background: settings.paying_apis_enabled ? 'rgba(245,158,11,0.4)' : 'rgba(255,255,255,0.08)',
+                    border: `1px solid ${settings.paying_apis_enabled ? 'rgba(245,158,11,0.6)' : 'rgba(255,255,255,0.12)'}`,
+                    cursor: saving ? 'default' : 'pointer', transition: 'all 0.2s',
+                  }}
+                >
+                  <div style={{
+                    position: 'absolute', top: 3,
+                    left: settings.paying_apis_enabled ? 22 : 3,
+                    width: 16, height: 16, borderRadius: '50%',
+                    background: settings.paying_apis_enabled ? '#f59e0b' : '#5a4a7a',
                     transition: 'all 0.2s',
                   }} />
                 </button>
@@ -1283,7 +1395,15 @@ export default function SettingsModal({
                 <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
                   CLOUD L4-L5 — CLÉS API
                 </p>
-                {CLOUD_PROVIDERS.map(prov => {
+                {CLOUD_PROVIDERS.filter(p => {
+                  if (p.id === 'claude-oauth' || p.id === 'codex') return false;
+                  // Anthropic/OpenAI API fields only show when that family's
+                  // mode is explicitly set to "api" — subscription mode
+                  // (default) hides the API key field entirely, per spec.
+                  if (p.id === 'anthropic') return (settings.claude_mode ?? 'subscription') === 'api';
+                  if (p.id === 'openai')    return (settings.openai_mode ?? 'subscription') === 'api';
+                  return true;
+                }).map(prov => {
                   const activeKey = `${prov.id}_active` as keyof CloudKeysMasked;
                   const maskedKey = `${prov.id}_key`    as keyof CloudKeysMasked;
                   const isActive  = cloudKeys ? !!cloudKeys[activeKey] : false;
@@ -1292,6 +1412,7 @@ export default function SettingsModal({
                   const visible   = !!keyVisible[prov.id];
                   const testing   = !!keyTesting[prov.id];
                   const testResult= keyTestResult[prov.id] ?? null;
+                  const overview  = providersOverview?.providers.find(p => p.id === prov.id) ?? null;
 
                   async function saveKey() {
                     if (!draft) return;
@@ -1320,6 +1441,7 @@ export default function SettingsModal({
                     try {
                       const r = await cortexClient.testCloudKey(prov.id, draft || undefined);
                       setKeyTestResult(res => ({ ...res, [prov.id]: { ok: r.ok, msg: r.ok ? `OK — ${r.model ?? prov.id}` : (r.error ?? 'Échec') } }));
+                      cortexClient.getProvidersOverview().then(setProvidersOverview).catch(() => {});
                     } catch (e) {
                       setKeyTestResult(res => ({ ...res, [prov.id]: { ok: false, msg: (e as Error).message } }));
                     } finally {
@@ -1356,9 +1478,96 @@ export default function SettingsModal({
                         }}>
                           {isActive ? 'ACTIF' : 'NON CONFIGURÉ'}
                         </span>
+                        {isActive && overview && (
+                          <span
+                            className="font-mono px-1.5 py-0.5 rounded flex items-center gap-1"
+                            style={{
+                              fontSize: 9, letterSpacing: '0.06em',
+                              background: `${PROVIDER_STATE_COLORS[overview.status]}14`,
+                              color: PROVIDER_STATE_COLORS[overview.status],
+                              border: `1px solid ${PROVIDER_STATE_COLORS[overview.status]}40`,
+                            }}
+                            title={overview.in_cooldown ? `Réessai auto dans ${formatCooldown(overview.cooldown_remaining_ms)}` : undefined}
+                          >
+                            {overview.status === 'ready' ? <CheckCircle size={9} /> : <AlertTriangle size={9} />}
+                            {PROVIDER_STATE_LABELS[overview.status]}
+                            {overview.in_cooldown && ` (${formatCooldown(overview.cooldown_remaining_ms)})`}
+                          </span>
+                        )}
                       </div>
 
                       <p className="font-mono" style={{ fontSize: 10, color: '#5a4a7a' }}>{prov.note}</p>
+                      {prov.id === 'freellmapi' && (
+                        <div className="flex flex-col gap-2 mt-1">
+                          <label className="flex items-center gap-2 font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>
+                            <input
+                              type="checkbox"
+                              checked={settings.freellmapi?.enabled ?? false}
+                              onChange={async e => {
+                                const freellmapi = { ...settings.freellmapi!, enabled: e.target.checked };
+                                setSettings(s => ({ ...s, freellmapi }));
+                                await cortexClient.updateRouterSettings({ freellmapi });
+                              }}
+                            />
+                            Activer FreeLLMAPI
+                          </label>
+                          <input
+                            type="url"
+                            value={settings.freellmapi?.baseUrl ?? ''}
+                            onChange={e => setSettings(s => ({ ...s, freellmapi: { ...s.freellmapi!, baseUrl: e.target.value } }))}
+                            onBlur={async e => {
+                              const freellmapi = { ...settings.freellmapi!, baseUrl: e.target.value.trim().replace(/\/$/, '') };
+                              setSettings(s => ({ ...s, freellmapi }));
+                              await cortexClient.updateRouterSettings({ freellmapi });
+                            }}
+                            placeholder="https://gateway.example/v1 (sans /v1 si nécessaire)"
+                            aria-label="Endpoint FreeLLMAPI"
+                            className="font-mono w-full"
+                            style={{ fontSize: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', borderRadius: 4, color: '#c0b0e0', padding: '4px 8px', outline: 'none' }}
+                          />
+                          <label className="flex items-center gap-2 font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>
+                            <input
+                              type="checkbox"
+                              checked={settings.freellmapi?.freeOnly ?? false}
+                              onChange={async e => {
+                                const freellmapi = { ...settings.freellmapi!, freeOnly: e.target.checked };
+                                setSettings(s => ({ ...s, freellmapi }));
+                                await cortexClient.updateRouterSettings({ freellmapi });
+                              }}
+                            />
+                            Free only (si l API le prouve)
+                          </label>
+                          <label className="flex items-center gap-2 font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>
+                            <input type="checkbox" checked={settings.freellmapi?.allowFallback ?? true} onChange={async e => {
+                              const freellmapi = { ...settings.freellmapi!, allowFallback: e.target.checked };
+                              setSettings(s => ({ ...s, freellmapi }));
+                              await cortexClient.updateRouterSettings({ freellmapi });
+                            }} />
+                            Autoriser le fallback
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>Mode :</span>
+                            {(['auto', 'manual'] as const).map(mode => (
+                              <button key={mode} type="button" onClick={async () => {
+                                const freellmapi = { ...settings.freellmapi!, mode };
+                                setSettings(s => ({ ...s, freellmapi }));
+                                await cortexClient.updateRouterSettings({ freellmapi });
+                              }} className="font-mono px-2 py-1 rounded" style={{ fontSize: 9, color: settings.freellmapi?.mode === mode ? '#22d3ee' : '#5a4a7a', border: `1px solid ${settings.freellmapi?.mode === mode ? 'rgba(34,211,238,0.4)' : 'rgba(255,255,255,0.08)'}`, background: 'rgba(255,255,255,0.03)' }}>{mode}</button>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap gap-3 font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>
+                            <label className="flex items-center gap-1"><input type="checkbox" checked={settings.freellmapi?.allowText ?? true} onChange={async e => { const freellmapi = { ...settings.freellmapi!, allowText: e.target.checked }; setSettings(s => ({ ...s, freellmapi })); await cortexClient.updateRouterSettings({ freellmapi }); }} /> Texte</label>
+                            {(['Image', 'Video', 'Audio'] as const).map(modality => <label key={modality} className="flex items-center gap-1" title="NON SUPPORTÉ : aucune capacité annoncée par FreeLLMAPI"><input type="checkbox" disabled checked={false} readOnly /> {modality}</label>)}
+                          </div>
+                          {settings.freellmapi?.mode === 'manual' && <input type="text" value={settings.freellmapi?.textModel ?? 'auto'} onChange={e => setSettings(s => ({ ...s, freellmapi: { ...s.freellmapi!, textModel: e.target.value } }))} onBlur={async e => { const freellmapi = { ...settings.freellmapi!, textModel: e.target.value.trim() || 'auto' }; setSettings(s => ({ ...s, freellmapi })); await cortexClient.updateRouterSettings({ freellmapi }); }} placeholder="Modèle texte" aria-label="Modèle texte FreeLLMAPI" className="font-mono w-full" style={{ fontSize: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: '#c0b0e0', padding: '4px 8px', outline: 'none' }} />}
+                          {freeModels.length > 0 && <p className="font-mono" style={{ fontSize: 9, color: '#3d3060' }}>Modèles : {freeModels.map(model => `${model.id}${model.free === true ? ' (free)' : ''}`).join(', ')}</p>}
+                        </div>
+                      )}
+                      {overview?.default_model && (
+                        <p className="font-mono" style={{ fontSize: 9, color: '#3d3060' }}>
+                          Modèle par défaut : {overview.default_model}
+                        </p>
+                      )}
 
                       {prov.id === 'groq' && (
                         <div className="flex items-center gap-2 mt-1">
@@ -1431,6 +1640,20 @@ export default function SettingsModal({
                           Tester
                         </button>
 
+                        {prov.id === 'freellmapi' && (
+                          <button type="button" disabled={testing || !isActive} onClick={async () => {
+                            try {
+                              const result = await cortexClient.getFreeLLMAPIModels(true);
+                              setFreeModels(result.models);
+                              setKeyTestResult(r => ({ ...r, freellmapi: { ok: !result.error, msg: result.error ?? `${result.models.length} modèle(s) découvert(s)` } }));
+                            } catch (e) {
+                              setKeyTestResult(r => ({ ...r, freellmapi: { ok: false, msg: (e as Error).message } }));
+                            }
+                          }} className="font-mono text-xs px-2.5 py-1.5 rounded flex-shrink-0" style={{ background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.2)', color: '#22d3ee', cursor: 'pointer' }}>
+                            Modèles
+                          </button>
+                        )}
+
                         {/* Save */}
                         {draft && (
                           <button
@@ -1499,6 +1722,342 @@ export default function SettingsModal({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Claude / OpenAI — mode selector (abonnement CLI vs clé API) */}
+              <div className="flex flex-col gap-2">
+                <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
+                  CLAUDE — CHOIX DU BACKEND
+                </p>
+                <div className="flex gap-2">
+                  {(['subscription', 'api'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => handleSetClaudeMode(m)}
+                      className="font-mono text-xs px-2.5 py-1.5 rounded flex-1"
+                      style={{
+                        background: (settings.claude_mode ?? 'subscription') === m ? 'rgba(139,92,246,0.12)' : 'rgba(255,255,255,0.02)',
+                        border: `1px solid ${(settings.claude_mode ?? 'subscription') === m ? 'rgba(139,92,246,0.4)' : 'rgba(255,255,255,0.06)'}`,
+                        color: (settings.claude_mode ?? 'subscription') === m ? '#a78bfa' : '#7a6c9a',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {m === 'subscription' ? 'Claude Code / abonnement' : 'API Anthropic'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* OpenAI — mode selector (Codex/ChatGPT vs clé API) */}
+              <div className="flex flex-col gap-2">
+                <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
+                  OPENAI — CHOIX DU BACKEND
+                </p>
+                <div className="flex gap-2">
+                  {(['subscription', 'api'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => handleSetOpenaiMode(m)}
+                      className="font-mono text-xs px-2.5 py-1.5 rounded flex-1"
+                      style={{
+                        background: (settings.openai_mode ?? 'subscription') === m ? 'rgba(14,165,233,0.12)' : 'rgba(255,255,255,0.02)',
+                        border: `1px solid ${(settings.openai_mode ?? 'subscription') === m ? 'rgba(14,165,233,0.4)' : 'rgba(255,255,255,0.06)'}`,
+                        color: (settings.openai_mode ?? 'subscription') === m ? '#0ea5e9' : '#7a6c9a',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {m === 'subscription' ? 'Codex / compte ChatGPT' : 'API OpenAI'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* OAuth providers (separate section) */}
+              <div className="flex flex-col gap-2">
+                <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
+                  CLOUD L5 — AUTHENTIFICATION OAUTH
+                </p>
+                <p className="font-mono text-xs" style={{ color: '#7a6c9a', fontSize: 10 }}>
+                  Ces providers utilisent leur propre CLI pour la connexion.
+                  Aucun token n'est stocké dans Docteur.
+                </p>
+                {(['claude-oauth', 'codex'] as const).filter(provId => {
+                  if (provId === 'claude-oauth') return (settings.claude_mode ?? 'subscription') === 'subscription';
+                  if (provId === 'codex')        return (settings.openai_mode ?? 'subscription') === 'subscription';
+                  return true;
+                }).map(provId => {
+                  const prov = CLOUD_PROVIDERS.find(p => p.id === provId);
+                  if (!prov) return null;
+                  
+                  const overview = providersOverview?.providers.find(p => p.id === provId);
+                  const testing = !!keyTesting[provId];
+                  const testResult = keyTestResult[provId] ?? null;
+
+                  async function testProvider() {
+                    setKeyTesting(t => ({ ...t, [provId]: true }));
+                    setKeyTestResult(r => ({ ...r, [provId]: null }));
+                    try {
+                      const r = await cortexClient.testCloudKey(provId);
+                      const authModeLabel = r.authMode === 'setup_token' ? ' (setup-token)' : r.authMode === 'cli_session' ? ' (session CLI)' : '';
+                      setKeyTestResult(res => ({ ...res, [provId]: { ok: r.ok, msg: r.ok ? `OK — ${r.model ?? provId}${authModeLabel}` : (r.error ?? 'Échec') } }));
+                      cortexClient.getProvidersOverview().then(setProvidersOverview).catch(() => {});
+                    } catch (e) {
+                      setKeyTestResult(res => ({ ...res, [provId]: { ok: false, msg: (e as Error).message } }));
+                    } finally {
+                      setKeyTesting(t => ({ ...t, [provId]: false }));
+                    }
+                  }
+
+                  return (
+                    <div
+                      key={provId}
+                      className="px-3 py-3 rounded flex flex-col gap-2"
+                      style={{
+                        background: overview?.enabled ? `${prov.color}08` : 'rgba(255,255,255,0.02)',
+                        border: `1px solid ${overview?.enabled ? `${prov.color}28` : 'rgba(255,255,255,0.06)'}`,
+                      }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-grotesk font-semibold text-xs flex-1" style={{ color: '#f0eaff' }}>
+                          {prov.label}
+                        </span>
+                        <span className="font-mono px-1.5 py-0.5 rounded" style={{
+                          fontSize: 9, letterSpacing: '0.08em',
+                          background: 'rgba(61,255,170,0.1)',
+                          color: '#3dffaa',
+                          border: '1px solid rgba(61,255,170,0.2)',
+                        }}>
+                          ABONNEMENT
+                        </span>
+                        {overview && (
+                          <span
+                            className="font-mono px-1.5 py-0.5 rounded flex items-center gap-1"
+                            style={{
+                              fontSize: 9, letterSpacing: '0.06em',
+                              background: `${PROVIDER_STATE_COLORS[overview.status]}14`,
+                              color: PROVIDER_STATE_COLORS[overview.status],
+                              border: `1px solid ${PROVIDER_STATE_COLORS[overview.status]}40`,
+                            }}
+                            title={overview.in_cooldown ? `Réessai auto dans ${formatCooldown(overview.cooldown_remaining_ms)}` : undefined}
+                          >
+                            {overview.status === 'ready' ? <CheckCircle size={9} /> : <AlertTriangle size={9} />}
+                            {PROVIDER_STATE_LABELS[overview.status]}
+                            {overview.in_cooldown && ` (${formatCooldown(overview.cooldown_remaining_ms)})`}
+                          </span>
+                        )}
+                      </div>
+
+                      <p className="font-mono" style={{ fontSize: 10, color: '#5a4a7a' }}>{prov.note}</p>
+                      {overview?.default_model && (
+                        <p className="font-mono" style={{ fontSize: 9, color: '#3d3060' }}>
+                          Modèle par défaut : {overview.default_model}
+                        </p>
+                      )}
+
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
+                          CLI installée : {overview?.cli_installed ? 'oui' : 'non'}
+                        </span>
+                        <span className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
+                          Connecté : {overview?.configured ? 'oui' : 'non'}
+                        </span>
+                        {provId === 'claude-oauth' && overview?.configured && (
+                          <span className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
+                            Auth : {overview?.authMode === 'setup_token' ? 'setup-token' : 'session CLI'}
+                          </span>
+                        )}
+                      </div>
+
+                      {!overview?.cli_installed ? (
+                        <p className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
+                          {provId === 'claude-oauth' ? "Claude Code n'est pas installé." : "Codex n'est pas installé."}
+                          <br />
+                          Exécutez <code style={{ background: 'rgba(255,255,255,0.05)', padding: '1px 3px', borderRadius: 2 }}>
+                            {provId === 'claude-oauth' ? 'npm install -g @anthropic-ai/claude-code' : 'npm install -g @openai/codex'}
+                          </code>
+                          {provId === 'claude-oauth'
+                            ? ', puis lancez Claude Code et suivez le login officiel.'
+                            : ', puis lancez '}
+                          {provId === 'codex' && (
+                            <code style={{ background: 'rgba(255,255,255,0.05)', padding: '1px 3px', borderRadius: 2 }}>codex</code>
+                          )}
+                          {provId === 'codex' && ' et suivez la connexion avec ChatGPT.'}
+                        </p>
+                      ) : !overview?.configured ? (
+                        <p className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
+                          Exécutez <code style={{ background: 'rgba(255,255,255,0.05)', padding: '1px 3px', borderRadius: 2 }}>
+                            {provId === 'claude-oauth' ? 'claude auth login' : 'codex login'}
+                          </code>{provId === 'claude-oauth' ? ' (ou définissez CLAUDE_CODE_OAUTH_TOKEN)' : ''} dans votre terminal, puis cliquez sur Tester.
+                        </p>
+                      ) : null}
+
+                      <div className="flex items-center gap-2 mt-1">
+                        <button
+                          type="button"
+                          disabled={testing}
+                          onClick={testProvider}
+                          className="font-mono text-xs px-2.5 py-1.5 rounded flex items-center gap-1.5 flex-1 justify-center"
+                          style={{
+                            background: 'rgba(94,231,255,0.08)',
+                            border: '1px solid rgba(94,231,255,0.2)',
+                            color: testing ? '#3d3060' : '#5ee7ff',
+                            cursor: testing ? 'default' : 'pointer',
+                          }}
+                        >
+                          {testing ? <RefreshCw size={10} className="animate-spin" /> : <Zap size={10} />}
+                          Tester la connexion
+                        </button>
+                      </div>
+
+                      {testResult && (
+                        <p className="font-mono" style={{ fontSize: 10, color: testResult.ok ? '#3dffaa' : '#ff4d58' }}>
+                          {testResult.ok ? '✓' : '✗'} {testResult.msg}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Local providers (Ollama + PAIR) */}
+              <div className="flex flex-col gap-2">
+                <p className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
+                  LOCAL — INFÉRENCE LOCALE
+                </p>
+                
+                {/* Ollama */}
+                <div className="px-3 py-3 rounded flex flex-col gap-2"
+                  style={{
+                    background: 'rgba(255,255,255,0.02)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-grotesk font-semibold text-xs flex-1" style={{ color: '#f0eaff' }}>
+                      Ollama
+                    </span>
+                    <span className="font-mono px-1.5 py-0.5 rounded" style={{
+                      fontSize: 9, letterSpacing: '0.08em',
+                      background: 'rgba(61,255,170,0.1)',
+                      color: '#3dffaa',
+                      border: '1px solid rgba(61,255,170,0.2)',
+                    }}>
+                      GRATUIT
+                    </span>
+                    <span className="font-mono px-1.5 py-0.5 rounded" style={{
+                      fontSize: 9, letterSpacing: '0.08em',
+                      background: ollamaOk ? 'rgba(61,255,170,0.18)' : 'rgba(255,255,255,0.05)',
+                      color: ollamaOk ? '#3dffaa' : '#3d3060',
+                      border: `1px solid ${ollamaOk ? 'rgba(61,255,170,0.40)' : 'rgba(255,255,255,0.08)'}`,
+                    }}>
+                      {ollamaOk ? 'CONNECTÉ' : 'DÉCONNECTÉ'}
+                    </span>
+                    <span className="font-mono px-1.5 py-0.5 rounded flex items-center gap-1" style={{
+                      fontSize: 9, letterSpacing: '0.06em',
+                      background: '#3dffaa14',
+                      color: '#3dffaa',
+                      border: '1px solid #3dffaa40',
+                    }}>
+                      <CheckCircle size={9} />
+                      {installedOllamaModels.length} modèles
+                    </span>
+                  </div>
+                  
+                  <p className="font-mono" style={{ fontSize: 10, color: '#5a4a7a' }}>
+                   Serveur local d'inférence — Modèles téléchargés sur votre machine.
+                  </p>
+                </div>
+
+                {/* PAIR */}
+                {providersOverview?.providers.find(p => p.id === 'pair') && (
+                  <div className="px-3 py-3 rounded flex flex-col gap-2"
+                    style={{
+                      background: 'rgba(255,255,255,0.02)',
+                      border: '1px solid rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-grotesk font-semibold text-xs flex-1" style={{ color: '#f0eaff' }}>
+                        NVIDIA PAIR
+                      </span>
+                      <span className="font-mono px-1.5 py-0.5 rounded" style={{
+                        fontSize: 9, letterSpacing: '0.08em',
+                        background: 'rgba(61,255,170,0.1)',
+                        color: '#3dffaa',
+                        border: '1px solid rgba(61,255,170,0.2)',
+                      }}>
+                        GRATUIT
+                      </span>
+                      {(() => {
+                        const pairOverview = providersOverview?.providers.find(p => p.id === 'pair');
+                        return pairOverview ? (
+                          <span className="font-mono px-1.5 py-0.5 rounded flex items-center gap-1" style={{
+                            fontSize: 9, letterSpacing: '0.06em',
+                            background: `${PROVIDER_STATE_COLORS[pairOverview.status]}14`,
+                            color: PROVIDER_STATE_COLORS[pairOverview.status],
+                            border: `1px solid ${PROVIDER_STATE_COLORS[pairOverview.status]}40`,
+                          }}>
+                            {pairOverview.status === 'ready' ? <CheckCircle size={9} /> : <AlertTriangle size={9} />}
+                            {PROVIDER_STATE_LABELS[pairOverview.status]}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
+                    
+                    <p className="font-mono" style={{ fontSize: 10, color: '#5a4a7a' }}>
+                      Service d'inférence distribuée NVIDIA — Endpoint configurable.
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="font-mono flex-shrink-0" style={{ fontSize: 10, color: '#5a4a7a' }}>
+                        Endpoint :
+                      </span>
+                      <input
+                        type="text"
+                        value={providersOverview?.providers.find(p => p.id === 'pair')?.endpoint ?? 'http://localhost:8080'}
+                        onChange={async e => {
+                          const endpoint = e.target.value;
+                          try {
+                            await cortexClient.setPairEndpoint(endpoint);
+                            cortexClient.getProvidersOverview().then(setProvidersOverview).catch(() => {});
+                          } catch (error) {
+                            console.error('Erreur sauvegarde endpoint PAIR:', error);
+                          }
+                        }}
+                        className="font-mono flex-1"
+                        style={{
+                          fontSize: 10, background: 'rgba(255,255,255,0.04)',
+                          border: '1px solid rgba(255,255,255,0.10)',
+                          borderRadius: 4, color: '#c0b0e0', padding: '3px 6px',
+                          outline: 'none',
+                        }}
+                        placeholder="http://localhost:8080"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await cortexClient.testPairConnection();
+                            cortexClient.getProvidersOverview().then(setProvidersOverview).catch(() => {});
+                          } catch (error) {
+                            console.error('Erreur test PAIR:', error);
+                          }
+                        }}
+                        className="font-mono text-xs px-2.5 py-1.5 rounded flex items-center gap-1.5 flex-shrink-0"
+                        style={{
+                          background: 'rgba(94,231,255,0.08)',
+                          border: '1px solid rgba(94,231,255,0.2)',
+                          color: '#5ee7ff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Zap size={10} />
+                        Tester
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Batch settings */}
@@ -2191,7 +2750,7 @@ export default function SettingsModal({
                     <div>
                       <span className="font-mono" style={{ fontSize: 9, color: '#5a4a7a' }}>Taille : </span>
                       <span className="font-mono" style={{ fontSize: 9, color: '#7a6c9a' }}>
-                        {(indexStats.totalBytes / 1_048_576).toFixed(1)} Mo
+                        {((indexStats.diskBytes ?? indexStats.totalBytes) / 1_048_576).toFixed(1)} Mo sur disque
                       </span>
                     </div>
                   </div>
@@ -2207,7 +2766,7 @@ export default function SettingsModal({
                           if (r.skipped) {
                             setOptimizeResult('Index vide ou déjà optimisé.');
                           } else {
-                            setOptimizeResult(`✓ ${r.before?.fragments ?? '?'} → ${r.after?.fragments ?? '?'} fragments`);
+                            setOptimizeResult(`✓ ${r.before?.fragments ?? '?'} → ${r.after?.fragments ?? '?'} fragments · ${((r.before?.bytes ?? 0) / 1_048_576).toFixed(1)} → ${((r.after?.bytes ?? 0) / 1_048_576).toFixed(1)} Mo · ${((r.durationMs ?? 0) / 1000).toFixed(1)} s · ${r.before?.rows} → ${r.after?.rows} entrées`);
                             cortexClient.getIndexStats().then(s => s && setIndexStats(s)).catch(() => {});
                           }
                         } catch (e) {
@@ -2224,7 +2783,7 @@ export default function SettingsModal({
                         color: optimizing ? '#3d3060' : '#5ee7ff',
                       }}
                     >
-                      {optimizing ? '⏳ Compaction…' : '⚡ Compacter l\'index'}
+                      {optimizing ? '⏳ Compaction…' : 'Compacter maintenant'}
                     </button>
                     {optimizeResult && (
                       <span className="font-mono" style={{ fontSize: 9, color: optimizeResult.startsWith('✓') ? '#3dffaa' : '#ff4d58' }}>
@@ -2233,7 +2792,7 @@ export default function SettingsModal({
                     )}
                   </div>
                   <p className="font-mono mt-1" style={{ fontSize: 9, color: '#2e2555' }}>
-                    Réduit la fragmentation → recherches et indexations plus rapides. Peut prendre quelques minutes.
+                    Contrôle automatique toutes les 5 minutes : seuil {indexStats.autoCompactThreshold ?? 1000} fragments ou anciennes versions volumineuses. Peut prendre quelques minutes.
                   </p>
                 </div>
               )}
@@ -2736,7 +3295,7 @@ export default function SettingsModal({
                         const input = document.createElement('input');
                         input.type = 'file';
                         input.multiple = true;
-                        input.accept = '.xlsx,.xls,.csv,.txt,.md,.json';
+                        input.accept = '.xlsx,.csv,.txt,.md,.json';
                         input.onchange = () => { if (input.files) void handleFileSelection(input.files); };
                         input.click();
                       }}

@@ -22,110 +22,216 @@ interface RoadmapSection {
 
 const SECTIONS: RoadmapSection[] = [
   {
-    status:   'done',
-    title:    'Déjà en place',
-    emoji:    '✓',
-    color:    '#3dffaa',
-    dimColor: 'rgba(61,255,170,0.08)',
-    items: [
-      { domain: 'Capture',       label: 'Capture web simple et profonde', note: 'articles, YouTube, MSN, texte collé, fichiers' },
-      { domain: 'Capture',       label: 'Capture en batch, playlists et chaînes YouTube complètes' },
-      { domain: 'Capture',       label: 'Analyse ciblée à la capture' },
-      { domain: 'Capture',       label: 'Transcription locale + cloud', note: 'faster-whisper local · Groq Whisper optionnel · badge fournisseur dans l\'UI' },
-      { domain: 'Capture',       label: 'Dossier surveillé (inbox) + import corpus', note: 'dépôt par glisser-déposer, fichiers → neurones' },
-      { domain: 'Capture',       label: 'Dossier surveillé — rapports d\'agents externes', note: '.md / .txt / .json → kind rapport, sécurisé' },
-      { domain: 'Capture',       label: 'Détection garbage vidéo MSN', note: 'article_expired, video_content — raisons de fallback loguées' },
-      { domain: 'Capture',       label: 'OCR image', note: 'partage d\'écran + caméra, Tesseract' },
-      { domain: 'Recherche',     label: 'Recherche sémantique + mode Question (RAG)' },
-      { domain: 'Recherche',     label: 'Veille simple, approfondie et multi-source avec recoupement', note: 'crosscheck de sources, relecture critique post-veille' },
-      { domain: 'Recherche',     label: 'Niveaux de détail de veille', note: 'réglage fin propagé à tous les formulaires de veille' },
-      { domain: 'Recherche',     label: 'Réponse web rapide + recherche web approfondie', note: 'DuckDuckGo, sans IA cloud' },
-      { domain: 'Recherche',     label: 'Clarification automatique des questions ambiguës', note: 'JSON structuré, hors personnalité' },
-      { domain: 'Recherche',     label: 'Mode conversation avec mémoire de préférences', note: 'table preference_facts' },
-      { domain: 'Recherche',     label: 'Comparaison multi-modèles' },
-      { domain: 'Recherche',     label: 'Encyclopédies hors-ligne Kiwix (ZIM)', note: 'navigation et lecture d\'archives déjà en place fiables' },
-      { domain: 'Recherche',     label: 'Router intelligent local/cloud', note: 'qwen2.5:7b, 14b, Gemini, Groq, OpenRouter, Anthropic' },
-      { domain: 'Production',    label: 'Module candidature', note: 'CV, analyse, réécriture, lettres de motivation, offres ciblées, mots-clés ATS, CV maître, import PDF — neurones marqués PRIV' },
-      { domain: 'Production',    label: 'Générateur de prompts avec relecture croisée et envoi vers destinations' },
-      { domain: 'Production',    label: 'Exemples de style pour les résumés', note: 'appliqués à la capture, la veille et le pipeline vidéo — filtrage privé corrigé (fuite de neurones privés vers le cloud, désormais bloquée)' },
-      { domain: 'Production',    label: 'Mode lecture enrichi', note: 'ReadingView, table des matières, typographie confortable' },
-      { domain: 'Production',    label: 'Export PDF' },
-      { domain: 'Production',    label: 'Écran d\'accueil PWA' },
-      { domain: 'Automatisation', label: 'Agents de veille automatique', note: 'synthèse de fond + actualité web avec sources' },
-      { domain: 'Automatisation', label: 'Système d\'agents, compétences (skills) et liste de tâches' },
-      { domain: 'Automatisation', label: 'Lecteur audio lo-fi', note: 'pistes locales + radios en ligne' },
-      { domain: 'Interface',      label: 'Cortex 3D interactif' },
-      { domain: 'Interface',      label: 'Personnalité de Docteur', note: 'calme, respectueux, tutoiement/vouvoiement configurable' },
-      { domain: 'Interface',      label: 'Activation vocale "Hey Docteur"', note: 'Porcupine WASM 100% local, jamais de wake-word envoyé au cloud' },
-      { domain: 'Interface',      label: 'Commandes console et vocales', note: '"lis", "ouvre", "capture", push-to-talk, VAD silence' },
-      { domain: 'Interface',      label: 'Contrôle par gestes', note: 'comptage de doigts via caméra' },
-      { domain: 'Interface',      label: 'Lecteur vidéo YouTube intégré', note: 'bouton ▶ inline dans les neurones' },
-      { domain: 'Interface',      label: 'Raccourcis de sites personnalisés', note: 'console "ouvre <nom>"' },
-      { domain: 'Interface',      label: 'Accès mobile PWA + icône écran d\'accueil', note: 'lecture, écriture, capture — PC allumé' },
-      { domain: 'Interface',      label: 'Consultation hors-ligne complète', note: 'PC éteint — contenu complet en IndexedDB' },
-      { domain: 'Confidentialité', label: 'Confidentialité stricte', note: 'sentinel PRIV, mode strictement local (large couverture), filtrage RAG, audit à l\'export' },
-      { domain: 'Confidentialité', label: 'Verrou de sortie (export lock)' },
-      { domain: 'Performance',    label: 'Chargement paresseux du cortex', note: '50 neurones au démarrage, contenu chargé à la demande' },
-      { domain: 'Performance',    label: 'Registre centralisé des modales', note: 'useModalOpenTracking / useAnyModalOpen — corrige un bug de superposition récurrent (oublié 3 fois avant cette correction)' },
-      { domain: 'Infrastructure', label: 'Lanceur unique + script de vérification + script de réinstallation' },
-      { domain: 'Infrastructure', label: 'Projet suivi sur GitHub' },
-      { domain: 'Infrastructure', label: 'Backup automatique quotidien + synapses', note: 'restauration testée' },
-      { domain: 'Infrastructure', label: 'Audit sécurité appliqué', note: 'CORS, SSRF, dépendances, path traversal, symlinks' },
-    ],
+    "status": "done",
+    "title": "Terminé et vérifié",
+    "emoji": "✓",
+    "color": "#3dffaa",
+    "dimColor": "rgba(61,255,170,0.08)",
+    "items": [
+      {
+        "domain": "Infrastructure",
+        "label": "Compaction LanceDB",
+        "note": "Base réelle : 11,11 Go → 24,35 Mo, 182 → 1 fragment en 209,5 s ; 6 587 entrées et identifiants conservés (8 septembre 2026)."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Recherche vectorielle après compaction",
+        "note": "Les cinq résultats et scores sont identiques avant/après. Une nouvelle question a aussi été testée avec nomic-embed-text dans Ollama : embedding de 768 dimensions et résultats retournés."
+      }
+    ]
   },
   {
-    status:   'progress',
-    title:    'En cours / À consolider',
-    emoji:    '⟳',
-    color:    '#f59e0b',
-    dimColor: 'rgba(245,158,11,0.07)',
-    items: [
-      { domain: 'Production', label: 'Module professeur', note: 'parcours d\'apprentissage, répétition espacée, registres, modèle dédié — code solidifié (Gemini/OpenRouter câblés, erreurs proprement gérées) mais jamais validé de bout en bout avec un modèle réel dans cette session' },
-      { domain: 'Recherche',  label: 'Téléchargement depuis le catalogue Kiwix', note: 'l\'URL renvoyée pointe encore le fichier .zim.meta4 (métalien) et non l\'archive réelle — résolution à finaliser' },
-      { domain: 'Performance', label: 'Performances au démarrage', note: '~2 100 neurones — chargement initial à surveiller' },
-      { domain: 'Infrastructure', label: 'Nettoyage de la base', note: 'doublons, neurones expirés, ratio qualité' },
-      { domain: 'Infrastructure', label: 'HTTPS hors-ligne complet', note: 'certificats mkcert PC + Android — partiellement en place' },
-    ],
+    "status": "progress",
+    "title": "Implémenté · validation réelle à compléter",
+    "emoji": "⟳",
+    "color": "#f59e0b",
+    "dimColor": "rgba(245,158,11,0.07)",
+    "items": [
+      {
+        "domain": "Capture",
+        "label": "Web, capture profonde, fichiers et corpus",
+        "note": "Routes et formulaires branchés ; batch, playlists, chaînes, analyse ciblée et repli MSN à éprouver sur des sources réelles."
+      },
+      {
+        "domain": "Capture",
+        "label": "Transcription et OCR",
+        "note": "Pipeline vidéo, Whisper local/Groq et Tesseract présents ; caméra, écran et qualité de transcription à valider sur les appareils."
+      },
+      {
+        "domain": "Capture",
+        "label": "Dossier surveillé et rapports externes",
+        "note": "Watcher démarré par le serveur, imports .md/.txt/.json ; dépôt réel et reprise après erreur à valider."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Question/RAG, conversation et comparaison",
+        "note": "Routes branchées, mémoire de préférences et clarification présentes ; qualité des réponses et citations à éprouver."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Veille et recherche web",
+        "note": "Recherche simple/profonde, multi-source et recoupement branchés ; disponibilité des sources et qualité à valider."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Kiwix hors ligne et catalogue",
+        "note": "kiwix-serve et résolution .meta4 → .zim déjà branchés ; téléchargement et lecture réels à valider."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Routeur local/cloud",
+        "note": "Clients partagés Gemini, Groq, OpenRouter et autres fournisseurs présents ; scénarios de quotas et replis à valider."
+      },
+      {
+        "domain": "Production",
+        "label": "Professeur",
+        "note": "Groq et Gemini : validation, plan et première explication testés avec les vrais fournisseurs. OpenRouter : plan réussi, explication vide. Révisions, progression complète et local restent à valider."
+      },
+      {
+        "domain": "Production",
+        "label": "Candidature et CV",
+        "note": "Import PDF, CV maître, analyse, réécriture et lettres branchés ; parcours réel et confidentialité à revalider."
+      },
+      {
+        "domain": "Production",
+        "label": "Prompts, styles, lecture et export PDF",
+        "note": "Interfaces et routes présentes ; qualité, relecture croisée et exports réels à valider. Destinations externes : copier-coller."
+      },
+      {
+        "domain": "Automatisation",
+        "label": "Agents, compétences et tâches",
+        "note": "Planificateur démarré, exécution et sorties reliées à l’interface ; cycles longs et reprise à valider."
+      },
+      {
+        "domain": "Interface",
+        "label": "Cortex 3D, lecture et personnalisation",
+        "note": "Chargement progressif, registre des modales, personnalité, lecteur vidéo et raccourcis branchés ; ergonomie à revalider."
+      },
+      {
+        "domain": "Interface",
+        "label": "Voix, gestes et audio",
+        "note": "Porcupine, commandes, VAD, caméra et lecteur audio présents ; tests matériels et permissions à compléter."
+      },
+      {
+        "domain": "Interface",
+        "label": "PWA mobile et consultation hors ligne",
+        "note": "Service worker et stockage local présents ; installation Android, synchronisation et lecture PC éteint à valider."
+      },
+      {
+        "domain": "Confidentialité",
+        "label": "Mode local, filtrage privé et verrou de sortie",
+        "note": "Protections présentes dans le code ; couverture de tous les chemins et absence de fuite à revalider, sans garantie globale."
+      },
+      {
+        "domain": "Infrastructure",
+        "label": "Compaction automatique et Settings",
+        "note": "Contrôle toutes les 5 minutes, seuil de fragments et espace obsolète ; déclenchement prolongé en usage réel à observer."
+      },
+      {
+        "domain": "Infrastructure",
+        "label": "Sauvegarde et restauration",
+        "note": "Planification et routes branchées ; restauration complète sur une copie à revalider."
+      },
+      {
+        "domain": "Infrastructure",
+        "label": "Lancement, HTTPS et performances",
+        "note": "Scripts et configuration présents ; certificats PC/Android, démarrage et charge du corpus actuel à mesurer."
+      },
+      {
+        "domain": "Infrastructure",
+        "label": "Sécurité et qualité du corpus",
+        "note": "Contrôles CORS/SSRF et chemins présents ; audit exhaustif à renouveler. Doublons et contenu expiré restent à traiter."
+      }
+    ]
   },
   {
-    status:   'future',
-    title:    'Idées futures',
-    emoji:    '◇',
-    color:    '#7b8cf8',
-    dimColor: 'rgba(123,140,248,0.06)',
-    items: [
-      { label: 'Digest quotidien / hebdo de la veille' },
-      { label: 'Connexions automatiques suggérées', note: 'synapses IA entre neurones similaires' },
-      { label: 'Synthèse vocale (Piper TTS)', note: 'fr_FR-upmc-medium, 120-140 wpm — réponses lues à voix haute, 100% local' },
-      { label: 'Application externe de contrôle vocal', note: 'barre des tâches, indépendante du navigateur' },
-      { label: 'Bot Discord en lecture seule', note: 'interroger le cortex depuis Discord' },
-      { label: 'Agents externes via dossier surveillé', note: 'OpenWorker, OpenClaw' },
-      { label: 'MCP / Docteur qui agit', note: 'naviguer, interagir avec des sites — vision long terme' },
-      { label: 'Reconnaissance vocale du locuteur', note: 'pour le fun' },
-      { label: 'Écran de veille façon Jarvis' },
-      { label: 'Gestion adaptative des performances', note: 'adapter dynamiquement la charge réseau/CPU à la machine' },
-    ],
+    "status": "future",
+    "title": "Non implémenté ou à concevoir",
+    "emoji": "◇",
+    "color": "#7b8cf8",
+    "dimColor": "rgba(123,140,248,0.06)",
+    "items": [
+      {
+        "domain": "Automatisation",
+        "label": "Digest quotidien / hebdomadaire de la veille"
+      },
+      {
+        "domain": "Recherche",
+        "label": "Suggestions automatiques de synapses"
+      },
+      {
+        "domain": "Interface",
+        "label": "Synthèse vocale locale Piper",
+        "note": "À distinguer de la lecture vocale déjà disponible."
+      },
+      {
+        "domain": "Interface",
+        "label": "Contrôle vocal externe, reconnaissance du locuteur et écran de veille"
+      },
+      {
+        "domain": "Recherche",
+        "label": "Bot Discord en lecture seule"
+      },
+      {
+        "domain": "Automatisation",
+        "label": "Interactions web via MCP",
+        "note": "À concevoir dans le périmètre autorisé ; aucune exécution de commandes système."
+      },
+      {
+        "domain": "Infrastructure",
+        "label": "Adaptation automatique de la charge CPU/réseau"
+      }
+    ]
   },
   {
-    status:   'abandoned',
-    title:    'Décisions écartées',
-    emoji:    '✕',
-    color:    '#6b7280',
-    dimColor: 'rgba(107,114,128,0.06)',
-    items: [
-      { label: 'Choix du navigateur pour "ouvre"', note: 'navigateur système par défaut suffit — complexité inutile' },
-      { label: 'Sherlock / OSINT intégré', note: 'hors périmètre — outil de connaissance, pas d\'investigation' },
-      { label: 'Indexation projets Git', note: 'hors périmètre — outils dédiés (VS Code, GitHub) plus adaptés' },
-      { label: 'Création de projets Git ou exécution de commandes depuis Docteur', note: 'risque de sécurité — hors périmètre' },
-      { label: 'Scraping LinkedIn / Indeed', note: 'risque légal + APIs fragiles — candidature gérée manuellement' },
-      { label: 'Envoi automatique de candidatures', note: 'viole les CGU des plateformes' },
-      { label: 'Aspiration systématique de sites', note: 'scraping indiscriminé — hors périmètre' },
-      { label: 'Décodeur ZIM natif en Node', note: 'fragile sous Windows — kiwix-serve retenu à la place' },
-      { label: 'Envoi automatique de prompts vers Replit / Lovable', note: 'pas d\'API publique — assistance copier-coller uniquement' },
-      { label: 'Passage en application native Electron / Tauri', note: 'perte de l\'accès mobile — risque trop élevé' },
-      { label: 'Exposition internet de Docteur', note: 'outil personnel local — pas de serveur public prévu' },
-    ],
-  },
+    "status": "abandoned",
+    "title": "Décisions écartées",
+    "emoji": "✕",
+    "color": "#6b7280",
+    "dimColor": "rgba(107,114,128,0.06)",
+    "items": [
+      {
+        "label": "Choix du navigateur depuis Docteur",
+        "note": "Impossible depuis une page web."
+      },
+      {
+        "label": "Sherlock / OSINT sur des personnes",
+        "note": "Profilage de personnes."
+      },
+      {
+        "label": "Exécution de commandes depuis Docteur",
+        "note": "Risque de sécurité."
+      },
+      {
+        "label": "Scraping LinkedIn / Indeed",
+        "note": "Conditions d’utilisation des plateformes."
+      },
+      {
+        "label": "Exposition sur internet",
+        "note": "Risque de sécurité ; usage personnel local."
+      },
+      {
+        "label": "Décodeur ZIM natif en Node",
+        "note": "Fragile sur Windows ; kiwix-serve retenu."
+      },
+      {
+        "label": "Envoi automatique vers Replit / Lovable",
+        "note": "Pas d’API publique ; copier-coller conservé."
+      },
+      {
+        "label": "Application native Electron / Tauri",
+        "note": "Perte du mobile et risque élevé."
+      },
+      {
+        "label": "Indexation/création de projets Git",
+        "note": "Hors périmètre ; outils dédiés."
+      },
+      {
+        "label": "Candidatures automatiques et aspiration systématique de sites",
+        "note": "Conditions d’utilisation et périmètre du projet."
+      }
+    ]
+  }
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,7 +302,7 @@ export default function RoadmapModal({ isOpen, onClose }: Props) {
               ROADMAP
             </h2>
             <p className="font-mono" style={{ color: '#3d3060', fontSize: 10, marginTop: 3, letterSpacing: '0.1em' }}>
-              Docteur v4.8 · état du projet
+              Audit du 8 septembre 2026 · code branché ≠ usage réel validé
             </p>
           </div>
           <button
@@ -218,6 +324,7 @@ export default function RoadmapModal({ isOpen, onClose }: Props) {
               key={section.status}
               style={{
                 padding:     '24px 22px',
+                gridColumn: section.status === 'abandoned' ? '1 / -1' : undefined,
                 borderRight: si < SECTIONS.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
               }}
             >

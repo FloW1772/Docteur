@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { isTerminalVideoStatus, startVideoJobPolling } from '../../lib/video-job-polling';
 import {
   Clapperboard, X, ChevronLeft, Minimize2, AlertTriangle, CheckCircle,
   RotateCcw, Ban, HardDrive, Clock, History,
@@ -77,15 +78,11 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   const [detail, setDetail]           = useState<VideoJobDetail | null>(null);
   const [history, setHistory]         = useState<VideoJob[]>([]);
 
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+  const [pollGeneration, setPollGeneration] = useState(0);
 
   const cloudForcedLocal = strictLocalMode || isPrivate;
-
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) { clearInterval(pollTimer.current); pollTimer.current = null; }
-  }, []);
-
-  useEffect(() => () => stopPolling(), [stopPolling]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -95,32 +92,27 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
 
   // Resume watching an already-running job, if any, when the modal opens.
   useEffect(() => {
+    let disposed = false;
     cortexClient.listVideoSummaryJobs().then(jobs => {
+      if (disposed) return;
       setHistory(jobs);
-      const active = jobs.find(j => !['done', 'error', 'cancelled'].includes(j.status));
+      const active = jobs.find(j => !isTerminalVideoStatus(j.status));
       if (active) {
         setActiveJobId(active.id);
         setView('progress');
       }
     }).catch(() => { /* history is best-effort */ });
+    return () => { disposed = true; };
   }, []);
 
   useEffect(() => {
     if (view !== 'progress' || !activeJobId) return;
-    async function poll() {
-      try {
-        const d = await cortexClient.getVideoSummaryJob(activeJobId!);
-        setDetail(d);
-        if (['done', 'error', 'cancelled'].includes(d.job.status)) {
-          stopPolling();
-          onDone?.();
-        }
-      } catch { /* transient — try again next tick */ }
-    }
-    void poll();
-    pollTimer.current = setInterval(poll, 2500);
-    return () => stopPolling();
-  }, [view, activeJobId, stopPolling, onDone]);
+    return startVideoJobPolling(
+      () => cortexClient.getVideoSummaryJob(activeJobId),
+      setDetail,
+      () => onDoneRef.current?.(),
+    );
+  }, [view, activeJobId, pollGeneration]);
 
   async function handleEstimate() {
     if (!url.trim()) return;
@@ -172,6 +164,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   async function handleResume(jobId: string) {
     try {
       await cortexClient.resumeVideoSummaryJob(jobId);
+      setPollGeneration(n => n + 1);
       setActiveJobId(jobId);
       setDetail(null);
       setView('progress');
@@ -358,7 +351,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
     const transcribedDone = segments.filter(s => s.transcript_status === 'done').length;
     const summarizedDone  = segments.filter(s => s.summary_status === 'done').length;
     const failed = segments.filter(s => s.transcript_status === 'error' || s.summary_status === 'error').length;
-    const finished = job && ['done', 'error', 'cancelled'].includes(job.status);
+    const finished = job && isTerminalVideoStatus(job.status);
 
     return (
       <>

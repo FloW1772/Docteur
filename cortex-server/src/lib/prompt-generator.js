@@ -1,7 +1,4 @@
-import { chatCompletion } from './ollama.js';
-import { completeWithCascade as geminiCascade } from './providers/gemini.js';
-import * as groqProvider from './providers/groq.js';
-import { getCloudKeys, getRouterSettings } from './sqlite.js';
+import { getRouterSettings, getCloudKeys } from './sqlite.js';
 import { getModelStatuses } from './router.js';
 
 // ── Available models — local (installed) + cloud (key configured), gated by strict_local_mode ─
@@ -28,35 +25,6 @@ export async function listAvailableModels(installedNames) {
 }
 
 // ── Model-agnostic dispatcher — wraps existing provider modules, no duplication ─
-
-export async function callModel({ modelId, provider, messages, client }) {
-  const settings = getRouterSettings();
-
-  if (provider === 'local') {
-    const text = await chatCompletion(client, modelId, messages);
-    return { text, model: modelId, provider: 'local' };
-  }
-
-  if (settings.strict_local_mode) {
-    throw new Error('Mode strictement local actif — appel cloud bloqué');
-  }
-
-  const keys = getCloudKeys();
-
-  if (provider === 'gemini') {
-    if (!keys.gemini_key) throw new Error('Clé Gemini non configurée');
-    const result = await geminiCascade({ apiKey: keys.gemini_key, messages });
-    return { text: result.text, model: result.model ?? 'gemini', provider: 'gemini' };
-  }
-
-  if (provider === 'groq') {
-    if (!keys.groq_key) throw new Error('Clé Groq non configurée');
-    const result = await groqProvider.complete({ apiKey: keys.groq_key, messages, model: modelId });
-    return { text: result.text, model: result.model ?? modelId, provider: 'groq' };
-  }
-
-  throw new Error(`Provider inconnu : ${provider}`);
-}
 
 // ── Stage 1 — draft ──────────────────────────────────────────────────────────
 

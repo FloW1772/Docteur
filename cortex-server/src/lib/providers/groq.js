@@ -1,4 +1,5 @@
 import { guardCloudCall } from '../privacy-guard.js';
+import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
 
 const GROQ_BASE       = 'https://api.groq.com/openai/v1';
 export const DEFAULT_MODEL = 'openai/gpt-oss-120b';
@@ -18,6 +19,8 @@ async function groqFetch(apiKey, body) {
       signal: ctrl.signal,
     });
     return res;
+  } catch (networkErr) {
+    throw classifiedError(`Groq: ${networkErr.message}`, classifyNetworkError(networkErr));
   } finally {
     clearTimeout(timer);
   }
@@ -33,15 +36,15 @@ export async function complete({ apiKey, messages, model }) {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    if (res.status === 401) throw new Error('Groq : clé API invalide (401)');
-    if (res.status === 404) throw new Error(`Groq : modèle ${resolvedModel} introuvable (404)`);
-    if (res.status === 429) {
-      const e = new Error('Groq : quota atteint (429)');
-      e.isQuota = true;
-      throw e;
-    }
-    throw new Error(`Groq HTTP ${res.status} : ${err?.error?.message ?? 'erreur inconnue'}`);
+    const body = await res.json().catch(() => ({}));
+    const category = classifyHttpError(res.status, body);
+    const err = classifiedError(
+      `Groq ${res.status}: ${body?.error?.message ?? res.statusText}`,
+      category,
+    );
+    err.isQuota = category === ErrorCategory.QUOTA_EXCEEDED || category === ErrorCategory.RATE_LIMITED;
+    if (category === ErrorCategory.RATE_LIMITED) err.retryAfterMs = parseRetryAfterMs(res.headers, body);
+    throw err;
   }
 
   const data = await res.json();
@@ -58,8 +61,9 @@ export async function testKey(apiKey, model) {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    const category = classifyHttpError(res.status, body);
+    throw classifiedError(body?.error?.message ?? `HTTP ${res.status}`, category);
   }
 
   const data = await res.json();

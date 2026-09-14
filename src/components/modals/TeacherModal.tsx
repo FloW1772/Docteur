@@ -80,12 +80,17 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
   const [modelInput, setModelInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [validateMsg, setValidateMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const reloadModels = useCallback(async () => {
     setRefreshing(true);
     try {
       setAvailable(await cortexClient.getTeacherAvailableModels());
+      setModelsError(null);
+    } catch (err) {
+      setAvailable(null);
+      setModelsError((err as Error).message);
     } finally {
       setRefreshing(false);
     }
@@ -131,9 +136,9 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
   if (!settings) return <div style={{ color: '#64748b', fontSize: 12 }}>Chargement…</div>;
 
   const isLocal = settings.model === 'local' || !/^(groq|gemini|openrouter):/.test(settings.model);
-  const groq = available?.cloud.groq;
-  const gemini = available?.cloud.gemini;
-  const openrouter = available?.cloud.openrouter;
+  const groq = available?.cloud?.groq;
+  const gemini = available?.cloud?.gemini;
+  const openrouter = available?.cloud?.openrouter;
   const cloudProviders: { key: string; label: string; data: typeof groq }[] = [
     { key: 'groq', label: 'Groq', data: groq },
     { key: 'gemini', label: 'Gemini', data: gemini },
@@ -157,7 +162,7 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
           style={inputStyle}
           value={modelInput}
           onChange={e => setModelInput(e.target.value)}
-          disabled={strictLocalMode}
+          disabled={saving}
         >
           <optgroup label="Modèles locaux installés">
             <option value="local">local (suit le modèle du routeur général)</option>
@@ -174,16 +179,16 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
               {(data?.models ?? []).map(m => {
                 const value = m.id.includes(':') ? m.id : `${key}:${m.id}`;
                 return (
-                  <option key={m.id} value={value} disabled={!!m.disabled_reason}>
+                  <option key={m.id} value={value} disabled={strictLocalMode || available?.strict_local_mode || !!m.disabled_reason}>
                     {m.id}
-                    {m.disabled_reason ? ` — ${m.disabled_reason}` : ''}
+                    {strictLocalMode || available?.strict_local_mode ? ' — Mode strictement local actif' : m.disabled_reason ? ` — ${m.disabled_reason}` : ''}
                     {!m.disabled_reason && m.limit != null ? ` — ${m.remaining}/${m.limit} restants aujourd'hui` : ''}
                   </option>
                 );
               })}
               {(!data || data.models.length === 0) && (
                 <option value={`${key}:__unavailable`} disabled>
-                  {data ? `Aucun modèle ${label} disponible` : 'Chargement…'}
+                  {modelsError ? `Liste indisponible — ${modelsError}` : available ? `Aucun modèle ${label} fourni par le serveur — actualisez le serveur` : 'Chargement…'}
                 </option>
               )}
             </optgroup>
@@ -191,7 +196,7 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
         </select>
 
         <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <button type="button" style={btnStyle} onClick={() => void handleSave()} disabled={saving || strictLocalMode}>
+          <button type="button" style={btnStyle} onClick={() => void handleSave()} disabled={saving}>
             {saving ? <RefreshCw size={13} className="spin" /> : <Check size={13} />} {saving ? 'Test en cours…' : 'Valider et enregistrer'}
           </button>
         </div>
@@ -202,7 +207,7 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
           </div>
         )}
 
-        {strictLocalMode && (
+        {(strictLocalMode || available?.strict_local_mode) && (
           <div style={{ fontSize: 11, color: '#ffb547', marginTop: 8 }}>
             Mode strictement local actif — les modèles cloud sont grisés et le Professeur utilisera un modèle local quel que soit ce réglage.
           </div>
@@ -214,9 +219,12 @@ function SettingsTab({ strictLocalMode }: { strictLocalMode: boolean }) {
         )}
         {cloudProviders.filter(({ data }) => data && !data.configured).map(({ key, label }) => (
           <div key={key} style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-            {label} : clé non configurée — ajoute-la dans Paramètres &gt; Fournisseurs cloud pour débloquer les modèles cloud.
+            {label} : Aucune clé configurée — Settings &gt; Modèles.
           </div>
         ))}
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+          OpenRouter : seul le modèle gratuit du routeur est pris en charge. Une validation courte réussie ne garantit pas les réponses longues ; une réponse vide sera signalée sans changement silencieux de modèle.
+        </div>
       </div>
 
       {quota && (

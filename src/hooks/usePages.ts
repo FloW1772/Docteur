@@ -139,7 +139,7 @@ async function loadOffline(setPages: SetPages, setLoading: SetLoading): Promise<
 function buildUpserted(prev: Page[], data: { id: string; title: string; kind?: PageKind; content?: string; metadata?: Record<string, unknown> }): Page {
   const existing = prev.find(p => p.id === data.id);
   if (existing) {
-    return { ...existing, title: data.title, kind: data.kind ?? existing.kind, metadata: data.metadata ?? existing.metadata, updatedAt: Date.now() };
+    return { ...existing, title: data.title, kind: data.kind ?? existing.kind, metadata: data.metadata ?? existing.metadata, blocks: data.content === undefined ? existing.blocks : [{ id: generateId(), type: 'paragraph', content: data.content }], updatedAt: Date.now() };
   }
   const now = Date.now();
   return {
@@ -160,7 +160,16 @@ function applyUpserted(prev: Page[], page: Page): Page[] {
 }
 
 export function usePages() {
-  const [pages, setPages]           = useState<Page[]>([]);
+  const [pages, publishPages] = useState<Page[]>([]);
+  // Mutations run synchronously against the latest snapshot, outside React's
+  // replayable state updaters. Batched agent actions must see prior writes.
+  const livePages = useRef<Page[]>([]);
+  const setPages = useCallback((value: Page[] | ((prev: Page[]) => Page[])) => {
+    const next = typeof value === 'function' ? value(livePages.current) : value;
+    if (localStorage.getItem('docteur-pipeline-debug') === 'true') console.debug('[pipeline] state merge', { before: livePages.current.length, after: next.length });
+    livePages.current = next;
+    publishPages(next);
+  }, []);
   const [loading, setLoading]       = useState(true);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [pageCounts, setPageCounts] = useState<{ total: number; byKind: Record<string, number> }>({ total: 0, byKind: {} });
@@ -216,32 +225,40 @@ export function usePages() {
   // absent from `pages`, so nothing could be found to open, and this bailed
   // before ever fetching it.
 
+  const contentRequests = useRef(new Map<string, Promise<void>>());
   const loadPage = useCallback(async (id: string): Promise<void> => {
-    const known = pages.find(p => p.id === id);
-    if (known && !_lazyIds.has(id) && known.blocks?.length > 0) return; // already fully loaded — nothing to do
-    setPageContentLoading(true);
-    try {
-      let full: Page | null = null;
-      // Try server first, IDB as fallback for offline mobile
-      if (isOnline !== false) {
-        full = await getPageFromServer(id);
+    const known = livePages.current.find(p => p.id === id);
+    if (known && !_lazyIds.has(id)) return;
+    const pending = contentRequests.current.get(id);
+    if (pending) return pending;
+    const request = (async () => {
+      setPageContentLoading(true);
+      try {
+        let full: Page | null = null;
+        // Try server first, IDB as fallback for offline mobile
+        if (isOnline !== false) {
+          try { full = await getPageFromServer(id); } catch { /* offline cache below */ }
+        }
+        if (!full) {
+          full = await getPage(id) ?? null;
+        }
+        if (full) {
+          _lazyIds.delete(id);
+          setPages(prev => {
+            if (prev.some(p => p.id === id)) return prev.map(p => p.id === id ? full! : p);
+            return [full!, ...prev];
+          });
+        }
+      } catch (e) {
+        console.error('[loadPage] error:', e);
+      } finally {
+        contentRequests.current.delete(id);
+        setPageContentLoading(contentRequests.current.size > 0);
       }
-      if (!full) {
-        full = await getPage(id) ?? null;
-      }
-      if (full) {
-        _lazyIds.delete(id);
-        setPages(prev => {
-          if (prev.some(p => p.id === id)) return prev.map(p => p.id === id ? full! : p);
-          return [full!, ...prev];
-        });
-      }
-    } catch (e) {
-      console.error('[loadPage] error:', e);
-    } finally {
-      setPageContentLoading(false);
-    }
-  }, [isOnline, pages]);
+    })();
+    contentRequests.current.set(id, request);
+    return request;
+  }, [isOnline, setPages]);
 
   // ── loadAllMeta — load all pages metadata (no blocks) for "Tous les neurones" ─
 
@@ -257,7 +274,8 @@ export function usePages() {
           _lazyIds.add(meta.id);
           return meta; // already has blocks: []
         });
-        return result;
+        const ids = new Set(result.map(p => p.id));
+        return [...prev.filter(p => !ids.has(p.id)), ...result];
       });
       // Update counts from the actual list
       const byKind: Record<string, number> = {};
@@ -283,12 +301,17 @@ export function usePages() {
   // ── Helper: save a page and surface server errors ────────────────────────────
 
   const save = useCallback((page: Page): Promise<void> => {
+    if (_lazyIds.has(page.id)) {
+      const error = new Error('Contenu non chargé : sauvegarde refusée');
+      setWriteError(error.message);
+      return Promise.reject(error);
+    }
     if (remote && isOnline === false) {
       const err = new Error('Indisponible hors-ligne — allumez le PC');
       setWriteError(err.message);
       return Promise.reject(err);
     }
-    return savePage(page).catch(err => {
+    return savePage(page, remote || page.metadata?.source === 'agent').catch(err => {
       setWriteError((err as Error).message ?? 'Erreur de sauvegarde');
       throw err;
     });
@@ -350,7 +373,9 @@ export function usePages() {
 
   // ── updatePage ───────────────────────────────────────────────────────────────
 
-  const updatePage = useCallback((id: string, updates: Partial<Omit<Page, 'id' | 'createdAt'>>) => {
+  const updatePage = useCallback(async (id: string, updates: Partial<Omit<Page, 'id' | 'createdAt'>>) => {
+    if (_lazyIds.has(id)) await loadPage(id);
+    if (_lazyIds.has(id)) throw new Error('Contenu non charge');
     let updated: Page | null = null;
     let oldKind: PageKind | null = null;
     setPages(prev =>
@@ -376,7 +401,8 @@ export function usePages() {
         }));
       }
     }
-  }, [scheduleSave]);
+    return updated as Page | null;
+  }, [scheduleSave, loadPage]);
 
   // ── removePage ───────────────────────────────────────────────────────────────
 
@@ -405,7 +431,8 @@ export function usePages() {
 
   // ── createLink ───────────────────────────────────────────────────────────────
 
-  const createLink = useCallback((sourceId: string, targetId: string) => {
+  const createLink = useCallback(async (sourceId: string, targetId: string) => {
+    await Promise.all([loadPage(sourceId), loadPage(targetId)]);
     const toSave: Page[] = [];
     setPages(prev =>
       prev.map(p => {
@@ -424,12 +451,14 @@ export function usePages() {
         return p;
       })
     );
-    for (const p of toSave) save(p).catch(() => {});
-  }, [save]);
+    for (const p of toSave) scheduleSave(p);
+    await Promise.all(toSave.map(p => flushSave(p.id)));
+  }, [loadPage, scheduleSave, flushSave]);
 
   // ── removeLink ───────────────────────────────────────────────────────────────
 
-  const removeLink = useCallback((sourceId: string, targetId: string) => {
+  const removeLink = useCallback(async (sourceId: string, targetId: string) => {
+    await Promise.all([loadPage(sourceId), loadPage(targetId)]);
     const toSave: Page[] = [];
     setPages(prev =>
       prev.map(p => {
@@ -446,8 +475,9 @@ export function usePages() {
         return p;
       })
     );
-    for (const p of toSave) save(p).catch(() => {});
-  }, [save]);
+    for (const p of toSave) scheduleSave(p);
+    await Promise.all(toSave.map(p => flushSave(p.id)));
+  }, [loadPage, scheduleSave, flushSave]);
 
   // ── upsertPage ───────────────────────────────────────────────────────────────
 
@@ -455,6 +485,7 @@ export function usePages() {
     id: string; title: string; kind?: PageKind;
     content?: string; metadata?: Record<string, unknown>;
   }) => {
+    if (_lazyIds.has(data.id)) await loadPage(data.id);
     let toSave: Page | null = null;
     let isNew = false;
     setPages(prev => {
@@ -474,7 +505,7 @@ export function usePages() {
       const kind = (toSave as Page).kind;
       setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [kind]: (c.byKind[kind] ?? 0) + 1 } }));
     }
-  }, [save, remote]);
+  }, [save, remote, loadPage]);
 
   const reloadFromServer = useCallback(async () => {
     try {

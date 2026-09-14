@@ -55,16 +55,25 @@ async function serverDelete(id: string): Promise<void> {
 
 // ── savePage / deletePage ─────────────────────────────────────────────────────
 // Remote mode : server is authoritative — await the PUT, throw on failure.
-// Local mode  : IndexedDB first, then fire-and-forget server sync.
+// Local mode: preserve an offline copy first; await server acknowledgement.
+// Serialize writes per neuron so slow requests cannot overtake newer edits.
 
-export async function savePage(page: Page): Promise<void> {
-  if (isRemoteAccess()) {
-    await serverPut(page);      // throws on failure — caller handles error
-    await writeLocal(page);     // local cache after server confirms
-  } else {
-    await writeLocal(page);
-    serverPut(page).catch(() => { /* non-fatal background sync */ });
-  }
+const pageWrites = new Map<string, Promise<void>>();
+export function savePage(page: Page, requireServer = isRemoteAccess()): Promise<void> {
+  const prior = pageWrites.get(page.id) ?? Promise.resolve();
+  const write = prior.catch(() => {}).then(async () => {
+    if (!isRemoteAccess()) await writeLocal(page);
+    try { await serverPut(page); } catch (error) {
+      // Preserve the existing PC offline editing behavior. Agent creation and
+      // remote writes require acknowledgement before their caller continues.
+      if (requireServer) throw error;
+      return;
+    }
+    if (isRemoteAccess()) await writeLocal(page);
+  });
+  pageWrites.set(page.id, write);
+  void write.finally(() => { if (pageWrites.get(page.id) === write) pageWrites.delete(page.id); }).catch(() => {});
+  return write;
 }
 
 export async function deletePage(id: string): Promise<void> {
@@ -152,6 +161,7 @@ export async function getRecentPagesFromServer(limit = 50): Promise<Page[]> {
   const res  = await fetch(`${API_BASE}/api/neurons/recent?limit=${limit}`);
   if (!res.ok) throw new Error(`GET /api/neurons/recent → ${res.status}`);
   const json = await res.json() as { pages: PageMeta[] };
+  if (localStorage.getItem('docteur-pipeline-debug') === 'true') console.debug('[pipeline] API metadata -> stubs', { endpoint: res.url.split('/api/')[1], response: json.pages?.length ?? 0, transformed: json.pages?.length ?? 0 });
   return (json.pages ?? []).map(p => ({ ...p, blocks: [] }));
 }
 
@@ -159,6 +169,7 @@ export async function getAllPagesMetaFromServer(): Promise<Page[]> {
   const res  = await fetch(`${API_BASE}/api/neurons/all-meta`);
   if (!res.ok) throw new Error(`GET /api/neurons/all-meta → ${res.status}`);
   const json = await res.json() as { pages: PageMeta[] };
+  if (localStorage.getItem('docteur-pipeline-debug') === 'true') console.debug('[pipeline] API metadata -> stubs', { endpoint: res.url.split('/api/')[1], response: json.pages?.length ?? 0, transformed: json.pages?.length ?? 0 });
   return (json.pages ?? []).map(p => ({ ...p, blocks: [] }));
 }
 

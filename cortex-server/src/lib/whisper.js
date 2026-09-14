@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { YTDLP_BIN } from './ytdlp.js';
+import { downloadAudio } from './video-audio-download.js';
+export { downloadAudio };
 import { assertSafeUrl } from './url-security.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +39,7 @@ function removeTmpFile(p) {
 export async function getVideoDuration(url) {
   return new Promise((resolve) => {
     const proc = spawn(YTDLP_BIN, [url, '--print', 'duration', '--no-playlist', '--no-warnings'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, windowsHide: true,
     });
     let out = '';
     proc.stdout.on('data', d => { out += d.toString(); });
@@ -46,45 +48,6 @@ export async function getVideoDuration(url) {
       resolve(isNaN(n) ? null : n);
     });
     proc.on('error', () => resolve(null));
-  });
-}
-
-// ── Download audio only ────────────────────────────────────────────────────────
-
-export function downloadAudio(url, outputPath, { onProgress, signal } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      url,
-      '-x',
-      '--audio-format', 'wav',
-      '--audio-quality', '0',
-      '--no-playlist',
-      '--newline',
-      '--no-warnings',
-      '-o', outputPath,
-    ];
-
-    const proc = spawn(YTDLP_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let lastStderr = '';
-
-    if (signal) {
-      signal.addEventListener('abort', () => { try { proc.kill(); } catch { /* ignore */ } }, { once: true });
-    }
-
-    proc.stdout.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        const m = line.match(/\[download\]\s+([\d.]+)%/);
-        if (m) onProgress?.({ step: 'download', percent: parseFloat(m[1]) });
-      }
-    });
-    proc.stderr.on('data', d => { lastStderr = d.toString().trim(); });
-
-    proc.on('error', err => reject(err.code === 'ENOENT' ? new Error('yt-dlp introuvable') : err));
-    proc.on('close', code => {
-      if (signal?.aborted) { const e = new Error('Annulé'); e.name = 'AbortError'; return reject(e); }
-      if (code !== 0) return reject(new Error(lastStderr || 'Téléchargement audio échoué'));
-      resolve();
-    });
   });
 }
 

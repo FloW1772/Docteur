@@ -3,13 +3,12 @@ import {
   getAllGeneratedPrompts, getGeneratedPromptById, countGeneratedPrompts,
   insertGeneratedPrompt, updateGeneratedPrompt, deleteGeneratedPrompt,
   searchGeneratedPrompts, getPromptGeneratorSettings, setPromptGeneratorSettings,
-  getRouterSettings, getCloudKeys,
+  getRouterSettings,
   getPromptDestinations, setPromptDestinations,
   recordPromptSendEvent, getPromptSendEventsForGeneration,
 } from '../lib/sqlite.js';
-import {
-  listAvailableModels, callModel, buildDraftMessages, buildReviewMessages, parseReviewOutput,
-} from '../lib/prompt-generator.js';
+import { listAvailableModels, buildDraftMessages, buildReviewMessages, parseReviewOutput } from '../lib/prompt-generator.js';
+import { runAiTask } from '../lib/router.js';
 
 const MAX_REQUEST_CHARS = 2_000;
 const MAX_PROMPTS       = 500;
@@ -179,9 +178,11 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
     // ── Stage 1: draft ─────────────────────────────────────────────────────
     let draft;
     try {
-      draft = await callModel({
-        modelId: draftModelId, provider: draftProvider,
+      draft = await runAiTask({
+        feature: 'prompt_generator', taskType: 'prompt_draft',
+        preferredProvider: draftProvider, preferredModel: draftModelId,
         messages: buildDraftMessages(truncatedRequest), client: ollamaClient,
+        requiredCapabilities: ['text'], logger,
       });
     } catch (err) {
       logger?.warn({ err: err.message }, 'prompt-generator: draft failed');
@@ -194,9 +195,11 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
     // ── Stage 2: review ────────────────────────────────────────────────────
     let review;
     try {
-      review = await callModel({
-        modelId: reviewModelId, provider: reviewProvider,
+      review = await runAiTask({
+        feature: 'prompt_generator', taskType: 'prompt_review',
+        preferredProvider: reviewProvider, preferredModel: reviewModelId,
         messages: buildReviewMessages(draft.text.trim()), client: ollamaClient,
+        requiredCapabilities: ['text'], logger,
       });
     } catch (err) {
       logger?.warn({ err: err.message }, 'prompt-generator: review failed');
@@ -246,8 +249,16 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
 
     let draft, review;
     try {
-      draft = await callModel({ modelId: draftModelId, provider: draftProvider, messages: buildDraftMessages(existing.request), client: ollamaClient });
-      review = await callModel({ modelId: reviewModelId, provider: reviewProvider, messages: buildReviewMessages(draft.text.trim()), client: ollamaClient });
+      draft = await runAiTask({
+        feature: 'prompt_generator', taskType: 'prompt_draft',
+        preferredProvider: draftProvider, preferredModel: draftModelId,
+        messages: buildDraftMessages(existing.request), client: ollamaClient, requiredCapabilities: ['text'], logger,
+      });
+      review = await runAiTask({
+        feature: 'prompt_generator', taskType: 'prompt_review',
+        preferredProvider: reviewProvider, preferredModel: reviewModelId,
+        messages: buildReviewMessages(draft.text.trim()), client: ollamaClient, requiredCapabilities: ['text'], logger,
+      });
     } catch (err) {
       logger?.warn({ err: err.message }, 'prompt-generator: regenerate failed');
       return c.json({ error: `Échec de la régénération : ${err.message}` }, 503);

@@ -1,0 +1,11 @@
+import { serve } from '@hono/node-server';
+import { initSqlite, savePageToStoreIfNewer } from './src/lib/sqlite.js';
+import { createNeuronRoute } from './src/routes/neuron.js';
+import { Hono } from 'hono';
+initSqlite(':memory:');
+for (let i = 0; i < 80; i++) savePageToStoreIfNewer({ id: `fixture-${i}`, title: `Fixture ${i}`, kind: i % 2 ? 'link' : 'note', blocks: [{ id: `block-${i}`, type: 'paragraph', content: `Persistent fixture ${i}` }], links: [], createdAt: i + 1, updatedAt: i + 1, metadata: { summary: `Summary ${i}` } });
+const app = new Hono();
+app.route('/api', createNeuronRoute({ services: { deleteNeuron: async () => true } }));
+app.get('/api/ping', c => c.json({ ok: true }));
+serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 3002 });
+console.log('Isolated SQLite API ready on 3002');

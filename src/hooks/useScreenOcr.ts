@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
+import type { Worker } from 'tesseract.js';
 
 // All assets served locally from public/tesseract/ (see scripts/copy-tesseract-assets.mjs)
 // — workerPath/corePath/langPath below are set explicitly so tesseract.js NEVER
@@ -22,14 +23,11 @@ export function useScreenOcr() {
     setProgress(0);
     setPhase('loading');
 
-    // Tesseract.js (and its ~7 MB WASM core + language data) is imported only
-    // here, on first actual use — never at app startup, never while screen
-    // sharing is merely active but nothing has been captured yet.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Tesseract = await import('tesseract.js') as any;
-
-    let worker: { recognize: (image: string) => Promise<{ data: { text: string } }>; terminate: () => Promise<void> } | null = null;
+    let worker: Worker | null = null;
     try {
+      // Keep the lazy import inside the error boundary: a failed module load
+      // must also display an error and release busyRef in finally.
+      const Tesseract = await import('tesseract.js');
       worker = await Tesseract.createWorker(['fra', 'eng'], 1, {
         workerPath: WORKER_PATH,
         corePath:   CORE_PATH,
@@ -41,7 +39,7 @@ export function useScreenOcr() {
         },
       });
       setPhase('recognizing');
-      const result = await worker!.recognize(imageDataUrl);
+      const result = await worker.recognize(imageDataUrl);
       setPhase('done');
       return result.data.text;
     } catch (e) {

@@ -13,6 +13,7 @@ import {
   insertReviewAttempt, getReviewStats, deleteReviewItem,
 } from '../lib/sqlite.js';
 import { normalizeTeacherRegister, teacherRegisterInstruction, TEACHER_REGISTERS, TEACHER_REGISTER_LABELS } from '../lib/teacher-register.js';
+import { isStrictLocalMode } from '../lib/strict-local.js';
 
 const STRICT_LOCAL_ERROR = {
   error: 'Mode strictement local activé — le modèle Professeur configuré est un modèle cloud, désactivé pour le moment. Choisis un modèle local dans Paramètres.',
@@ -56,7 +57,7 @@ function parseModelId(modelId) {
 
 function resolveEffectiveTeacherModel() {
   const settings = getTeacherSettings();
-  const strictLocal = getRouterSettings()?.strict_local_mode === true;
+  const strictLocal = isStrictLocalMode();
   const requested = settings.model || DEFAULT_TEACHER_MODEL;
   const { provider } = parseModelId(requested);
   if (strictLocal && provider !== 'local') {
@@ -69,7 +70,7 @@ async function callTeacherModel({ messages, ollamaClient }) {
   const { modelId, provider, forcedLocal } = resolveEffectiveTeacherModel();
 
   if (provider === 'local') {
-    const localModel = getRouterSettings()?.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M';
+    const localModel = modelId === 'local' ? (getRouterSettings()?.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M') : parseModelId(modelId).model;
     const text = await chatCompletion(ollamaClient, localModel, messages);
     incrementTeacherModelUsage('local');
     return { text, model: `local/${localModel}`, provider: 'local', forcedLocal };
@@ -103,12 +104,12 @@ async function callTeacherModel({ messages, ollamaClient }) {
       throw e;
     }
     try {
-      const result = await geminiProvider.completeWithCascade({ apiKey: keys.gemini_key, messages });
+      const result = await geminiProvider.complete({ apiKey: keys.gemini_key, model: parseModelId(modelId).model, messages });
       incrementTeacherModelUsage(`gemini:${result.model}`);
       return { text: result.text, model: `gemini/${result.model}`, provider: 'gemini', forcedLocal };
     } catch (err) {
       if (err.isQuota) {
-        const e = new Error('Quota Gemini atteint sur tous les modèles de la cascade — réessaie plus tard ou choisis un autre modèle Professeur dans Paramètres.');
+        const e = new Error('Quota Gemini atteint pour le modèle sélectionné — réessaie plus tard ou choisis un autre modèle Professeur dans Paramètres.');
         e.isQuota = true;
         throw e;
       }
@@ -315,11 +316,16 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
 
   // ── Modèles disponibles pour le picker Professeur ───────────────────────
   route.get('/teacher/available-models', async (c) => {
-    const strictLocal = getRouterSettings()?.strict_local_mode === true;
+    const strictLocal = isStrictLocalMode();
 
     let local = { available: false, reason: null, models: [] };
+    let localTimeout;
     try {
-      const installed = await getInstalledModels(ollamaClient);
+      // Cloud availability must not wait for a hung local Ollama server.
+      const installed = await Promise.race([
+        getInstalledModels(ollamaClient),
+        new Promise((_, reject) => { localTimeout = setTimeout(() => reject(new Error('Ollama: délai dépassé')), 3000); }),
+      ]);
       local = {
         available: true,
         reason: null,
@@ -328,6 +334,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: available-models — Ollama injoignable');
       local = { available: false, reason: 'Ollama injoignable', models: [] };
+    } finally {
+      clearTimeout(localTimeout);
     }
 
     const keys = getCloudKeys();
@@ -342,7 +350,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         id,
         configured: groqConfigured,
         disabled_reason: !groqConfigured
-          ? 'Clé non configurée — ajoute-la dans Paramètres > Fournisseurs cloud'
+          ? 'Aucune clé configurée — Settings > Modèles'
           : (strictLocal ? 'Mode strictement local actif — les modèles cloud sont désactivés' : null),
         used_today: groqConfigured ? usedToday : null,
         limit,
@@ -357,7 +365,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       id: `gemini:${id}`,
       configured: geminiConfigured,
       disabled_reason: !geminiConfigured
-        ? 'Clé non configurée — ajoute-la dans Paramètres > Fournisseurs cloud'
+        ? 'Aucune clé configurée — Settings > Modèles'
         : (strictLocal ? 'Mode strictement local actif — les modèles cloud sont désactivés' : null),
       used_today: null,
       limit: null,
@@ -371,7 +379,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       id: `openrouter:${openrouterProvider.FREE_MODEL}`,
       configured: openrouterConfigured,
       disabled_reason: !openrouterConfigured
-        ? 'Clé non configurée — ajoute-la dans Paramètres > Fournisseurs cloud'
+        ? 'Aucune clé configurée — Settings > Modèles'
         : (strictLocal ? 'Mode strictement local actif — les modèles cloud sont désactivés' : null),
       used_today: null,
       limit: null,
@@ -395,7 +403,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     if (!model) return c.json({ ok: false, error: 'model requis' }, 400);
 
     const { provider, model: resolvedModel } = parseModelId(model);
-    const strictLocal = getRouterSettings()?.strict_local_mode === true;
+    const strictLocal = isStrictLocalMode();
     if (strictLocal && provider !== 'local') {
       return c.json({ ok: false, error: 'Mode strictement local actif — impossible de valider un modèle cloud pour le moment.' });
     }
@@ -428,11 +436,12 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         if (!keys.gemini_key) {
           return c.json({ ok: false, error: 'Clé Gemini non configurée — configure-la dans Paramètres > Fournisseurs cloud.' });
         }
-        await geminiProvider.testKey(keys.gemini_key);
+        await geminiProvider.complete({ apiKey: keys.gemini_key, model: resolvedModel, messages: [{ role: 'user', content: 'Réponds juste OK.' }], maxTokens: 16 });
         return c.json({ ok: true });
       }
 
       if (provider === 'openrouter') {
+        if (resolvedModel !== openrouterProvider.FREE_MODEL) return c.json({ ok: false, error: 'OpenRouter : seul le modèle gratuit proposé est pris en charge.' });
         const keys = getCloudKeys();
         if (!keys.openrouter_key) {
           return c.json({ ok: false, error: 'Clé OpenRouter non configurée — configure-la dans Paramètres > Fournisseurs cloud.' });

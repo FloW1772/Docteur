@@ -4,7 +4,7 @@ import {
   getDatabase, getRecentPagesFromStore, getAllPagesMetaFromStore, getPageCountsFromStore,
 } from '../lib/sqlite.js';
 
-export function createNeuronRoute({ services }) {
+export function createNeuronRoute({ services, logger }) {
   const route = new Hono();
 
   // GET /api/neurons/recent?limit=N — metadata only (no blocks), for fast startup
@@ -30,10 +30,24 @@ export function createNeuronRoute({ services }) {
   });
 
   // GET /api/neurons/all-meta — all pages metadata, no blocks (for "Tous les neurones" lazy load)
+  // Unpaginated by design (see audit note): the frontend needs the complete
+  // set in one call to compute accurate per-kind counts and populate the
+  // full browsing list, and no real-world slowness has been measured yet —
+  // this timing log exists so a future decision to paginate is based on
+  // actual numbers from this user's data, not a guess. Purely local
+  // (server log file), never sent anywhere external.
   route.get('/neurons/all-meta', (c) => {
     try {
+      const dbStart = Date.now();
       const pages = getAllPagesMetaFromStore();
-      return c.json({ ok: true, pages });
+      const dbMs = Date.now() - dbStart;
+      const serializeStart = Date.now();
+      const response = c.json({ ok: true, pages });
+      const serializeMs = Date.now() - serializeStart;
+      if (logger && (dbMs > 200 || pages.length > 2000)) {
+        logger.info({ route: '/neurons/all-meta', count: pages.length, db_ms: dbMs, serialize_ms: serializeMs }, 'neurons/all-meta timing');
+      }
+      return response;
     } catch (error) {
       return c.json({ error: error.message }, 500);
     }

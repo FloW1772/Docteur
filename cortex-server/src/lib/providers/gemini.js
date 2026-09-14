@@ -83,16 +83,39 @@ function toGeminiContents(messages) {
   return merged;
 }
 
+import { ErrorCategory, parseRetryAfterMs } from '../provider-errors.js';
+
 function isQuotaError(status, body) {
   if (status === 429) return true;
   const msg = String(body?.error?.message ?? body?.error?.status ?? '').toLowerCase();
   return msg.includes('resource_exhausted') || msg.includes('quota') || msg.includes('rate limit');
 }
 
-function isAuthError(status) {
+// Google's Generative Language API returns 400 INVALID_ARGUMENT (not 401)
+// for a malformed/invalid API key — the reason lives in the error body, not
+// the status code. Detected two ways, both observed from real Gemini
+// responses: (1) the structured reason `API_KEY_INVALID` inside
+// error.details[].reason (the documented, stable signal), or (2) as a
+// fallback, the literal message text "API key not valid" Google currently
+// sends. Matched narrowly so an unrelated 400 (bad request body, invalid
+// generationConfig, etc.) is never misclassified as an auth failure.
+function isInvalidKeyBody(body) {
+  const reasons = (body?.error?.details ?? [])
+    .map(d => String(d?.reason ?? '').toUpperCase());
+  if (reasons.includes('API_KEY_INVALID')) return true;
+
+  const msg = String(body?.error?.message ?? '').toLowerCase();
+  return msg.includes('api key not valid') || msg.includes('api key expired');
+}
+
+function isAuthError(status, body) {
   // 401/403 = key invalid or access denied — no point cascading
   // 404 is NOT auth: the model name is unknown/unavailable → cascade to next
-  return status === 401 || status === 403;
+  if (status === 401 || status === 403) return true;
+  // 400 is auth only when the body specifically says the key is invalid —
+  // every other 400 (malformed request, bad params) stays UNKNOWN/other.
+  if (status === 400 && isInvalidKeyBody(body)) return true;
+  return false;
 }
 
 // 404 always means the model name is unrecognised — skip and cascade
@@ -100,21 +123,17 @@ function isModelNotFound(status) {
   return status === 404;
 }
 
-// Parse Retry-After from HTTP header or Gemini RetryInfo in body.
-// Returns milliseconds, or null if not found.
-function parseRetryAfterMs(headers, body) {
-  const h = headers.get('retry-after') ?? headers.get('Retry-After');
-  if (h) {
-    const secs = Number.parseInt(h, 10);
-    if (!Number.isNaN(secs)) return secs * 1000;
-  }
-  for (const detail of body?.error?.details ?? []) {
-    if (detail?.retryDelay) {
-      const secs = Number.parseInt(detail.retryDelay, 10);
-      if (!Number.isNaN(secs)) return secs * 1000;
-    }
-  }
-  return null;
+// Gemini's HTTP status alone can't tell RATE_LIMITED apart from
+// QUOTA_EXCEEDED (both are 429) — a per-minute quota is transient, a
+// per-day quota functionally means "unavailable until tomorrow". We treat
+// every 429 as QUOTA_EXCEEDED for router/cooldown purposes since the
+// cascade already retries within-budget 429s inline before giving up.
+function categoryFor(status, isAuth, isQuota, isModelNotFound_) {
+  if (isAuth) return ErrorCategory.AUTH_FAILED;
+  if (isModelNotFound_) return ErrorCategory.MODEL_UNAVAILABLE;
+  if (isQuota) return ErrorCategory.QUOTA_EXCEEDED;
+  if (status >= 500) return ErrorCategory.PROVIDER_UNAVAILABLE;
+  return ErrorCategory.UNKNOWN;
 }
 
 // ── Single-model call ─────────────────────────────────────────────────────────
@@ -142,9 +161,10 @@ export async function complete({ apiKey, model, messages, maxTokens = 4096 }) {
     const body = await res.json().catch(() => ({}));
     const err = new Error(`Gemini/${model} ${res.status}: ${body?.error?.message ?? res.statusText}`);
     err.isQuota        = isQuotaError(res.status, body);
-    err.isAuth         = isAuthError(res.status);
+    err.isAuth         = isAuthError(res.status, body);
     err.isModelNotFound = isModelNotFound(res.status);
     err.retryAfterMs   = err.isQuota ? parseRetryAfterMs(res.headers, body) : null;
+    err.category       = categoryFor(res.status, err.isAuth, err.isQuota, err.isModelNotFound);
     throw err;
   }
 
@@ -232,6 +252,7 @@ export async function completeWithCascade({ apiKey, messages, maxTokens = 4096, 
   const detail = quotaModels.join(', ') || 'aucun modèle disponible';
   const err = new Error(`Gemini: quota épuisé sur tous les modèles (${detail}) — bascule vers le modèle local`);
   err.isQuota     = true;
+  err.category    = ErrorCategory.QUOTA_EXCEEDED;
   err.quotaModels = quotaModels;
   throw err;
 }
@@ -260,9 +281,10 @@ export async function completeWithGrounding({ apiKey, model, prompt }) {
     const body = await res.json().catch(() => ({}));
     const err = new Error(`Gemini/${model} ${res.status}: ${body?.error?.message ?? res.statusText}`);
     err.isQuota         = isQuotaError(res.status, body);
-    err.isAuth          = isAuthError(res.status);
+    err.isAuth          = isAuthError(res.status, body);
     err.isModelNotFound = isModelNotFound(res.status);
     err.retryAfterMs    = err.isQuota ? parseRetryAfterMs(res.headers, body) : null;
+    err.category        = categoryFor(res.status, err.isAuth, err.isQuota, err.isModelNotFound);
     throw err;
   }
 

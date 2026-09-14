@@ -45,30 +45,37 @@ async function orFetch(apiKey, body) {
 }
 
 import { guardCloudCall } from '../privacy-guard.js';
+import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
 
 // Pas de paramètre model — toujours FREE_MODEL, jamais d'override.
 // En cas d'erreur (quota 429, 404, indispo) → throw immédiat sans retry OR.
 export async function complete({ apiKey, messages }) {
   guardCloudCall({ messages, provider: 'openrouter', functionCalled: 'complete' });
-  const res = await orFetch(apiKey, {
-    model:      FREE_MODEL,
-    messages,
-    max_tokens: 4096,
-  });
+
+  let res;
+  try {
+    res = await orFetch(apiKey, {
+      model:      FREE_MODEL,
+      messages,
+      max_tokens: 4096,
+    });
+  } catch (networkErr) {
+    if (networkErr.category) throw networkErr; // assertFreeModel throw, not network
+    throw classifiedError(`OpenRouter: ${networkErr.message}`, classifyNetworkError(networkErr));
+  }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    if (res.status === 429) {
-      const e = new Error(`OpenRouter : quota atteint (429) — ${FREE_MODEL}`);
-      e.isQuota = true;
-      throw e;
-    }
-    throw new Error(`OpenRouter ${res.status}: ${err?.error?.message ?? res.statusText}`);
+    const body = await res.json().catch(() => ({}));
+    const category = classifyHttpError(res.status, body);
+    const err = classifiedError(`OpenRouter ${res.status}: ${body?.error?.message ?? res.statusText}`, category);
+    err.isQuota = category === ErrorCategory.QUOTA_EXCEEDED || category === ErrorCategory.RATE_LIMITED;
+    if (category === ErrorCategory.RATE_LIMITED) err.retryAfterMs = parseRetryAfterMs(res.headers, body);
+    throw err;
   }
 
   const data = await res.json();
   const text = data.choices?.[0]?.message?.content ?? '';
-  if (!text) throw new Error('OpenRouter: réponse vide');
+  if (!text) throw classifiedError('OpenRouter: réponse vide', ErrorCategory.UNKNOWN);
 
   return {
     text,
@@ -88,8 +95,9 @@ export async function testKey(apiKey) {
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    const category = classifyHttpError(res.status, body);
+    throw classifiedError(body?.error?.message ?? `HTTP ${res.status}`, category);
   }
 
   const data = await res.json();

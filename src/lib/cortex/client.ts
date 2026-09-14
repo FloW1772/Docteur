@@ -26,8 +26,9 @@ export interface IndexResult {
 export interface IndexOptimizeResult {
   ok: boolean;
   skipped?: boolean;
-  before?: { fragments: number; rows: number };
-  after?: { fragments: number; rows: number };
+  before?: { fragments: number; rows: number; bytes: number };
+  after?: { fragments: number; rows: number; bytes: number };
+  durationMs?: number;
 }
 
 export interface IndexFragmentStats {
@@ -36,6 +37,8 @@ export interface IndexFragmentStats {
   numRows: number;
   numIndices: number;
   totalBytes: number;
+  diskBytes: number;
+  autoCompactThreshold: number;
 }
 
 export interface SearchHit {
@@ -248,6 +251,43 @@ export interface RouterModelStatus {
   install_cmd: string;
 }
 
+// Live provider health, never includes the actual API key/secret.
+export type ProviderHealthState =
+  | 'ready' | 'rate_limited' | 'quota_exhausted' | 'auth_required'
+  | 'offline' | 'model_unavailable' | 'error' | 'degraded' | 'timeout';
+
+export interface ProviderOverview {
+  id: string;
+  label: string;
+  kind: 'local' | 'cloud';
+  authType?: 'api-key' | 'oauth-token' | 'none';
+  // Which auth mechanism is actually in effect for oauth-token providers —
+  // 'setup_token' (CLAUDE_CODE_OAUTH_TOKEN), 'cli_session' (`claude auth
+  // login` / `codex login`), or 'none'. Never carries the token value itself.
+  authMode?: 'setup_token' | 'cli_session' | 'none';
+  // For anthropic/claude-oauth and openai/codex pairs: which backend is
+  // currently selected for that family ('subscription' | 'api').
+  mode?: 'subscription' | 'api';
+  // Whether the CLI binary itself was found on PATH (claude-oauth/codex only).
+  cli_installed?: boolean;
+  paid: boolean;
+  enabled: boolean;
+  configured: boolean;
+  status: ProviderHealthState;
+  in_cooldown: boolean;
+  cooldown_remaining_ms: number;
+  default_model: string | null;
+  available_models?: string[];
+  masked_key?: string | null;
+  endpoint?: string | null;
+}
+
+export interface ProvidersOverviewResult {
+  providers: ProviderOverview[];
+  paying_apis_enabled: boolean;
+  strict_local_mode: boolean;
+}
+
 export interface RouterSettings {
   router_enabled: boolean;
   fallback_model: string;
@@ -258,6 +298,27 @@ export interface RouterSettings {
   groq_model?: string;
   powerful_model?: string;
   chat_model?: string;
+  // Mutually-exclusive backend per family — 'subscription' uses the CLI
+  // (Claude Code / Codex, no per-token API cost) or 'api' uses the paid key
+  // (ANTHROPIC_API_KEY / OPENAI_API_KEY). Only one is ever used by the router.
+  claude_mode?: 'subscription' | 'api';
+  openai_mode?: 'subscription' | 'api';
+  freellmapi?: {
+    enabled: boolean;
+    baseUrl: string;
+    timeout: number;
+    mode: 'auto' | 'manual';
+    allowText: boolean;
+    allowImage: boolean;
+    allowVideo: boolean;
+    allowAudio: boolean;
+    allowFallback: boolean;
+    freeOnly: boolean;
+    textModel: string;
+    imageModel: string;
+    videoModel: string;
+    audioModel: string;
+  };
 }
 
 export interface RouterStatus {
@@ -320,11 +381,18 @@ export interface CloudKeysMasked {
   openrouter_key:    string | null;
   anthropic_key:     string | null;
   openai_key:        string | null;
+  freellmapi_key:    string | null;
   gemini_active:     boolean;
   groq_active:       boolean;
   openrouter_active: boolean;
   anthropic_active:  boolean;
   openai_active:     boolean;
+  freellmapi_active: boolean;
+  // Nouveaux providers OAuth - toujours null (pas de clé API)
+  claude_oauth_key: string | null;
+  codex_key:         string | null;
+  // Provider local PAIR - pas de clé, mais endpoint configurable
+  pair_endpoint:     string | null;
 }
 
 export interface CloudMonthStat {
@@ -1522,7 +1590,7 @@ export const cortexClient = {
   },
 
   async optimizeIndex(): Promise<IndexOptimizeResult> {
-    const res = await apiFetch('/api/index/optimize', { method: 'POST' });
+    const res = await apiFetch('/api/index/optimize', { method: 'POST' }, 15 * 60_000);
     if (!res.ok) throw new Error(`Optimize HTTP ${res.status}`);
     return res.json() as Promise<IndexOptimizeResult>;
   },
@@ -1667,13 +1735,52 @@ export const cortexClient = {
     return res.json() as Promise<{ ok: boolean; masked: CloudKeysMasked }>;
   },
 
-  async testCloudKey(provider: string, key?: string): Promise<{ ok: boolean; model?: string; error?: string }> {
+  async testCloudKey(provider: string, key?: string): Promise<{ ok: boolean; model?: string; error?: string; state?: ProviderHealthState; category?: string; authMode?: 'setup_token' | 'cli_session' | 'none' }> {
     const res = await apiFetch(`/api/router/test/${provider}`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ key: key ?? '' }),
     }, 15_000);
-    return res.json() as Promise<{ ok: boolean; model?: string; error?: string }>;
+    return res.json() as Promise<{ ok: boolean; model?: string; error?: string; state?: ProviderHealthState; category?: string; authMode?: 'setup_token' | 'cli_session' | 'none' }>;
+  },
+
+  async testFreeLLMAPI(baseUrl?: string, key?: string): Promise<{ ok: boolean; status: string; configured: boolean; model?: string | null; models?: number; latencyMs?: number; error?: string }> {
+    const res = await apiFetch('/api/router/freellmapi/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl, key }),
+    }, 15_000);
+    return res.json() as Promise<{ ok: boolean; status: string; configured: boolean; model?: string | null; models?: number; latencyMs?: number; error?: string }>;
+  },
+
+  async getFreeLLMAPIModels(force = false): Promise<{ configured: boolean; models: Array<{ id: string; displayName?: string; provider?: string; capabilities: string[]; modality?: string; free?: boolean; contextLength?: number }>; error?: string }> {
+    const res = await apiFetch(`/api/router/freellmapi/models${force ? '?force=1' : ''}`, { method: 'GET' });
+    return res.json() as Promise<{ configured: boolean; models: Array<{ id: string; displayName?: string; provider?: string; capabilities: string[]; modality?: string; free?: boolean; contextLength?: number }>; error?: string }>;
+  },
+
+  async getProvidersOverview(): Promise<ProvidersOverviewResult> {
+    const res = await apiFetch('/api/router/providers', { method: 'GET' });
+    if (!res.ok) throw new Error(`Providers overview HTTP ${res.status}`);
+    return res.json() as Promise<ProvidersOverviewResult>;
+  },
+
+  async setPairEndpoint(endpoint: string): Promise<{ ok: boolean; endpoint: string }> {
+    const res = await apiFetch('/api/router/pair-settings', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ endpoint }),
+    });
+    if (!res.ok) throw new Error(`Set PAIR endpoint HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; endpoint: string }>;
+  },
+
+  async testPairConnection(): Promise<{ ok: boolean; error?: string }> {
+    const res = await apiFetch('/api/router/test/pair', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({}),
+    }, 15_000);
+    return res.json() as Promise<{ ok: boolean; error?: string }>;
   },
 
   async getGeminiRpm(): Promise<number> {

@@ -179,9 +179,10 @@ interface Props {
   onPlayVideo?: (videoId: string) => void;
   alwaysOn:     boolean;
   onToggleAlwaysOn: () => void;
+  onClose?:      () => void;
 }
 
-function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn }: Props) {
+function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onClose }: Props) {
   // Compute TOC and rendered content — once per [blocks] identity change.
   const { toc, content } = useMemo(() => {
     const tocEntries = extractToc(blocks);
@@ -298,7 +299,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn }: P
       </div>
 
       {/* Footer option */}
-      <div className="reading-footer">
+      <div className="reading-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -308,6 +309,32 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn }: P
           />
           <span>Toujours ouvrir en mode lecture</span>
         </label>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title="Fermer (Echap)"
+            aria-label="Fermer"
+            className="flex items-center justify-center w-7 h-7 rounded transition-colors"
+            style={{ 
+              color: '#5a4a7a', 
+              background: 'rgba(90,74,122,0.12)',
+              border: '1px solid rgba(90,74,122,0.2)'
+            }}
+            onMouseEnter={e => { 
+              e.currentTarget.style.color = '#e8d9ff';
+              e.currentTarget.style.background = 'rgba(94,231,255,0.12)';
+              e.currentTarget.style.borderColor = 'rgba(94,231,255,0.3)';
+            }}
+            onMouseLeave={e => { 
+              e.currentTarget.style.color = '#5a4a7a';
+              e.currentTarget.style.background = 'rgba(90,74,122,0.12)';
+              e.currentTarget.style.borderColor = 'rgba(90,74,122,0.2)';
+            }}
+          >
+            ✕
+          </button>
+        )}
       </div>
     </div>
   );

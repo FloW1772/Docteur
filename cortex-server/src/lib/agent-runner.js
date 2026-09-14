@@ -23,6 +23,7 @@ import { hasActiveJobs } from '../routes/jobs.js';
 import {
   completeWithCascade, completeWithGrounding, setGeminiRpm,
 } from './providers/gemini.js';
+import { recordSuccess, recordFailure } from './provider-state.js';
 import { buildPersonaToneNote, getPersonaSettings } from './persona.js';
 import { assertSafeUrl } from './url-security.js';
 import { DETAIL_LEVELS, DETAIL_LEVEL_LABELS, normalizeDetailLevel, detailLevelInstruction } from './detail-level.js';
@@ -168,22 +169,28 @@ async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleEx
 
   if (mode !== 'actualite') {
     // Mode synthèse — uses completeWithCascade (no grounding)
-    const result = await completeWithCascade({
-      apiKey:    keys.gemini_key,
-      messages:  [
-        { role: 'system', content: toneNote },
-        { role: 'user',   content: synthesePrompt(subject, level, styleBlock) },
-      ],
-      maxTokens: 8192,
-      logger,
-    });
-    const title = `Veille — ${subject} (${now})`;
-    return {
-      title,
-      content: `# ${title}\n*Veille automatique · ${modeLabel} · ${now}*\n\n${result.text}`,
-      kind:    'recherche',
-      metadata: { subject, detailLevel: level, ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}) },
-    };
+    try {
+      const result = await completeWithCascade({
+        apiKey:    keys.gemini_key,
+        messages:  [
+          { role: 'system', content: toneNote },
+          { role: 'user',   content: synthesePrompt(subject, level, styleBlock) },
+        ],
+        maxTokens: 8192,
+        logger,
+      });
+      recordSuccess('gemini');
+      const title = `Veille — ${subject} (${now})`;
+      return {
+        title,
+        content: `# ${title}\n*Veille automatique · ${modeLabel} · ${now}*\n\n${result.text}`,
+        kind:    'recherche',
+        metadata: { subject, detailLevel: level, ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}) },
+      };
+    } catch (err) {
+      recordFailure('gemini', err);
+      throw err;
+    }
   }
 
   // Mode actualité — grounding Google Search
@@ -191,6 +198,7 @@ async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleEx
   for (const model of GROUNDING_MODELS) {
     try {
       const result = await completeWithGrounding({ apiKey: keys.gemini_key, model, prompt: actualitePrompt(subject, level, styleBlock) });
+      recordSuccess('gemini');
       const title  = `Veille — ${subject} (${now})`;
       return {
         title,
@@ -200,6 +208,7 @@ async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleEx
       };
     } catch (err) {
       lastErr = err;
+      recordFailure('gemini', err);
       if (err.isAuth) throw Object.assign(new Error('Clé Gemini invalide ou révoquée.'), { auth: true });
     }
   }

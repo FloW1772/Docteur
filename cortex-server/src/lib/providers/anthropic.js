@@ -2,6 +2,7 @@
 // Docs: https://docs.anthropic.com/en/api/messages
 
 import { guardCloudCall } from '../privacy-guard.js';
+import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
 
 const ANTHROPIC_BASE = 'https://api.anthropic.com/v1';
 
@@ -31,25 +32,34 @@ export async function complete({ apiKey, model = DEFAULT_MODEL, messages, maxTok
   const body = { model, messages: anthropicMessages, max_tokens: maxTokens };
   if (system) body.system = system;
 
-  const res = await fetch(`${ANTHROPIC_BASE}/messages`, {
-    method:  'POST',
-    headers: {
-      'Content-Type':      'application/json',
-      'x-api-key':         apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body:   JSON.stringify(body),
-    signal: AbortSignal.timeout(90_000),
-  });
+  let res;
+  try {
+    res = await fetch(`${ANTHROPIC_BASE}/messages`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body:   JSON.stringify(body),
+      signal: AbortSignal.timeout(90_000),
+    });
+  } catch (networkErr) {
+    throw classifiedError(`Anthropic: ${networkErr.message}`, classifyNetworkError(networkErr));
+  }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Anthropic ${res.status}: ${err?.error?.message ?? res.statusText}`);
+    const respBody = await res.json().catch(() => ({}));
+    const category = classifyHttpError(res.status, respBody);
+    const err = classifiedError(`Anthropic ${res.status}: ${respBody?.error?.message ?? res.statusText}`, category);
+    err.isQuota = category === ErrorCategory.QUOTA_EXCEEDED || category === ErrorCategory.RATE_LIMITED;
+    if (category === ErrorCategory.RATE_LIMITED) err.retryAfterMs = parseRetryAfterMs(res.headers, respBody);
+    throw err;
   }
 
   const data = await res.json();
   const text = data.content?.[0]?.text ?? '';
-  if (!text) throw new Error('Anthropic: réponse vide');
+  if (!text) throw classifiedError('Anthropic: réponse vide', ErrorCategory.UNKNOWN);
 
   return {
     text,

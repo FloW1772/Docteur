@@ -213,6 +213,16 @@ export function createFilesRoute({ rootDir, logger } = {}) {
   });
 
   route.post('/files/upload', async (c) => {
+    // First filter, BEFORE buffering the multipart body into memory: reject
+    // obviously oversized requests using the client-declared Content-Length.
+    // This is not authoritative (a client can lie, and multipart framing adds
+    // overhead on top of the real file size) — the authoritative check stays
+    // below, on the actually-received file.size, as a second filter.
+    const declaredLength = Number(c.req.header('content-length') ?? '');
+    if (Number.isFinite(declaredLength) && declaredLength > 20 * 1024 * 1024 + 64 * 1024) {
+      return c.json({ error: 'Fichier trop volumineux (max 20 Mo)' }, 413);
+    }
+
     let formData;
     try {
       formData = await c.req.formData();
@@ -225,7 +235,7 @@ export function createFilesRoute({ rootDir, logger } = {}) {
       return c.json({ error: 'Champ "file" manquant' }, 400);
     }
     if (!isAllowedFileName(file.name)) {
-      return c.json({ error: 'Format non supporté. Formats autorisés: .xlsx, .xls, .csv, .txt, .md, .json' }, 415);
+      return c.json({ error: 'Format non supporté. Formats autorisés: .xlsx, .csv, .txt, .md, .json' }, 415);
     }
     if (file.size > 20 * 1024 * 1024) {
       return c.json({ error: 'Fichier trop volumineux (max 20 Mo)' }, 413);

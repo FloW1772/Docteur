@@ -16,6 +16,7 @@ certs/
 
 # ── Dependencies ──────────────────────────────────────────────────────────
 node_modules/
+cortex-server/bin/*.exe
 cortex-server/node_modules/
 docteur-voice/node_modules/
 

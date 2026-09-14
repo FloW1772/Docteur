@@ -2,7 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const ALLOWED_FILE_EXTENSIONS = new Set(['.xlsx', '.xls', '.csv', '.txt', '.md', '.json']);
+// .xls (legacy binary/BIFF format) is intentionally NOT supported: the xlsx
+// (SheetJS) library that could parse it has an unpatched high-severity
+// vulnerability (prototype pollution + ReDoS, GHSA-4r6h-8v6p-xvw6 /
+// GHSA-5pgg-2g8v-p4x9). Modern .xlsx is parsed via exceljs (maintained, no
+// equivalent unpatched issue). Users with a legacy .xls file can re-save it
+// as .xlsx in Excel/LibreOffice (File > Save As) — a one-click conversion.
+export const ALLOWED_FILE_EXTENSIONS = new Set(['.xlsx', '.csv', '.txt', '.md', '.json']);
 export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
 export function getFilesRoot(rootDir) {
@@ -102,27 +108,43 @@ export function readPreviewText(buffer) {
   return buffer.toString('utf8');
 }
 
-export async function readWorkbookSummary(buffer) {
-  const xlsxImport = await import('xlsx');
-  const XLSX = xlsxImport.default ?? xlsxImport;
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellFormula: false, cellHTML: false, sheetStubs: false });
-
+function sheetToSummary(worksheet) {
+  const rows = [];
+  worksheet.eachRow({ includeEmpty: true }, (row) => {
+    const values = row.values.slice(1); // exceljs row.values is 1-indexed, index 0 is always empty
+    rows.push(values.map((cell) => {
+      if (cell === null || cell === undefined) return '';
+      if (typeof cell === 'object' && 'text' in cell) return String(cell.text ?? ''); // rich text
+      if (typeof cell === 'object' && 'result' in cell) return String(cell.result ?? ''); // formula result only, never the formula itself
+      return String(cell);
+    }));
+  });
+  const columns = (rows[0] ?? []).map((value) => value.trim()).filter(Boolean);
+  const sampleRows = rows.slice(1, 6);
   return {
-    sheetCount: workbook.SheetNames.length,
-    sheets: workbook.SheetNames.map((sheetName) => {
-      const sheet = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
-      const columns = (rows[0] ?? []).map((value) => String(value ?? '').trim()).filter(Boolean);
-      const sampleRows = rows.slice(1, 6).map((row) => row.map((value) => String(value ?? '')));
-      return {
-        name: sheetName,
-        rowCount: rows.length,
-        columnCount: columns.length,
-        columns,
-        sampleRows,
-      };
-    }),
+    name: worksheet.name,
+    rowCount: rows.length,
+    columnCount: columns.length,
+    columns,
+    sampleRows,
   };
+}
+
+export async function readWorkbookSummary(buffer, extension) {
+  const ExcelJS = (await import('exceljs')).default ?? (await import('exceljs'));
+  const workbook = new ExcelJS.Workbook();
+
+  if (extension === '.csv') {
+    const { Readable } = await import('node:stream');
+    await workbook.csv.read(Readable.from(buffer));
+  } else {
+    await workbook.xlsx.load(buffer);
+  }
+
+  const sheets = [];
+  workbook.eachSheet((worksheet) => sheets.push(sheetToSummary(worksheet)));
+
+  return { sheetCount: sheets.length, sheets };
 }
 
 export async function parseOriginalFile(buffer, fileName) {
@@ -137,8 +159,8 @@ export async function parseOriginalFile(buffer, fileName) {
     return { kind: 'json', text, mimeType: mimeForExtension(extension) };
   }
 
-  if (extension === '.xlsx' || extension === '.xls' || extension === '.csv') {
-    const summary = await readWorkbookSummary(buffer);
+  if (extension === '.xlsx' || extension === '.csv') {
+    const summary = await readWorkbookSummary(buffer, extension);
     return { kind: 'spreadsheet', summary, mimeType: mimeForExtension(extension) };
   }
 

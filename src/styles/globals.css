@@ -114,7 +114,6 @@ body {
   bottom: 24px;
   width: 220px;
   z-index: 20;
-  pointer-events: none;
 }
 
 .shell-editor {
@@ -122,12 +121,18 @@ body {
   right: 20px;
   bottom: 36px;
   width: 420px;
+  max-width: calc(100vw - 40px);
+  min-width: 0;
   background: rgba(10, 8, 20, 0.18);
   backdrop-filter: blur(12px) saturate(130%);
   -webkit-backdrop-filter: blur(12px) saturate(130%);
   overflow: hidden;
   display: flex;
 }
+
+.shell-editor > * { min-width: 0; max-width: 100%; }
+.shell-editor input { min-width: 0; max-width: 100%; }
+.shell-editor pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .shell-rightpanel {
   display: none;
@@ -1000,6 +1005,7 @@ body {
     z-index: 800 !important;
     border-radius: 0 !important;
     width: 100% !important;
+    max-width: 100% !important;
   }
 
   /* Brain canvas: only shown when explicitly toggled, compact */

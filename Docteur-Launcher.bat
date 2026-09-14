@@ -68,7 +68,8 @@ if "%ERRORLEVEL%"=="0" (
 
 echo [2/3] Lancement du serveur cognitif...
 start "Cortex Server" cmd /k "cd /d C:\dev\Docteur\cortex-server && npm run dev"
-timeout /t 3 /nobreak >nul
+node scripts/wait-for-cortex.mjs
+if errorlevel 1 goto MENU
 
 echo [3/3] Lancement du frontend...
 start "Docteur Frontend" cmd /k "cd /d C:\dev\Docteur && npm run dev"
@@ -117,7 +118,8 @@ if "%ERRORLEVEL%"=="0" (
 
 echo [2/3] Lancement du serveur cognitif (mode reseau local)...
 start "Cortex Server - Local Network" cmd /k "cd /d C:\dev\Docteur\cortex-server && npm run dev:local"
-timeout /t 5 /nobreak >nul
+node scripts/wait-for-cortex.mjs
+if errorlevel 1 goto MENU
 
 echo [3/3] Lancement du frontend (HTTP, sans SW)...
 start "Docteur Frontend - Local Network" cmd /k "cd /d C:\dev\Docteur && npm run dev:local"
@@ -190,7 +192,8 @@ echo Build termine avec succes.
 echo.
 echo [3/4] Lancement du serveur cognitif (reseau local, port 3001)...
 start "Cortex Server - Mobile" cmd /k "cd /d C:\dev\Docteur\cortex-server && npm run dev:local"
-timeout /t 5 /nobreak >nul
+node scripts/wait-for-cortex.mjs
+if errorlevel 1 goto MENU
 
 echo.
 echo [4/4] Lancement du serveur de production (port 5173)...

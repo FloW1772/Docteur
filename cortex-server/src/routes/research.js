@@ -4,13 +4,52 @@
 
 import { Hono } from 'hono';
 import {
-  complete,
-  completeWithCascade,
-  completeWithGrounding,
+  complete as geminiComplete,
+  completeWithCascade as geminiCompleteWithCascade,
+  completeWithGrounding as geminiCompleteWithGrounding,
   setGeminiRpm,
   DEFAULT_MODEL,
 } from '../lib/providers/gemini.js';
 import { getCloudKeys, getRouterSettings, getMeta, setMeta, insertActivityLog, getVeilleSettings, setVeilleSettings, getStyleExampleSettings } from '../lib/sqlite.js';
+import { recordSuccess, recordFailure } from '../lib/provider-state.js';
+import { assertCloudAllowed } from '../lib/strict-local.js';
+
+// Wraps the three Gemini entry points once so every call site in this file
+// (12 of them, across synthèse/actualité/deep-research/multi-source modes)
+// reports into the same centralized provider-state as every other feature,
+// without changing any of the grounding/cascade logic itself.
+async function complete(...args) {
+  try {
+    const result = await geminiComplete(...args);
+    recordSuccess('gemini');
+    return result;
+  } catch (err) {
+    recordFailure('gemini', err);
+    throw err;
+  }
+}
+
+async function completeWithCascade(...args) {
+  try {
+    const result = await geminiCompleteWithCascade(...args);
+    recordSuccess('gemini');
+    return result;
+  } catch (err) {
+    recordFailure('gemini', err);
+    throw err;
+  }
+}
+
+async function completeWithGrounding(...args) {
+  try {
+    const result = await geminiCompleteWithGrounding(...args);
+    recordSuccess('gemini');
+    return result;
+  } catch (err) {
+    recordFailure('gemini', err);
+    throw err;
+  }
+}
 import { normalizeDetailLevel, detailLevelInstruction } from '../lib/detail-level.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from '../lib/style-examples.js';
 
@@ -120,7 +159,7 @@ export function createResearchRoute({ logger, fallbackChat, services }) {
   }
 
   app.post('/research', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -225,7 +264,7 @@ export function createResearchRoute({ logger, fallbackChat, services }) {
   // recherche web : réutilise le sujet et, si fournies, les sources déjà
   // collectées (citées comme contexte, pas re-vérifiées) via completeWithCascade.
   app.post('/research/regenerate', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -309,7 +348,7 @@ ${sourcesHeading}`;
   // ── POST /api/research/deep/plan ─────────────────────────────────────────────
   // Decompose a subject into N complementary subtopics.
   app.post('/research/deep/plan', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -362,7 +401,7 @@ Chaque sous-sujet doit être :
   // ── POST /api/research/deep/section ──────────────────────────────────────────
   // Generate dense content for one subtopic of a deep research.
   app.post('/research/deep/section', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body        = await c.req.json().catch(() => ({}));
     const subject     = String(body.subject  ?? '').trim();
@@ -454,7 +493,7 @@ Termine par : *Synthèse basée sur les connaissances de l'IA — à vérifier p
   // ── POST /api/research/deep/document ─────────────────────────────────────────
   // Generate a single long structured document.
   app.post('/research/deep/document', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -597,7 +636,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
   // Decompose a subject into N distinct angles for multi-source cross-checking.
   // Uses cascade (no grounding) — 1 cloud call, no quota consumed.
   app.post('/research/multi/plan', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -642,7 +681,7 @@ Chaque angle doit être suffisamment distinct pour générer des sources DIFFÉR
   // ── POST /api/research/multi/source ──────────────────────────────────────────
   // Research one angle with grounding (1 grounding call per angle).
   app.post('/research/multi/source', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();
@@ -699,7 +738,7 @@ Termine par :
   // Synthesize N source results and produce a cross-checked analysis.
   // Uses cascade (no grounding) — 1 cloud call, no grounding quota consumed.
   app.post('/research/multi/crosscheck', async (c) => {
-    if (getRouterSettings()?.strict_local_mode === true) return c.json(STRICT_LOCAL_ERROR, 503);
+    { const blocked = assertCloudAllowed(c, STRICT_LOCAL_ERROR.error); if (blocked) return blocked; }
 
     const body    = await c.req.json().catch(() => ({}));
     const subject = String(body.subject ?? '').trim();

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
@@ -1952,6 +1952,7 @@ function NeuralBrain({
   const brainRef         = useRef<OrbitalBrain | null>(null);
   const settingsRef      = useRef<VisualSettings>(loadVisualSettings());
   // Track previous pages/selection to avoid full scene rebuild on content-only changes
+  const lastBuiltBrain = useRef<OrbitalBrain | null>(null);
   const prevPagesRef     = useRef<Page[]>([]);
   const prevSelectedRef  = useRef<string | null>(null);
   // Refs for latest props — used in updateSetting when maxNodes changes
@@ -1964,19 +1965,18 @@ function NeuralBrain({
 
   // Keep refs in sync so imperative calls outside React always see fresh values
   useEffect(() => { settingsRef.current = settings; }, [settings]);
-  useEffect(() => { pagesLocalRef.current = pages; }, [pages]);
-  useEffect(() => { selectedPageIdLocalRef.current = selectedPageId ?? null; }, [selectedPageId]);
+
+  const renderPages = useMemo(() => {
+    const top = [...pages].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, settings.maxNodes);
+    const selected = pages.find(p => p.id === selectedPageId);
+    if (selected && !top.some(p => p.id === selected.id)) { top.pop(); top.push(selected); }
+    return top;
+  }, [pages, settings.maxNodes, selectedPageId]);
 
   const updateSetting = useCallback(<K extends keyof VisualSettings>(key: K, value: VisualSettings[K]) => {
     const next = { ...settingsRef.current, [key]: value };
     try { localStorage.setItem(VISUAL_SETTINGS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
     brainRef.current?.setVisualSettings(next);
-    if (key === 'maxNodes') {
-      // Changing node limit requires a full scene rebuild
-      const t0 = performance.now();
-      brainRef.current?.setPages(pagesLocalRef.current, selectedPageIdLocalRef.current);
-      console.log(`[maxNodes] brain.setPages(${pagesLocalRef.current.length} nodes, limit ${value}): ${Math.trunc(performance.now() - t0)}ms`);
-    }
     setSettings(next);
   }, []);
 
@@ -2079,16 +2079,16 @@ function NeuralBrain({
       return la.length === lb.length && la.every((x, i) => x === lb[i]);
     };
     const structChanged =
-      pages.length !== prev.length ||
-      pages.some((p, i) => {
+      renderPages.length !== prev.length ||
+      renderPages.some((p, i) => {
         const q = prev[i];
         return !q || p.id !== q.id || p.kind !== q.kind ||
                p.title !== q.title || !linksEq(p.links, q.links);
       });
 
-    if (structChanged) {
-      prevPagesRef.current    = pages;
-      prevSelectedRef.current = selId;
+    if (structChanged || brain !== lastBuiltBrain.current) {
+
+
       // Defer the heavy Three.js scene rebuild to after the current render paint.
       // Synchronous setPages(900 nodes) was blocking the main thread for ~200-400ms,
       // preventing the UI from appearing after pages loaded.
@@ -2097,15 +2097,19 @@ function NeuralBrain({
       const timer = setTimeout(() => {
         // Apply visual settings first so setPages can read maxNodes from this.vs
         brain.setVisualSettings(settings);
-        brain.setPages(pages, selId);
-        console.log(`[startup] brain.setPages(${pages.length} nodes, limit ${settings.maxNodes}): ${Math.trunc(performance.now() - t0)}ms`);
+        const buildStart = performance.now();
+        brain.setPages(renderPages, selId);
+        prevPagesRef.current = renderPages;
+        prevSelectedRef.current = selId;
+        lastBuiltBrain.current = brain;
+        console.log(`[startup] brain.setPages(${renderPages.length} nodes, limit ${settings.maxNodes}): ${Math.trunc(performance.now() - buildStart)}ms`, { sourceCount: pages.length, renderCount: renderPages.length, queuedMs: Math.round(buildStart - t0) });
       }, 0);
       return () => clearTimeout(timer);
     } else if (selId !== prevSelectedRef.current) {
       prevSelectedRef.current = selId;
       brain.setSelectedPageId(selId);
     }
-  }, [pages, selectedPageId]);
+  }, [renderPages, selectedPageId, bloomEnabled, compact, onCentralActivate, onHoverChange, onNodeSelect, onPerformance]);
 
   useEffect(() => {
     brainRef.current?.setIndexingIds(indexingIds ?? new Set());

@@ -41,7 +41,7 @@ const runtime = new Map(); // jobId -> { cancelRequested, uiJobId }
 
 export function requestCancel(jobId) {
   const r = runtime.get(jobId);
-  if (r) r.cancelRequested = true;
+  if (r) { r.cancelRequested = true; r.controller.abort(); }
   updateVideoJob(jobId, { cancelled: true });
 }
 
@@ -188,7 +188,7 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
   const job = getVideoJobById(jobId);
   if (!job) throw new Error('Job introuvable');
 
-  runtime.set(jobId, { cancelRequested: false });
+  runtime.set(jobId, { cancelRequested: false, controller: new AbortController() });
   const dir = jobDir(jobId);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -204,7 +204,9 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
 
       ensureTmpDir();
       const fullAudioPath = path.join(dir, 'full.wav');
-      await downloadAudio(job.url, fullAudioPath.replace(/\.wav$/, '.%(ext)s'));
+      await downloadAudio(job.url, fullAudioPath.replace(/\.wav$/, '.%(ext)s'), {
+        logger, jobId, signal: runtime.get(jobId).controller.signal,
+      });
       const actualPath = fs.existsSync(fullAudioPath)
         ? fullAudioPath
         : fs.readdirSync(dir).map(f => path.join(dir, f)).find(f => f.includes('full')) ?? fullAudioPath;
@@ -423,8 +425,9 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
     await finishUiJob(uiJobId, 'done', summary);
     logger?.info({ jobId, neuronId, failedCount: failedSegments.length }, 'VIDEO_PIPELINE_DONE');
   } catch (err) {
+    if (isCancelled(jobId)) { await cleanupAndStop(jobId, uiJobId); return; }
     logger?.error({ jobId, err: err.message }, 'VIDEO_PIPELINE_ERROR');
-    updateVideoJob(jobId, { status: 'error', error_message: err.message });
+    updateVideoJob(jobId, { status: 'error', current_step: 'Erreur', error_message: err.message });
     await finishUiJob(uiJobId, 'error', err.message);
   } finally {
     runtime.delete(jobId);

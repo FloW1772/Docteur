@@ -1,11 +1,7 @@
 import { Hono }                             from 'hono';
-import { getPageFromStore, getAllPagesFromStore, getCloudKeys, getRouterSettings } from '../lib/sqlite.js';
+import { getPageFromStore, getAllPagesFromStore, getRouterSettings } from '../lib/sqlite.js';
 import { buildNeuronHtml, buildSubjectHtml, generatePdf } from '../lib/pdf.js';
-import * as groqProvider                      from '../lib/providers/groq.js';
-import { completeWithCascade as geminiCascade } from '../lib/providers/gemini.js';
-import * as openrouterProvider                from '../lib/providers/openrouter.js';
-import * as anthropicProvider                 from '../lib/providers/anthropic.js';
-import * as openaiProvider                    from '../lib/providers/openai.js';
+import { tryCloudFallbackChain } from '../lib/router.js';
 
 const MAX_NEURONS = 20;
 
@@ -29,11 +25,7 @@ function isNeuronPrivate(n) {
 }
 
 async function tryIntroGeneration(subject, neuronSummaries, logger) {
-  const keys     = getCloudKeys();
   const settings = getRouterSettings();
-
-  // Mode local strict → ne jamais appeler le cloud
-  if (settings?.strict_local_mode === true) return null;
 
   // Exclure les neurones privés du contexte envoyé au cloud
   const publicNeurons = neuronSummaries.filter(n => !isNeuronPrivate(n));
@@ -55,26 +47,11 @@ async function tryIntroGeneration(subject, neuronSummaries, logger) {
     },
   ];
 
-  // Note: providers array references `messages` before it's defined above —
-  // rebuild with correct reference after messages is defined.
-  const providersWithMessages = [];
-  if (keys.groq_key)       providersWithMessages.push({ id: 'groq',       call: () => groqProvider.complete({ apiKey: keys.groq_key, messages, model: settings?.groq_model }) });
-  if (keys.gemini_key)     providersWithMessages.push({ id: 'gemini',     call: () => geminiCascade({ apiKey: keys.gemini_key, messages, logger }) });
-  if (keys.openrouter_key) providersWithMessages.push({ id: 'openrouter', call: () => openrouterProvider.complete({ apiKey: keys.openrouter_key, messages }) });
-  if (settings?.paying_apis_enabled) {
-    if (keys.anthropic_key) providersWithMessages.push({ id: 'anthropic', call: () => anthropicProvider.complete({ apiKey: keys.anthropic_key, messages }) });
-    if (keys.openai_key)    providersWithMessages.push({ id: 'openai',    call: () => openaiProvider.complete({ apiKey: keys.openai_key, messages }) });
-  }
-
-  for (const p of providersWithMessages) {
-    try {
-      const r = await p.call();
-      return r.text?.trim() ?? null;
-    } catch (err) {
-      if (logger) logger.warn({ provider: p.id, error: err.message }, 'PDF: intro provider failed');
-    }
-  }
-  return null;
+  const result = await tryCloudFallbackChain(messages, { logger, settingsOverride: settings }).catch(err => {
+    if (logger) logger.warn({ error: err.message }, 'PDF: intro generation failed');
+    return null;
+  });
+  return result?.text?.trim() ?? null;
 }
 
 // ── Route factory ─────────────────────────────────────────────────────────────

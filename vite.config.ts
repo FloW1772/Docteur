@@ -116,12 +116,14 @@ export default defineConfig({
   ],
 
   optimizeDeps: {
-    // Porcupine + MediaPipe + Tesseract use Web Workers + WASM — Vite must not pre-bundle them
+    // Tesseract's CommonJS entry needs conversion to ESM, even when lazy-loaded.
+    // Its worker/WASM assets remain served separately from public/tesseract/.
+    include: ['tesseract.js'],
+    // These libraries already provide ESM browser entries.
     exclude: [
       '@picovoice/porcupine-web',
       '@picovoice/web-voice-processor',
       '@mediapipe/tasks-vision',
-      'tesseract.js',
     ],
   },
 

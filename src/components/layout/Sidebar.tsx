@@ -1,4 +1,4 @@
-import { useState, useMemo, memo, useCallback } from 'react';
+import { useState, useMemo, memo, useCallback, useEffect, useRef } from 'react';
 import {
   Trash2, Plus, FileText, CheckSquare, Zap, BookOpen, Heart,
   Radio, RefreshCw, Video, Link, ChevronLeft, Search, X, ListVideo,
@@ -114,6 +114,8 @@ const PageRow = memo(function PageRow({ page, isSelected, isHovered, isDrillTarg
 
   return (
     <div
+      data-neuron-id={page.id}
+      data-selected={isSelected}
       className="sidebar-item neuron-list-item relative flex items-center gap-2 px-3 py-2 cursor-pointer transition-all"
       style={{ borderLeft: `2px solid ${border}`, background: bg }}
       onClick={() => onClick(page)}
@@ -123,7 +125,7 @@ const PageRow = memo(function PageRow({ page, isSelected, isHovered, isDrillTarg
       <Icon size={13} style={{ color: meta.color, flexShrink: 0, opacity: isSelected ? 1 : 0.7 }} />
 
       <div className="flex-1 min-w-0">
-        <p className="sidebar-item-title font-mono text-xs truncate" style={{ color: isSelected ? '#f0eaff' : '#c0b0e0' }}>
+        <p className="sidebar-item-title font-mono text-xs truncate" style={{ color: isSelected ? '#f0eaff' : '#c0b0e0' }} title={page.title || 'Sans titre'}>
           {page.title || 'Sans titre'}
         </p>
         <p className="font-mono text-xs" style={{ color: isDrillTarget ? '#ff8b3d88' : hasFallback ? '#ff8b3d' : hasTranscript ? '#a78bfa' : '#5ee7ff', fontSize: 10 }}>
@@ -194,6 +196,8 @@ function Sidebar({
   const [filter,       setFilter]       = useState<FilterKey>('all');
   const [drilldownId,  setDrilldownId]  = useState<string | null>(null);
   const [search,       setSearch]       = useState('');
+  const pendingGesture = useRef<unknown>(null);
+  const requestedSelection = useRef<string | null>(null);
 
   // Count pages by kind for filter badges
   const counts = useMemo(() => {
@@ -244,6 +248,57 @@ function Sidebar({
     }
     return list;
   }, [pages, filter, drilldownId, drilldownChildren, search]);
+
+  useEffect(() => {
+    if (!showHomeScreen && !allMetaLoaded) onLoadAllPages?.();
+  }, [showHomeScreen, allMetaLoaded, onLoadAllPages]);
+
+  useEffect(() => {
+    document.querySelector<HTMLElement>('.sidebar-item[data-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    if (requestedSelection.current === selectedPageId && selectedPageId) {
+      if (localStorage.getItem('docteur-gesture-debug') === 'true') console.debug('[gesture] NAVIGATION_SUCCESS', { neuronIdAfter: selectedPageId });
+      requestedSelection.current = null;
+    }
+  }, [selectedPageId]);
+
+  useEffect(() => {
+    function navigate(event: Event) {
+      const { action, direction, gestureInputPresent } = (event as CustomEvent).detail;
+      const debug = localStorage.getItem('docteur-gesture-debug') === 'true';
+      const log = (state: string, extra = {}) => { if (debug) console.debug('[gesture] ' + state, { action, gestureInputPresent, neuronIdBefore: selectedPageId, ...extra }); };
+      log('NAVIGATION_CALLED');
+      if (action === 'scroll') {
+        const list = document.querySelector<HTMLElement>('.sidebar-list');
+        if (!list) { log('NAVIGATION_FAILED', { reason: 'sidebar list absent' }); return; }
+        list.scrollBy({ top: direction * 160, behavior: 'smooth' });
+        log('NAVIGATION_SUCCESS', { target: 'sidebar' });
+        return;
+      }
+      if (!showHomeScreen && !allMetaLoaded) {
+        pendingGesture.current = (event as CustomEvent).detail;
+        onLoadAllPages?.();
+        log('GESTURE_BLOCKED', { reason: 'loading full sidebar metadata; action queued' });
+        return;
+      }
+      const list = showHomeScreen ? recentPages : visiblePages;
+      const index = list.findIndex(p => p.id === selectedPageId);
+      const nextIndex = index < 0 ? 0 : Math.max(0, Math.min(list.length - 1, index + (action === 'next' ? 1 : -1)));
+      const next = list[nextIndex];
+      if (!next) { log('NAVIGATION_FAILED', { reason: 'empty filtered list' }); return; }
+      if (next.id === selectedPageId) { log('GESTURE_BLOCKED', { reason: 'list boundary' }); return; }
+      requestedSelection.current = next.id;
+      onSelectPage(next.id);
+    }
+    window.addEventListener('docteur-sidebar-gesture', navigate);
+    return () => window.removeEventListener('docteur-sidebar-gesture', navigate);
+  }, [visiblePages, recentPages, showHomeScreen, selectedPageId, onSelectPage, allMetaLoaded, onLoadAllPages]);
+
+  useEffect(() => {
+    if (allMetaLoaded && pendingGesture.current) {
+      const detail = pendingGesture.current; pendingGesture.current = null;
+      window.dispatchEvent(new CustomEvent('docteur-sidebar-gesture', { detail }));
+    }
+  }, [allMetaLoaded]);
 
   function handleFilterClick(key: FilterKey) {
     setFilter(key);
@@ -729,6 +784,7 @@ function PromptStats({ pages, allPrompts }: { pages: Page[]; allPrompts: Page[] 
 // Sidebar only needs to re-render when pages structure changes (count, ids, titles, kinds,
 // updatedAt, link count) — not when block content changes during typing.
 export default memo(Sidebar, (prev, next) => {
+  if (prev.allMetaLoaded !== next.allMetaLoaded || prev.onLoadAllPages !== next.onLoadAllPages || prev.onSelectPage !== next.onSelectPage) return false;
   if (prev.selectedPageId   !== next.selectedPageId)   return false;
   if (prev.loading          !== next.loading)           return false;
   if (prev.cortexAvailable  !== next.cortexAvailable)   return false;

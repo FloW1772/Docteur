@@ -162,19 +162,21 @@ export default function ScreenCaptureModal({ imageDataUrl, onClose, onSaveImage,
 
   async function handleExtractText() {
     setStatus(null);
-    const cropped = await transformImage(imageDataUrl, crop, rotation, enhance, binarize);
-    const result = await ocr.recognize(cropped);
-    if (result === null) return; // ocr.error already surfaces the failure reason
-    const trimmed = result.trim();
-    if (!trimmed) {
-      // Tesseract ran successfully but found nothing readable — a silent
-      // empty textarea would look exactly like a broken feature, so this
-      // must be explicit rather than left for the user to notice.
-      setStatus({ ok: false, message: 'Aucun texte détecté sur cette image. Rapprochez-vous, améliorez l\'éclairage, ou essayez le recadrage/contraste.' });
-      return;
+    try {
+      const cropped = await transformImage(imageDataUrl, crop, rotation, enhance, binarize);
+      const result = await ocr.recognize(cropped);
+      if (result === null) return; // ocr.error already surfaces the failure reason
+      const trimmed = result.trim();
+      if (!trimmed) {
+        // A successful OCR with no readable text needs an explicit message.
+        setStatus({ ok: false, message: 'Aucun texte détecté sur cette image. Rapprochez-vous, améliorez l\'éclairage, ou essayez le recadrage/contraste.' });
+        return;
+      }
+      setText(trimmed);
+      setStage('result');
+    } catch (e) {
+      setStatus({ ok: false, message: e instanceof Error ? e.message : 'Extraction du texte impossible' });
     }
-    setText(trimmed);
-    setStage('result');
   }
 
   async function handleSaveImage() {

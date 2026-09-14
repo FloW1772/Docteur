@@ -1,10 +1,6 @@
 import { Hono } from 'hono';
 import { getCloudKeys, getRouterSettings } from '../lib/sqlite.js';
-import * as groqProvider       from '../lib/providers/groq.js';
-import { completeWithCascade as geminiCascade } from '../lib/providers/gemini.js';
-import * as openrouterProvider from '../lib/providers/openrouter.js';
-import * as anthropicProvider  from '../lib/providers/anthropic.js';
-import * as openaiProvider     from '../lib/providers/openai.js';
+import { tryCloudFallbackChain } from '../lib/router.js';
 
 const CLARIFY_SYSTEM = `Tu es un assistant intelligent. Tu analyses des demandes pour déterminer si elles nécessitent des précisions personnelles AVANT de pouvoir y répondre utilement.
 
@@ -30,40 +26,15 @@ Réponds UNIQUEMENT en JSON valide (sans markdown, sans blocs de code) :
 ou
 {"needs_clarification":true,"questions":[{"id":"q1","text":"La question précise ?","choices":["Option A","Option B","Option C"]}]}`;
 
-async function tryCloudCompletion(messages, logger) {
-  const keys     = getCloudKeys();
-  const settings = getRouterSettings();
-
-  const providers = [];
-  // Groq first: fastest and generous free tier
-  if (keys.groq_key)        providers.push({ id: 'groq',        call: () => groqProvider.complete({ apiKey: keys.groq_key, messages, model: settings?.groq_model }) });
-  if (keys.gemini_key)      providers.push({ id: 'gemini',      call: () => geminiCascade({ apiKey: keys.gemini_key, messages, logger }) });
-  if (keys.openrouter_key)  providers.push({ id: 'openrouter',  call: () => openrouterProvider.complete({ apiKey: keys.openrouter_key, messages }) });
-  if (settings?.paying_apis_enabled) {
-    if (keys.anthropic_key) providers.push({ id: 'anthropic',   call: () => anthropicProvider.complete({ apiKey: keys.anthropic_key, messages }) });
-    if (keys.openai_key)    providers.push({ id: 'openai',      call: () => openaiProvider.complete({ apiKey: keys.openai_key, messages }) });
-  }
-
-  if (providers.length === 0) return null;
-
-  for (const p of providers) {
-    try {
-      const r = await p.call();
-      return { text: r.text, provider: p.id };
-    } catch (err) {
-      if (logger) logger.warn({ provider: p.id, error: err.message }, 'CLARIFY: provider failed, trying next');
-    }
-  }
-  return null;
-}
-
 function parseJsonSafe(text) {
   // Strip markdown code fences if present
   const cleaned = text.replace(/```(?:json)?\n?/g, '').replace(/```\n?/g, '').trim();
-  // Extract first {...} block in case of trailing text
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try { return JSON.parse(match[0]); } catch { return null; }
+  // Extract first {...} block in case of trailing text (non-greedy to avoid
+  // catastrophic backtracking on malformed/very long LLM output).
+  const start = cleaned.indexOf('{');
+  const end   = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) return null;
+  try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { return null; }
 }
 
 export function createClarifyRoute({ logger } = {}) {
@@ -94,7 +65,7 @@ export function createClarifyRoute({ logger } = {}) {
       { role: 'user',   content: question },
     ];
 
-    const result = await tryCloudCompletion(messages, logger).catch(err => {
+    const result = await tryCloudFallbackChain(messages, { logger }).catch(err => {
       if (logger) logger.warn({ error: err.message }, 'CLARIFY: all cloud providers failed');
       return null;
     });
