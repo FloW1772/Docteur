@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
+import { FreeAiFinder } from '../settings/FreeAiFinder';
 import { exportAllToServer } from '../../lib/storage';
 import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
 import { cortexClient } from '../../lib/cortex/client';
@@ -1723,6 +1724,8 @@ export default function SettingsModal({
                   );
                 })}
               </div>
+
+              <FreeAiFinder strictLocalActive={settings.strict_local_mode === true} />
 
               {/* Claude / OpenAI — mode selector (abonnement CLI vs clé API) */}
               <div className="flex flex-col gap-2">

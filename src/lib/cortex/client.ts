@@ -288,6 +288,51 @@ export interface ProvidersOverviewResult {
   strict_local_mode: boolean;
 }
 
+// Free AI Finder — discovery-only catalog of public free-tier/trial LLM API
+// providers (source: free-llm-api-hub). Field names mirror the upstream
+// dataset schema; anything the dataset doesn't provide comes back as null,
+// never guessed. See cortex-server/src/lib/free-ai-catalog.js.
+export interface FreeAiProvider {
+  id: string;
+  name: string;
+  category: 'ongoing' | 'trial' | null;
+  freeType: 'perpetual' | 'renewing-quota' | 'recurring-credit' | 'trial-credit' | null;
+  freeTier: string | null;
+  rateLimits: string | null;
+  notes: string | null;
+  bestFor: string | null;
+  modalities: string[];
+  modelsFree: string[] | null;
+  expires: string | null;
+  cardRequired: boolean | null;
+  phoneRequired: boolean | null;
+  commercialUse: boolean | null;
+  openAICompatible: boolean | null;
+  openAIBaseUrl: string | null;
+  docsUrl: string | null;
+  verified: boolean;
+  lastVerified: string | null;
+  added: string | null;
+  nativeDocteurProvider: string | null;
+  configuredInDocteur: boolean;
+  availableViaFreeLLMAPI: boolean;
+  docteurState: 'configured' | 'native_not_configured' | 'maybe_via_freellmapi' | 'not_integrated';
+  verificationFreshness: 'fresh' | 'aging' | 'recheck' | 'unknown';
+}
+
+export interface FreeAiCatalogResult {
+  providers: FreeAiProvider[];
+  source: string;
+  sourceRepo?: string;
+  catalogVersion: string | null;
+  catalogGenerated: string | null;
+  fetchedAt: string | null;
+  stale: boolean;
+  strictLocalActive?: boolean;
+  strictLocalBlockedRefresh?: boolean;
+  warning: string | null;
+}
+
 export interface RouterSettings {
   router_enabled: boolean;
   fallback_model: string;
@@ -1762,6 +1807,16 @@ export const cortexClient = {
     const res = await apiFetch('/api/router/providers', { method: 'GET' });
     if (!res.ok) throw new Error(`Providers overview HTTP ${res.status}`);
     return res.json() as Promise<ProvidersOverviewResult>;
+  },
+
+  async getFreeAiProviders(refresh = false): Promise<FreeAiCatalogResult> {
+    const res = await apiFetch(`/api/free-ai/providers${refresh ? '?refresh=1' : ''}`, { method: 'GET' }, 15_000);
+    return res.json() as Promise<FreeAiCatalogResult>;
+  },
+
+  async refreshFreeAiProviders(): Promise<FreeAiCatalogResult & { ok: boolean; error?: string }> {
+    const res = await apiFetch('/api/free-ai/refresh', { method: 'POST' }, 15_000);
+    return res.json() as Promise<FreeAiCatalogResult & { ok: boolean; error?: string }>;
   },
 
   async setPairEndpoint(endpoint: string): Promise<{ ok: boolean; endpoint: string }> {

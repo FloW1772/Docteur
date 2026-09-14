@@ -28,6 +28,7 @@ import { createBackupRoute } from './routes/backup.js';
 import { createCorpusRoute } from './routes/corpus.js';
 import { createActivityRoute } from './routes/activity.js';
 import { createRouterRoute } from './routes/router.js';
+import { createFreeAiRoute } from './routes/free-ai.js';
 import { createOllamaRoute } from './routes/ollama.js';
 import { createDownloadRoute } from './routes/download.js';
 import { createResearchRoute } from './routes/research.js';
@@ -1610,6 +1611,7 @@ app.route('/api', createBackupRoute({ services, logger }));
 app.route('/api', createCorpusRoute({ services, logger }));
 app.route('/api', createActivityRoute({ logger }));
 app.route('/api', createRouterRoute({ services }));
+app.route('/api', createFreeAiRoute({ logger }));
 app.route('/api', createOllamaRoute({ services }));
 app.route('/api', createDownloadRoute({ services, logger }));
 app.route('/api', createResearchRoute({
