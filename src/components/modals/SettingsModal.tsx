@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { FreeAiFinder } from '../settings/FreeAiFinder';
 import { exportAllToServer } from '../../lib/storage';
@@ -2548,15 +2548,15 @@ export default function SettingsModal({
                       <span key={h} className="font-mono" style={{ fontSize: 9, color: '#3d3060', letterSpacing: '0.1em' }}>{h}</span>
                     ))}
                     {stats.map((s, i) => (
-                      <>
-                        <span key={`m${i}`} className="font-mono text-xs" style={{ color: '#9080c0' }}>
+                      <Fragment key={`${s.chosen_model}-${s.chosen_level}-${i}`}>
+                        <span className="font-mono text-xs" style={{ color: '#9080c0' }}>
                           {s.chosen_model}
                           <span style={{ color: '#3d3060', marginLeft: 5, fontSize: 10 }}>L{s.chosen_level}</span>
                         </span>
-                        <span key={`c${i}`} className="font-mono text-xs" style={{ color: '#5ee7ff', textAlign: 'right' }}>{s.call_count}</span>
-                        <span key={`l${i}`} className="font-mono text-xs" style={{ color: '#7a6c9a', textAlign: 'right' }}>{formatLatency(s.avg_latency_ms)}</span>
-                        <span key={`e${i}`} className="font-mono text-xs" style={{ color: s.error_count > 0 ? '#ff4d58' : '#3d3060', textAlign: 'right' }}>{s.error_count}</span>
-                      </>
+                        <span className="font-mono text-xs" style={{ color: '#5ee7ff', textAlign: 'right' }}>{s.call_count}</span>
+                        <span className="font-mono text-xs" style={{ color: '#7a6c9a', textAlign: 'right' }}>{formatLatency(s.avg_latency_ms)}</span>
+                        <span className="font-mono text-xs" style={{ color: s.error_count > 0 ? '#ff4d58' : '#3d3060', textAlign: 'right' }}>{s.error_count}</span>
+                      </Fragment>
                     ))}
                   </div>
 
@@ -3032,15 +3032,15 @@ export default function SettingsModal({
                         <span key={h} className="font-mono" style={{ fontSize: 9, color: '#3d3060', letterSpacing: '0.08em' }}>{h}</span>
                       ))}
                       {privacyTestResult.results.map(r => (
-                        <>
-                          <span key={`p${r.provider}`} className="font-mono text-xs" style={{ color: '#9080c0' }}>{r.provider}</span>
-                          <span key={`b${r.provider}`} className="font-mono" style={{ fontSize: 11, color: r.blocked_private ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
+                        <Fragment key={r.provider}>
+                          <span className="font-mono text-xs" style={{ color: '#9080c0' }}>{r.provider}</span>
+                          <span className="font-mono" style={{ fontSize: 11, color: r.blocked_private ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
                             {r.blocked_private ? '✓' : '✗'}
                           </span>
-                          <span key={`n${r.provider}`} className="font-mono" style={{ fontSize: 11, color: r.passed_neutral ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
+                          <span className="font-mono" style={{ fontSize: 11, color: r.passed_neutral ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
                             {r.passed_neutral ? '✓' : '✗'}
                           </span>
-                        </>
+                        </Fragment>
                       ))}
                     </div>
                   </div>

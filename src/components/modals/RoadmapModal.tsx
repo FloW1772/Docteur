@@ -37,6 +37,11 @@ const SECTIONS: RoadmapSection[] = [
         "domain": "Recherche",
         "label": "Recherche vectorielle après compaction",
         "note": "Les cinq résultats et scores sont identiques avant/après. Une nouvelle question a aussi été testée avec nomic-embed-text dans Ollama : embedding de 768 dimensions et résultats retournés."
+      },
+      {
+        "domain": "Recherche",
+        "label": "Free AI Finder — découverte de providers IA gratuits",
+        "note": "Testé réellement (14 septembre 2026) : catalogue en ligne chargé (69 providers réels, 339 ms) ; Groq et Gemini reconnus comme déjà configurés dans Docteur ; sous Strict Local, l'actualisation est bloquée (503) et le catalogue continue de s'afficher depuis le cache, sans aucun appel réseau observé, y compris à cache vide."
       }
     ]
   },
@@ -50,7 +55,7 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Capture",
         "label": "Web, capture profonde, fichiers et corpus",
-        "note": "Routes et formulaires branchés ; batch, playlists, chaînes, analyse ciblée et repli MSN à éprouver sur des sources réelles."
+        "note": "Testé réellement (14 septembre 2026) : capture web sur example.com (titre + contenu extraits, 94 ms) ; import de fichiers .csv/.json/.md/.txt (accents UTF-8 préservés) ; .xls, extension interdite et fichier > 20 Mo correctement rejetés (415/413). Capture profonde, batch, playlists, chaînes et repli MSN restent à éprouver sur des sources réelles."
       },
       {
         "domain": "Capture",
@@ -65,7 +70,7 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Recherche",
         "label": "Question/RAG, conversation et comparaison",
-        "note": "Routes branchées, mémoire de préférences et clarification présentes ; qualité des réponses et citations à éprouver."
+        "note": "RAG testé réellement (14 septembre 2026) avec un fait synthétique injecté (\"le projet Atlas utilise le code CERISE-4729\") : le bon neurone est retrouvé en premier (score 0,685) et cité correctement dans la réponse ; une question sans réponse dans le corpus n'invente pas de citation (\"n'est pas mentionné\"). Comparaison testée : Strict Local bloque bien un modèle cloud demandé, sans faire échouer les autres. Conversation multi-tours et clarification restent à éprouver."
       },
       {
         "domain": "Recherche",
@@ -80,12 +85,12 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Recherche",
         "label": "Routeur local/cloud",
-        "note": "Clients partagés Gemini, Groq, OpenRouter et autres fournisseurs présents ; scénarios de quotas et replis à valider."
+        "note": "Strict Local testé réellement (14 septembre 2026) : activé, /api/research et /api/compare bloquent bien l'appel cloud (503 / erreur explicite dans le flux), sans appel réseau observé. Bug de performance corrigé sur /api/router/providers (~8-10 s → ~4,8-7,3 s mesuré après correctif : les vérifications Claude Code/Codex tournaient en série, passées en parallèle). GET /api/router/providers reste lent (~4,8-7,3 s) : il déclenche encore de vrais appels CLI Claude/Codex à chaque chargement des providers. Optimisation restante : cache/lazy health checks pour éviter ces spawns CLI coûteux au chargement — non traité dans cette passe. Scénarios de quota (429) et bascule automatique entre fournisseurs cloud restent à simuler."
       },
       {
         "domain": "Production",
         "label": "Professeur",
-        "note": "Groq et Gemini : validation, plan et première explication testés avec les vrais fournisseurs. OpenRouter : plan réussi, explication vide. Révisions, progression complète et local restent à valider."
+        "note": "Retesté réellement (14 septembre 2026) sur \"les bases du système solaire\". Gemini : plan (6 étapes) et première explication générés correctement (1 appel cloud réel). Bug OpenRouter confirmé et corrigé : le modèle gratuit renvoyait parfois un contenu vide (erreur \"réponse vide\", HTTP 503) sans repli ; l'étape bascule désormais automatiquement sur le modèle local Ollama dans ce cas précis (jamais en cas de quota ou clé invalide, qui restent signalés à l'utilisateur). Décompte exact des appels cloud réels de cette campagne, recompté à partir des logs : 4 au total — 1 Gemini (plan), 1 OpenRouter (plan \"photosynthèse\"), 1 OpenRouter (première tentative d'explication, réponse vide constatée), 1 OpenRouter (retest après correctif — le fournisseur cloud demandé est toujours réellement tenté avant tout repli local, donc ce retest a lui aussi appelé OpenRouter avant de basculer sur Ollama) ; HTTP 200 obtenu, explication réelle produite via le repli local. Sécurité : le message d'erreur affiché à l'utilisateur lors d'un repli est désormais un code fixe (fallback_reason_code) accompagné d'un libellé pré-écrit et contrôlé, jamais le texte brut renvoyé par le fournisseur cloud. L'interface affiche explicitement le provider demandé et le provider ayant réellement répondu quand un repli se produit. Révisions espacées, progression complète d'un parcours et mode 100 % local restent à valider."
       },
       {
         "domain": "Production",
@@ -100,7 +105,7 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Automatisation",
         "label": "Agents, compétences et tâches",
-        "note": "Planificateur démarré, exécution et sorties reliées à l’interface ; cycles longs et reprise à valider."
+        "note": "Testé réellement (14 septembre 2026) : création d'un agent de veille synthétique, exécution manuelle (5,6 s, contenu généré cohérent), historique d'exécution persisté (statut success), suppression propre. Planification différée, cycles longs, reprise après redémarrage et gestion d'erreur d'exécution restent à valider."
       },
       {
         "domain": "Interface",
@@ -130,7 +135,7 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Infrastructure",
         "label": "Sauvegarde et restauration",
-        "note": "Planification et routes branchées ; restauration complète sur une copie à revalider."
+        "note": "Mécanisme testé réellement (14 septembre 2026) sur une base isolée (jamais la base réelle) : export → modification → import restaure bien le contenu d'origine (titre et texte identiques) ; un backup invalide (champs manquants) est rejeté proprement (400) et un JSON tronqué ne casse pas le serveur (500 géré). Export réel exécuté sans écriture sur les 6 652 neurones de la base actuelle (12,7 Mo, 1,9 s). Restauration complète d'une vraie sauvegarde utilisateur, avec ré-indexation LanceDB à grande échelle, reste à valider."
       },
       {
         "domain": "Infrastructure",
@@ -140,7 +145,7 @@ const SECTIONS: RoadmapSection[] = [
       {
         "domain": "Infrastructure",
         "label": "Sécurité et qualité du corpus",
-        "note": "Contrôles CORS/SSRF et chemins présents ; audit exhaustif à renouveler. Doublons et contenu expiré restent à traiter."
+        "note": "CORS et SSRF retestés réellement (14 septembre 2026) : une origine non autorisée ne reçoit aucun en-tête access-control-allow-origin (une origine légitime si) ; localhost, une IP privée (RFC1918) et une IP link-local/metadata cloud sont bloquées à la capture web. Scan qualité du corpus réel (lecture seule, sans suppression) : 18 doublons exacts, 0 contenu vide, 35 neurones très courts (< 20 car.), 103 neurones link/vidéo/chaîne/playlist sans URL, 1067 liens orphelins sur 7011 (référence vers un neurone supprimé). Aucune suppression effectuée — nécessite une mission dédiée."
       }
     ]
   },
@@ -302,7 +307,7 @@ export default function RoadmapModal({ isOpen, onClose }: Props) {
               ROADMAP
             </h2>
             <p className="font-mono" style={{ color: '#3d3060', fontSize: 10, marginTop: 3, letterSpacing: '0.1em' }}>
-              Audit du 8 septembre 2026 · code branché ≠ usage réel validé
+              Audit du 8 septembre 2026, complété le 14 septembre 2026 · code branché ≠ usage réel validé
             </p>
           </div>
           <button

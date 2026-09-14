@@ -3,12 +3,14 @@
   "ext": "js,mjs,cjs,json",
   "ignore": [
     "data/**",
+    "data-test-*/**",
     "node_modules/**",
     "*.log",
     "*.sqlite",
     "*.sqlite-wal",
     "*.sqlite-shm",
-    "*.lance"
+    "*.lance",
+    "**/*.lance/**"
   ],
   "delay": 500
 }

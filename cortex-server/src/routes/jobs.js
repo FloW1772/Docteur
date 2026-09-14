@@ -98,10 +98,16 @@ export function createJobsRoute() {
   });
 
   // PUT /api/jobs/:id — update progress fields
+  // 404 here is expected/routine, not a bug: jobs are intentionally
+  // in-memory only (see comment at top of file) and are wiped by any server
+  // restart. The client (cortexClient.updateJob) already treats this as
+  // non-fatal and ignores it — `code: 'JOB_NOT_FOUND'` lets a caller that
+  // does care (e.g. to stop a local progress mirror) distinguish this from
+  // an unrelated server error, without needing to parse the message text.
   route.put('/jobs/:id', async (c) => {
     const id  = c.req.param('id');
     const job = jobs.get(id);
-    if (!job) return c.json({ error: 'not found' }, 404);
+    if (!job) return c.json({ error: 'not found', code: 'JOB_NOT_FOUND' }, 404);
     const body = await c.req.json().catch(() => ({}));
     if (body.current      !== undefined) job.current      = Number(body.current);
     if (body.currentLabel !== undefined) job.currentLabel = String(body.currentLabel);

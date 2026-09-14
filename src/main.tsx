@@ -1,10 +1,10 @@
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
 import * as THREE from 'three';
 import './styles/globals.css';
-import App from './App';
 import { initMobilePerformanceMode } from './lib/useMobile';
+import { ServerStartup } from './ServerStartup';
 
 // In dev mode, unregister any stale SW (from previous production builds on
 // localhost) so it never intercepts Vite's HMR / @vite/client requests.
@@ -50,40 +50,6 @@ function patchThreeTexture3DUploadDefaults(): void {
 }
 
 patchThreeTexture3DUploadDefaults();
-
-
-function ServerStartup() {
-  const [ready, setReady] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const started = performance.now();
-    let attempts = 0;
-    async function probe() {
-      attempts++;
-      try {
-        const response = await fetch(`${location.protocol}//${location.hostname}:3001/api/ping`, { signal: AbortSignal.timeout(2000) });
-        if (response.ok && !cancelled) {
-          console.info('[startup] backend ready before App mount', { elapsedMs: Math.round(performance.now() - started), attempts, at: new Date().toISOString() });
-          setReady(true);
-          return;
-        }
-      } catch { /* Only the readiness probe runs until the server listens. */ }
-      if (!cancelled) {
-        setElapsed(Math.round((performance.now() - started) / 1000));
-        timer = setTimeout(probe, Math.min(5000, 500 * 2 ** Math.min(attempts, 4)));
-      }
-    }
-    void probe();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
-  if (ready) return <App />;
-  return <div role="status" style={{ padding: 40, color: '#f0eaff' }}>
-    Connexion au serveur en cours... {elapsed}s
-    {elapsed >= 15 && <button onClick={() => setReady(true)} style={{ display: 'block', marginTop: 20 }}>Ouvrir la copie hors ligne</button>}
-  </div>;
-}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

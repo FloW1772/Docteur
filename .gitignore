@@ -1,7 +1,10 @@
 # ── Secrets / environment ──────────────────────────────────────────────────
 # API keys (Gemini, Groq, OpenRouter, Anthropic, OpenAI), local overrides.
+# .env.* alone would also hide *.env.example — carve that back out explicitly
+# so example/template env files stay versioned.
 .env
 .env.*
+!.env.example
 .env.local
 .env.production
 
@@ -10,6 +13,10 @@
 # images, backups, watched inbox, imported corpus, uploaded/processed files,
 # temp audio/video from transcription — all personal, never versioned.
 cortex-server/data/
+
+# ── Test scratch DBs (recreated from scratch by the tests themselves via
+# fs.rmSync + initSqlite on every run — never meant to hold real content) ───
+cortex-server/data-test-*/
 
 # ── TLS certificates (mobile/HTTPS dev mode) ─────────────────────────────────
 certs/
@@ -23,6 +30,8 @@ docteur-voice/node_modules/
 # ── Build output ──────────────────────────────────────────────────────────
 dist/
 build/
+.vite/
+coverage/
 
 # ── Logs ────────────────────────────────────────────────────────────────────
 *.log
@@ -31,6 +40,12 @@ build/
 tmp/
 .tmp/
 .cache/
+*.tmp
+
+# ── Ad hoc E2E/manual-QA artifacts (neurons, agents, scripts created and
+# cleaned up during a testing pass are prefixed this way — guards against one
+# being committed by accident if cleanup is missed) ──────────────────────────
+__E2E_TEST__*
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 Thumbs.db

@@ -331,8 +331,14 @@ export function createRouterRoute({ services }) {
     // Traiter les providers OAuth (Claude Code / Codex — mode abonnement,
     // aucun coût API pour Docteur, donc jamais gaté par paying_apis_enabled).
     const OAUTH_PROVIDER_INSTANCES = { 'claude-oauth': claudeOAuthProvider, codex: codexProvider };
-    const oauthProviderResults = [];
-    for (const id of oauthProviders) {
+    // claude-oauth and codex are each checked by spawning the real CLI
+    // (isCliInstalled() + testKey() shell out to `claude`/`codex`) — ~3s and
+    // ~5s respectively. Run the two providers' checks in parallel (each
+    // provider's own two calls stay sequential, since testKey's result can
+    // depend on the CLI being installed) instead of one after another, which
+    // was making every /router/providers load take ~8s for no benefit — the
+    // two providers don't depend on each other.
+    const oauthProviderResults = await Promise.all(oauthProviders.map(async id => {
       const tester = TESTERS[id];
       const instance = OAUTH_PROVIDER_INSTANCES[id];
       let configured = false;
@@ -362,7 +368,7 @@ export function createRouterRoute({ services }) {
 
       const modeSetting = id === 'claude-oauth' ? (settings?.claude_mode ?? 'subscription') : (settings?.openai_mode ?? 'subscription');
 
-      oauthProviderResults.push({
+      return {
         id,
         label: PROVIDER_LABELS[id],
         kind: 'cloud',
@@ -388,8 +394,8 @@ export function createRouterRoute({ services }) {
         cooldown_remaining_ms: status.cooldown_remaining_ms,
         default_model: DEFAULT_MODELS[id],
         masked_key: null, // Pas de clé API masquée pour OAuth
-      });
-    }
+      };
+    }));
 
     // Traiter les providers locaux
     const localProviderResults = [];

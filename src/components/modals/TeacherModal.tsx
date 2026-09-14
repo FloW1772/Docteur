@@ -346,13 +346,24 @@ function LessonView({ path, steps, onRefresh, onFinished }: {
   const [submitting, setSubmitting] = useState(false);
   const [sources, setSources] = useState<{ id: string; title: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Set only when the answer actually came from a different provider than
+  // requested (Strict Local, or a runtime fallback after a cloud failure) —
+  // never left implying the originally-selected cloud provider answered.
+  const [fallbackNotice, setFallbackNotice] = useState<{ requested: string; actual: string; reason: string | null } | null>(null);
 
   const loadExplanation = useCallback(async (stepId: string) => {
     setLoadingExplain(true);
     setError(null);
+    setFallbackNotice(null);
     try {
-      const { step, sources_used } = await cortexClient.explainStep(path.id, stepId);
+      const { step, sources_used, model_used, requested_provider, fallback_reason } = await cortexClient.explainStep(path.id, stepId);
       setSources(sources_used ?? []);
+      if (requested_provider && requested_provider !== 'local' && model_used?.startsWith('local/')) {
+        // fallback_reason is already a sanitized, pre-written label from the
+        // backend (never a raw provider error or an internal code) — safe to
+        // render as-is.
+        setFallbackNotice({ requested: requested_provider, actual: 'Ollama (local)', reason: fallback_reason ?? null });
+      }
       onRefresh(path, steps.map(s => s.id === step.id ? step : s));
     } catch (err) {
       setError((err as Error).message);
@@ -414,6 +425,15 @@ function LessonView({ path, steps, onRefresh, onFinished }: {
       <div style={{ ...cardStyle, whiteSpace: 'pre-wrap', fontSize: 13, color: '#e2e8f0', lineHeight: 1.6 }}>
         {loadingExplain ? <span style={{ color: '#64748b' }}>Génération de l'explication…</span> : (activeStep.content || '—')}
       </div>
+
+      {fallbackNotice && (
+        <div style={{ fontSize: 11, color: '#f59e0b', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span>Provider demandé : {fallbackNotice.requested} · Provider utilisé : {fallbackNotice.actual} (repli)</span>
+          {fallbackNotice.reason && (
+            <span style={{ color: '#64748b' }}>Raison : {fallbackNotice.reason}</span>
+          )}
+        </div>
+      )}
 
       {sources.length > 0 && (
         <div style={{ fontSize: 11, color: '#64748b' }}>

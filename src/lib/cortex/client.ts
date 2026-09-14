@@ -1189,6 +1189,22 @@ export interface CandidatureSavedPrompt {
   updated_at:    string;
 }
 
+// Prompt Generator — bibliothèque de modèles ("Modèles"). Same shape/pattern
+// as CandidatureSavedPrompt above, plus category/description. The 5 templates
+// Docteur ships with are seeded server-side as ordinary rows (no is_system
+// flag) — editing/deleting one behaves exactly like a user-created template.
+export interface PromptTemplate {
+  id:            string;
+  name:          string;
+  category:      string;
+  description:   string;
+  prompt_text:   string;
+  order_index:   number;
+  last_used_at:  string | null;
+  created_at:    string;
+  updated_at:    string;
+}
+
 // ── Kiwix (archives ZIM) ──────────────────────────────────────────────────────
 
 export interface KiwixSettings {
@@ -1374,6 +1390,11 @@ export interface LearningPlanStep {
   summary: string;
 }
 
+// Fixed, safe vocabulary for why a Teacher call answered from the local
+// model instead of the cloud provider that was actually configured — never
+// the raw provider error text (see teacher.js's fallbackReasonFromError).
+export type TeacherFallbackReasonCode = 'strict_local' | 'provider_unavailable' | 'timeout' | 'network_error' | 'unknown';
+
 export interface LearningPath {
   id: string;
   subject: string;
@@ -1499,6 +1520,17 @@ export const cortexClient = {
       });
       if (!res.ok) throw new Error(`Deep capture text HTTP ${res.status}`);
       return res.json() as Promise<CaptureResult & { fallback?: boolean; reason?: string; model_used?: string }>;
+    } catch (e) {
+      // Deliberately never auto-retried here — this is a mutating call
+      // (creates a neuron) and retrying blind could create a duplicate.
+      // A dropped connection mid-request (cortex-server restarting, e.g.
+      // from a source edit under nodemon) surfaces as a plain TypeError
+      // with no HTTP status to show — give the user a clear, actionable
+      // message instead of a raw "Failed to fetch".
+      if (isNetworkError(e) && !(e instanceof Error && e.name === 'AbortError')) {
+        throw new Error('Cortex Server a redémarré pendant l\'opération. Réessayez.');
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
@@ -1517,6 +1549,14 @@ export const cortexClient = {
       });
       if (!res.ok) throw new Error(`Deep capture HTTP ${res.status}`);
       return res.json() as Promise<DeepCaptureResult>;
+    } catch (e) {
+      // See captureDeepPaste above — same reasoning: no auto-retry on a
+      // mutating call, but a dropped connection gets a clear message
+      // instead of a raw network error.
+      if (isNetworkError(e) && !(e instanceof Error && e.name === 'AbortError')) {
+        throw new Error('Cortex Server a redémarré pendant l\'opération. Réessayez.');
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
@@ -3415,6 +3455,76 @@ export const cortexClient = {
     return d.destinations;
   },
 
+  // ── Bibliothèque de modèles ("Modèles") ─────────────────────────────────────
+  // Purely local CRUD + a bookkeeping "touch" — none of these ever call an AI
+  // provider. Loading a template into the editor is the frontend's job
+  // (copies prompt_text into the request textarea); this client only fetches
+  // the text.
+
+  async getPromptTemplates(): Promise<PromptTemplate[]> {
+    const res = await apiFetch('/api/prompt-generator/templates', { method: 'GET' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Prompt templates list HTTP ${res.status}`);
+    }
+    const d = await res.json() as { templates: PromptTemplate[] };
+    return d.templates;
+  },
+
+  async createPromptTemplate(data: { name: string; category?: string; description?: string; prompt_text: string }): Promise<PromptTemplate> {
+    const res = await apiFetch('/api/prompt-generator/templates', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Prompt template create HTTP ${res.status}`);
+    }
+    const d = await res.json() as { template: PromptTemplate };
+    return d.template;
+  },
+
+  async updatePromptTemplate(id: string, updates: Partial<Pick<PromptTemplate, 'name' | 'category' | 'description' | 'prompt_text'>>): Promise<PromptTemplate> {
+    const res = await apiFetch(`/api/prompt-generator/templates/${encodeURIComponent(id)}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Prompt template update HTTP ${res.status}`);
+    }
+    const d = await res.json() as { template: PromptTemplate };
+    return d.template;
+  },
+
+  async deletePromptTemplate(id: string): Promise<void> {
+    const res = await apiFetch(`/api/prompt-generator/templates/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      throw new Error(err.error ?? `Prompt template delete HTTP ${res.status}`);
+    }
+  },
+
+  async reorderPromptTemplates(orderedIds: string[]): Promise<PromptTemplate[]> {
+    const res = await apiFetch('/api/prompt-generator/templates/reorder', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ ordered_ids: orderedIds }),
+    });
+    if (!res.ok) throw new Error(`Reorder prompt templates HTTP ${res.status}`);
+    const d = await res.json() as { templates: PromptTemplate[] };
+    return d.templates;
+  },
+
+  async touchPromptTemplate(id: string): Promise<PromptTemplate> {
+    const res = await apiFetch(`/api/prompt-generator/templates/${encodeURIComponent(id)}/touch`, { method: 'POST' });
+    if (!res.ok) throw new Error(`Touch prompt template HTTP ${res.status}`);
+    const d = await res.json() as { template: PromptTemplate };
+    return d.template;
+  },
+
   async sendGeneratedPrompt(id: string, data: { destinationId: string; prefillUsed: boolean }): Promise<{ event: PromptSendEvent; events: PromptSendEvent[] }> {
     const res = await apiFetch(`/api/prompt-generator/${id}/send`, {
       method:  'POST',
@@ -3463,15 +3573,25 @@ export const cortexClient = {
     }
   },
 
-  async updateJob(id: string, update: Partial<Pick<ServerJob, 'current' | 'currentLabel' | 'okCount' | 'fallbackCount' | 'errorCount'>>): Promise<void> {
-    if (!id) return;
+  // Returns false when the server no longer knows this job id (JOB_NOT_FOUND
+  // — routine after a cortex-server restart, since job tracking is
+  // intentionally in-memory only) so the caller can stop re-sending updates
+  // for a dead id instead of silently retrying it every debounce tick for
+  // the rest of a long-running local batch.
+  async updateJob(id: string, update: Partial<Pick<ServerJob, 'current' | 'currentLabel' | 'okCount' | 'fallbackCount' | 'errorCount'>>): Promise<boolean> {
+    if (!id) return false;
     try {
-      await apiFetch(`/api/jobs/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`/api/jobs/${encodeURIComponent(id)}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(update),
       }, 5_000);
-    } catch { /* non-critical, ignore */ }
+      return res.ok;
+    } catch {
+      // Network-level failure (e.g. server mid-restart) — not a confirmed
+      // "job gone", so don't tell the caller to stop; let it retry next tick.
+      return true;
+    }
   },
 
   async finishJob(id: string, summary: string, status: 'done' | 'error' = 'done'): Promise<void> {
@@ -3793,7 +3913,7 @@ export const cortexClient = {
     await apiFetch(`/api/teacher/paths/${id}`, { method: 'DELETE' });
   },
 
-  async explainStep(pathId: string, stepId: string): Promise<{ step: LearningPathStep; model_used: string; forced_local: boolean; sources_used?: { id: string; title: string }[] }> {
+  async explainStep(pathId: string, stepId: string): Promise<{ step: LearningPathStep; model_used: string; forced_local: boolean; requested_provider?: string | null; fallback_reason_code?: TeacherFallbackReasonCode | null; fallback_reason?: string | null; sources_used?: { id: string; title: string }[] }> {
     const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/explain`, { method: 'POST' }, 60_000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string; quota_hit?: boolean };

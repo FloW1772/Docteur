@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Wand2, X, Copy, Check, RefreshCw, Trash2, Star, Search, Send, Settings, Plus, ArrowUp, ArrowDown } from 'lucide-react';
+import { Wand2, X, Copy, Check, RefreshCw, Trash2, Star, Search, Send, Settings, Plus, ArrowUp, ArrowDown, Library } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
-import type { GeneratedPrompt, PromptGeneratorModelOption, PromptOutcome, PromptDestination, PromptSendEvent } from '../../lib/cortex/client';
+import type { GeneratedPrompt, PromptGeneratorModelOption, PromptOutcome, PromptDestination, PromptSendEvent, PromptTemplate } from '../../lib/cortex/client';
 
 const MAX_PREFILL_URL_LENGTH = 2000;
 
@@ -317,6 +317,145 @@ function DestinationsManager({
   );
 }
 
+// ── Bibliothèque de modèles ("Modèles") ───────────────────────────────────────
+// Loads a template's prompt_text into the editor (request textarea) — never
+// sends it anywhere, never calls generatePrompt(). Selecting a template is a
+// pure local copy: the loaded text is a plain string in React state from
+// then on, fully editable, and never overwrites the stored template row
+// (editing here edits the in-editor copy only; use the pencil icon to edit
+// the library entry itself).
+function TemplateLibrary({
+  templates, onReload, onLoad,
+}: {
+  templates: PromptTemplate[];
+  onReload: (list: PromptTemplate[]) => void;
+  onLoad: (text: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{ name: string; category: string; description: string; prompt_text: string }>({ name: '', category: '', description: '', prompt_text: '' });
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? templates.filter(t => t.name.toLowerCase().includes(q) || t.category.toLowerCase().includes(q) || t.description.toLowerCase().includes(q))
+    : templates;
+
+  const groups: { category: string; items: PromptTemplate[] }[] = [];
+  for (const t of filtered) {
+    let g = groups.find(g => g.category === t.category);
+    if (!g) { g = { category: t.category, items: [] }; groups.push(g); }
+    g.items.push(t);
+  }
+
+  function startEdit(t: PromptTemplate) {
+    setEditingId(t.id);
+    setEditForm({ name: t.name, category: t.category, description: t.description, prompt_text: t.prompt_text });
+    setFormError(null);
+  }
+
+  async function handleSaveEdit() {
+    if (!editingId) return;
+    if (!editForm.name.trim()) { setFormError('Nom requis'); return; }
+    if (!editForm.prompt_text.trim()) { setFormError('Prompt requis'); return; }
+    try {
+      await cortexClient.updatePromptTemplate(editingId, {
+        name: editForm.name.trim(),
+        category: editForm.category.trim() || 'Autres',
+        description: editForm.description.trim(),
+        prompt_text: editForm.prompt_text,
+      });
+      const list = await cortexClient.getPromptTemplates();
+      onReload(list);
+      setEditingId(null);
+    } catch (err) {
+      setFormError((err as Error).message);
+    }
+  }
+
+  async function handleDuplicate(t: PromptTemplate) {
+    try {
+      await cortexClient.createPromptTemplate({
+        name: `${t.name} (copie)`,
+        category: t.category,
+        description: t.description,
+        prompt_text: t.prompt_text,
+      });
+      const list = await cortexClient.getPromptTemplates();
+      onReload(list);
+    } catch { /* ignore */ }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      await cortexClient.deletePromptTemplate(id);
+      const list = await cortexClient.getPromptTemplates();
+      onReload(list);
+    } catch { /* ignore */ }
+  }
+
+  async function handleLoad(t: PromptTemplate) {
+    // Loads a COPY into the editor — the stored template row is untouched.
+    // touchPromptTemplate only bumps last_used_at bookkeeping; it never
+    // triggers an AI call or sends the prompt anywhere.
+    onLoad(t.prompt_text);
+    void cortexClient.touchPromptTemplate(t.id).catch(() => { /* non-critical */ });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 11, color: '#64748b' }}>
+        Clique sur un modèle pour charger une copie de son texte dans la zone « Demande » ci-dessous — reste entièrement modifiable avant toute génération. Aucun appel IA n'a lieu ici.
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Search size={12} color="#64748b" />
+        <input style={selectStyle} placeholder="Rechercher un modèle…" value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflowY: 'auto' }}>
+        {groups.map(g => (
+          <div key={g.category}>
+            <div style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace', letterSpacing: '0.04em', marginBottom: 4 }}>{g.category.toUpperCase()}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {g.items.map(t => (
+                <div key={t.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px' }}>
+                  {editingId === t.id ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <input style={selectStyle} placeholder="Nom" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} />
+                      <input style={selectStyle} placeholder="Catégorie" value={editForm.category} onChange={e => setEditForm({ ...editForm, category: e.target.value })} />
+                      <input style={selectStyle} placeholder="Description" value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} />
+                      <textarea style={{ ...selectStyle, resize: 'vertical', fontSize: 12 }} rows={6} value={editForm.prompt_text} onChange={e => setEditForm({ ...editForm, prompt_text: e.target.value })} />
+                      {formError && <div style={{ fontSize: 11, color: '#ff4d58' }}>{formError}</div>}
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" style={btnStyle} onClick={() => void handleSaveEdit()}>Enregistrer</button>
+                        <button type="button" style={iconBtnStyle} onClick={() => setEditingId(null)}>Annuler</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                      <button type="button" onClick={() => void handleLoad(t)} style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                        <div style={{ fontSize: 12, color: '#e2e8f0' }}>{t.name}</div>
+                        {t.description && <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>{t.description}</div>}
+                      </button>
+                      <button type="button" style={iconBtnStyle} onClick={() => void handleDuplicate(t)} title="Dupliquer"><Copy size={12} /></button>
+                      <button type="button" style={iconBtnStyle} onClick={() => startEdit(t)} title="Modifier"><Settings size={12} /></button>
+                      <button type="button" style={iconBtnStyle} onClick={() => void handleDelete(t.id)} title="Supprimer"><Trash2 size={12} color="#ff4d58" /></button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <div style={{ fontSize: 11, color: '#64748b' }}>Aucun modèle trouvé.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props) {
   const [request, setRequest]     = useState('');
   const [localModels, setLocalModels] = useState<PromptGeneratorModelOption[]>([]);
@@ -338,6 +477,9 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
   const [sendNotice, setSendNotice] = useState<{ text: string; link?: string } | null>(null);
   const [showDestinationSettings, setShowDestinationSettings] = useState(false);
 
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
+
   const allModels = [...localModels, ...cloudModels];
 
   const loadDestinations = useCallback(async () => {
@@ -348,6 +490,15 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
   }, []);
 
   useEffect(() => { void loadDestinations(); }, [loadDestinations]);
+
+  const loadTemplates = useCallback(async () => {
+    try {
+      const list = await cortexClient.getPromptTemplates();
+      setTemplates(list);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { void loadTemplates(); }, [loadTemplates]);
 
   const loadSendEvents = useCallback(async (promptId: string) => {
     try {
@@ -550,6 +701,14 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
           <span style={{ fontFamily: 'monospace', fontSize: 13, letterSpacing: '0.05em', color: '#e2e8f0', flex: 1 }}>GÉNÉRATEUR DE PROMPTS</span>
           <button
             type="button"
+            title="Modèles"
+            style={{ ...iconBtnStyle, color: showTemplateLibrary ? '#5ee7ff' : '#94a3b8' }}
+            onClick={() => setShowTemplateLibrary(v => !v)}
+          >
+            <Library size={15} />
+          </button>
+          <button
+            type="button"
             title="Destinations de prompts"
             style={{ ...iconBtnStyle, color: showDestinationSettings ? '#5ee7ff' : '#94a3b8' }}
             onClick={() => setShowDestinationSettings(v => !v)}
@@ -560,6 +719,17 @@ export default function PromptGeneratorModal({ onClose, strictLocalMode }: Props
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {showTemplateLibrary && (
+            <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 14 }}>
+              <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#e2e8f0', letterSpacing: '0.04em', display: 'block', marginBottom: 8 }}>MODÈLES</span>
+              <TemplateLibrary
+                templates={templates}
+                onReload={setTemplates}
+                onLoad={text => setRequest(text)}
+              />
+            </div>
+          )}
 
           {showDestinationSettings && (
             <div style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 14 }}>

@@ -383,6 +383,24 @@ export function initSqlite(sqlitePath) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Bibliothèque de modèles de prompts généraux (Prompt Generator) — même
+    -- principe que candidature_saved_prompts : les modèles fournis par
+    -- Docteur sont insérés ici comme lignes normales au premier chargement à
+    -- vide (seedDefaultPromptTemplatesIfEmpty), puis deviennent des lignes
+    -- utilisateur ordinaires, éditables/supprimables sans distinction —
+    -- jamais un neurone, jamais indexé.
+    CREATE TABLE IF NOT EXISTS prompt_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Autres',
+      description TEXT NOT NULL DEFAULT '',
+      prompt_text TEXT NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Idempotent migrations — ignore if column/index already exists
@@ -459,6 +477,8 @@ export function initSqlite(sqlitePath) {
       ON review_attempts(review_item_id, answered_at DESC);
     CREATE INDEX IF NOT EXISTS idx_candidature_saved_prompts_order
       ON candidature_saved_prompts(order_index ASC);
+    CREATE INDEX IF NOT EXISTS idx_prompt_templates_order
+      ON prompt_templates(order_index ASC);
   `);
 
   statements = {
@@ -2163,6 +2183,291 @@ export function touchCandidatePromptLastUsed(id) {
   if (!database) return null;
   database.prepare('UPDATE candidature_saved_prompts SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
   return getCandidatePromptById(id);
+}
+
+// ── Prompt Generator — bibliothèque de modèles ("Modèles") ───────────────────
+// Même principe que candidature_saved_prompts ci-dessus : les 5 modèles
+// fournis par Docteur sont insérés comme lignes normales au premier
+// chargement à vide, puis deviennent des lignes utilisateur ordinaires —
+// éditables et supprimables sans distinction avec un futur modèle ajouté par
+// l'utilisateur. Aucun flag is_system : le principe déjà validé ailleurs
+// dans ce fichier (candidature_saved_prompts) est de ne pas en avoir besoin.
+
+const DEFAULT_PROMPT_TEMPLATES = [
+  {
+    name: 'Présentation d’offre — Consultant / Entrepreneur',
+    category: 'Business',
+    description: 'Créer une présentation commerciale claire et accrocheuse à partir des caractéristiques d’une offre.',
+    prompt_text: `Tu es un expert en business model, positionnement commercial et pitch de vente.
+Tu accompagnes des entrepreneurs et consultants depuis 20 ans.
+
+Je souhaite présenter mon offre de manière claire, crédible et attractive.
+
+Mon activité :
+[ACTIVITÉ]
+
+Mon offre :
+[OFFRE]
+
+Client cible :
+[CLIENT_CIBLE]
+
+Problème principal résolu :
+[PROBLÈME]
+
+Bénéfices principaux :
+[BÉNÉFICES]
+
+Éléments différenciants :
+[DIFFÉRENCIATION]
+
+Contraintes ou informations complémentaires :
+[CONTEXTE]
+
+Rédige une présentation accrocheuse de mon offre.
+
+La longueur doit être adaptée à un usage professionnel classique.
+
+Le texte doit :
+- présenter clairement la valeur de l'offre ;
+- mettre en avant les bénéfices pour le client ;
+- éviter les promesses exagérées ;
+- utiliser un langage naturel, professionnel et convaincant ;
+- aboutir à une proposition de valeur facilement compréhensible.
+
+S'il manque une information réellement nécessaire, pose-moi quelques questions ciblées avant de rédiger.
+
+Prépare-toi ensuite à prendre en compte mes corrections et objections pour améliorer progressivement le pitch.`,
+  },
+  {
+    name: 'Prompting inversé — Reproduire un style de contenu',
+    category: 'Prompting',
+    description: 'Analyser un exemple de contenu et reconstruire un prompt permettant d’obtenir un résultat du même type.',
+    prompt_text: `Je vais te fournir un exemple de contenu dont j'apprécie particulièrement la rédaction.
+
+Effectue un travail de prompting inversé afin de construire un prompt capable de générer un nouveau contenu du même type, sans simplement recopier le texte original.
+
+Analyse notamment :
+
+- la structure globale ;
+- l'ordre des différentes parties ;
+- les enchaînements logiques ;
+- la manière d'introduire le sujet ;
+- la construction de l'argumentation ;
+- la longueur et le rythme des paragraphes ;
+- la posture rédactionnelle ;
+- le ton ;
+- le registre de langue ;
+- le niveau de technicité ;
+- l'utilisation éventuelle de storytelling ;
+- les appels à l'action ;
+- les techniques de persuasion employées.
+
+Exemple à analyser :
+
+[CONTENU_EXEMPLE]
+
+Ta réponse doit contenir :
+
+1. une analyse synthétique de la structure et du style ;
+2. les principes rédactionnels importants à reproduire ;
+3. un prompt final prêt à être utilisé avec un autre sujet.
+
+Le prompt final doit reproduire les caractéristiques générales du contenu sans demander de copier des formulations spécifiques du texte original.`,
+  },
+  {
+    name: 'Transformer une photo en portrait professionnel',
+    category: 'Image',
+    description: 'Transformer une photo fournie par l’utilisateur en portrait professionnel soigné. Nécessite une image fournie manuellement — Docteur ne sélectionne jamais de photo personnelle automatiquement.',
+    prompt_text: `Je suis la personne présente sur l'image fournie.
+
+Transforme cette photo en portrait professionnel propre, naturel et soigné.
+
+Conserve mon identité et mes principaux traits du visage.
+
+Applique le style suivant :
+
+- tenue professionnelle avec chemise bleue ;
+- cheveux proprement coiffés ;
+- apparence naturelle ;
+- éclairage de studio doux et équilibré ;
+- cadrage professionnel ;
+- fond de bureau élégant légèrement flouté ;
+- profondeur de champ réaliste ;
+- rendu photographique crédible ;
+- couleurs naturelles ;
+- retouches discrètes.
+
+Évite :
+- de modifier fortement mon visage ;
+- l'effet peau plastique ;
+- les proportions irréalistes ;
+- les retouches excessives ;
+- le rendu artificiel typique d'une image générée.
+
+Le résultat doit pouvoir être utilisé pour :
+LinkedIn, CV, profil professionnel ou site d'entreprise.`,
+  },
+  {
+    name: 'Résumé court et accrocheur',
+    category: 'Rédaction',
+    description: 'Condense un texte en deux phrases maximum tout en améliorant son impact.',
+    prompt_text: `Résume le texte suivant en deux phrases maximum.
+
+Rends le résultat plus clair, fluide et accrocheur tout en conservant fidèlement les informations essentielles.
+
+Évite :
+- les informations inventées ;
+- les répétitions ;
+- le jargon inutile ;
+- les formulations exagérées.
+
+Texte :
+
+[TEXTE]`,
+  },
+  {
+    name: 'CV optimisé ATS',
+    category: 'Emploi',
+    description: 'Créer ou améliorer un CV ciblé pour une offre d’emploi et les systèmes ATS.',
+    prompt_text: `Tu es expert en recrutement, rédaction de CV et systèmes ATS.
+
+Je souhaite candidater au poste suivant :
+
+[POSTE]
+
+Voici l'offre d'emploi si elle est disponible :
+
+[OFFRE_EMPLOI]
+
+Voici mes informations :
+
+Nom :
+[NOM]
+
+Titre professionnel :
+[TITRE]
+
+Expériences :
+[EXPÉRIENCES]
+
+Compétences :
+[COMPÉTENCES]
+
+Formation :
+[FORMATION]
+
+Certifications :
+[CERTIFICATIONS]
+
+Langues :
+[LANGUES]
+
+Autres informations pertinentes :
+[INFORMATIONS]
+
+Crée un CV professionnel optimisé pour les ATS.
+
+Consignes :
+
+- identifier les compétences et mots-clés pertinents présents dans l'offre ;
+- intégrer naturellement les mots-clés réellement compatibles avec mon expérience ;
+- ne jamais inventer une compétence ou une expérience ;
+- reformuler mes missions avec des verbes d'action ;
+- privilégier des réalisations concrètes lorsque les informations disponibles le permettent ;
+- utiliser des titres de sections standards facilement compris par les ATS ;
+- éviter les éléments décoratifs susceptibles de gêner l'analyse automatique ;
+- adopter un ton professionnel, moderne et factuel ;
+- rendre le document facile à lire pour un recruteur humain.
+
+Si des informations importantes manquent, indique précisément lesquelles au lieu de les inventer.`,
+  },
+];
+
+function parsePromptTemplate(row) {
+  if (!row) return null;
+  return { ...row };
+}
+
+function seedDefaultPromptTemplatesIfEmpty() {
+  if (!database) return;
+  const { n } = database.prepare('SELECT COUNT(*) as n FROM prompt_templates').get();
+  if (n > 0) return;
+  const now = new Date().toISOString();
+  const insert = database.prepare(`
+    INSERT INTO prompt_templates (id, name, category, description, prompt_text, order_index, last_used_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+  `);
+  DEFAULT_PROMPT_TEMPLATES.forEach((p, index) => {
+    insert.run(crypto.randomUUID(), p.name, p.category, p.description, p.prompt_text, index, now, now);
+  });
+}
+
+export function getAllPromptTemplates() {
+  if (!database) return [];
+  seedDefaultPromptTemplatesIfEmpty();
+  return database.prepare(`
+    SELECT * FROM prompt_templates ORDER BY order_index ASC, created_at ASC
+  `).all().map(parsePromptTemplate);
+}
+
+export function getPromptTemplateById(id) {
+  if (!database) return null;
+  return parsePromptTemplate(database.prepare('SELECT * FROM prompt_templates WHERE id = ?').get(id));
+}
+
+export function insertPromptTemplate({ name, category, description, prompt_text, order_index }) {
+  if (!database) return null;
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  let orderIndex = order_index;
+  if (orderIndex === undefined || orderIndex === null) {
+    const { maxOrder } = database.prepare('SELECT MAX(order_index) as maxOrder FROM prompt_templates').get();
+    orderIndex = (maxOrder ?? -1) + 1;
+  }
+  database.prepare(`
+    INSERT INTO prompt_templates (id, name, category, description, prompt_text, order_index, last_used_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+  `).run(id, name, category ?? 'Autres', description ?? '', prompt_text, orderIndex, now, now);
+  return getPromptTemplateById(id);
+}
+
+export function updatePromptTemplate(id, updates) {
+  if (!database) return null;
+  const fields = [];
+  const vals   = [];
+  if (updates.name        !== undefined) { fields.push('name = ?');        vals.push(updates.name); }
+  if (updates.category    !== undefined) { fields.push('category = ?');    vals.push(updates.category); }
+  if (updates.description !== undefined) { fields.push('description = ?'); vals.push(updates.description); }
+  if (updates.prompt_text !== undefined) { fields.push('prompt_text = ?'); vals.push(updates.prompt_text); }
+  if (updates.order_index !== undefined) { fields.push('order_index = ?'); vals.push(updates.order_index); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE prompt_templates SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  return getPromptTemplateById(id);
+}
+
+export function deletePromptTemplate(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM prompt_templates WHERE id = ?').run(id);
+}
+
+export function reorderPromptTemplates(orderedIds) {
+  if (!database) return [];
+  const update = database.prepare('UPDATE prompt_templates SET order_index = ?, updated_at = ? WHERE id = ?');
+  const now = new Date().toISOString();
+  const txn = database.transaction((ids) => {
+    ids.forEach((id, index) => update.run(index, now, id));
+  });
+  txn(orderedIds);
+  return getAllPromptTemplates();
+}
+
+export function touchPromptTemplateLastUsed(id) {
+  if (!database) return null;
+  database.prepare('UPDATE prompt_templates SET last_used_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  return getPromptTemplateById(id);
 }
 
 // ── Veille — réglages (niveau de détail mémorisé) ─────────────────────────────

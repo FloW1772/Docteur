@@ -6,6 +6,9 @@ import {
   getRouterSettings,
   getPromptDestinations, setPromptDestinations,
   recordPromptSendEvent, getPromptSendEventsForGeneration,
+  getAllPromptTemplates, getPromptTemplateById, insertPromptTemplate,
+  updatePromptTemplate, deletePromptTemplate, reorderPromptTemplates,
+  touchPromptTemplateLastUsed,
 } from '../lib/sqlite.js';
 import { listAvailableModels, buildDraftMessages, buildReviewMessages, parseReviewOutput } from '../lib/prompt-generator.js';
 import { runAiTask } from '../lib/router.js';
@@ -128,6 +131,107 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
     const next = list.filter(d => d.id !== id);
     setPromptDestinations(next);
     return c.json({ destinations: next, ok: true });
+  });
+
+  // ── Bibliothèque de modèles de prompts ("Modèles") ──────────────────────────
+  // Même principe que candidature_saved_prompts (cortex-server/src/lib/sqlite.js) :
+  // 5 modèles fournis par Docteur, insérés comme lignes normales au premier
+  // chargement à vide, puis éditables/supprimables sans distinction avec un
+  // modèle ajouté par l'utilisateur — aucun appel IA/cloud n'a lieu ici,
+  // sélectionner un modèle ne fait que renvoyer son texte au frontend.
+
+  route.get('/prompt-generator/templates', (c) => {
+    try {
+      const templates = getAllPromptTemplates();
+      return c.json({ templates }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATES_LIST_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.post('/prompt-generator/templates', async (c) => {
+    const body        = await c.req.json().catch(() => null);
+    const name        = String(body?.name ?? '').trim();
+    const promptText  = String(body?.prompt_text ?? '').trim();
+    if (!name)       return c.json({ error: 'name requis' }, 400);
+    if (!promptText) return c.json({ error: 'prompt_text requis' }, 400);
+    try {
+      const created = insertPromptTemplate({
+        name,
+        prompt_text: promptText,
+        category: String(body?.category ?? '').trim() || 'Autres',
+        description: String(body?.description ?? '').trim(),
+      });
+      if (logger) logger.info({ template_id: created?.id }, 'PROMPT_TEMPLATE_CREATED');
+      return c.json({ template: created }, 201);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_CREATE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  // Declared before /:id so it doesn't get swallowed by the param route.
+  route.put('/prompt-generator/templates/reorder', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const orderedIds = Array.isArray(body?.ordered_ids) ? body.ordered_ids : null;
+    if (!orderedIds) return c.json({ error: 'ordered_ids requis' }, 400);
+    try {
+      const templates = reorderPromptTemplates(orderedIds);
+      if (logger) logger.info({ count: orderedIds.length }, 'PROMPT_TEMPLATES_REORDERED');
+      return c.json({ templates }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATES_REORDER_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.put('/prompt-generator/templates/:id', async (c) => {
+    const id   = c.req.param('id');
+    const body = await c.req.json().catch(() => null);
+    if (!getPromptTemplateById(id)) return c.json({ error: 'modèle introuvable' }, 404);
+    const updates = {};
+    if (typeof body?.name === 'string')        updates.name = body.name.trim();
+    if (typeof body?.category === 'string')    updates.category = body.category.trim() || 'Autres';
+    if (typeof body?.description === 'string') updates.description = body.description.trim();
+    if (typeof body?.prompt_text === 'string') updates.prompt_text = body.prompt_text.trim();
+    try {
+      const updated = updatePromptTemplate(id, updates);
+      if (logger) logger.info({ template_id: id }, 'PROMPT_TEMPLATE_UPDATED');
+      return c.json({ template: updated }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_UPDATE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  route.delete('/prompt-generator/templates/:id', (c) => {
+    const id = c.req.param('id');
+    if (!getPromptTemplateById(id)) return c.json({ error: 'modèle introuvable' }, 404);
+    try {
+      deletePromptTemplate(id);
+      if (logger) logger.info({ template_id: id }, 'PROMPT_TEMPLATE_DELETED');
+      return c.json({ ok: true }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_DELETE_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
+  });
+
+  // Marks a template as "just loaded into the editor" — never triggers an AI
+  // call or sends the prompt anywhere; purely a last_used_at bookkeeping hit,
+  // mirroring candidature's /prompts/:id/touch.
+  route.post('/prompt-generator/templates/:id/touch', (c) => {
+    const id = c.req.param('id');
+    const existing = getPromptTemplateById(id);
+    if (!existing) return c.json({ error: 'modèle introuvable' }, 404);
+    try {
+      const updated = touchPromptTemplateLastUsed(id);
+      return c.json({ template: updated }, 200);
+    } catch (err) {
+      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_TOUCH_ERROR');
+      return c.json({ error: err.message }, 500);
+    }
   });
 
   // ── GET /prompt-generator — list with filters ───────────────────────────────

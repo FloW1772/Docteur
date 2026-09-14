@@ -2572,13 +2572,20 @@ export default function App() {
       // Debounced update every 2 s
       if (jobSyncTimerRef.current) clearTimeout(jobSyncTimerRef.current);
       jobSyncTimerRef.current = setTimeout(() => {
-        void cortexClient.updateJob(jobIdRef.current, {
+        cortexClient.updateJob(jobIdRef.current, {
           current:      batchProgress.current,
           currentLabel: batchProgress.currentLabel,
           okCount:      batchProgress.okCount,
           fallbackCount: batchProgress.fallbackCount,
           errorCount:   batchProgress.errorCount,
-        });
+        }).then(found => {
+          // Server no longer knows this job (e.g. cortex-server restarted
+          // mid-batch — job tracking is in-memory only). The local batch
+          // itself is unaffected and keeps running; just stop mirroring its
+          // progress to a dead server-side id so the next tick doesn't
+          // pointlessly retry it for the rest of a long batch.
+          if (!found) jobIdRef.current = '';
+        }).catch(() => { /* non-critical */ });
       }, 2_000);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

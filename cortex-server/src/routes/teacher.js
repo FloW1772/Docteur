@@ -14,6 +14,85 @@ import {
 } from '../lib/sqlite.js';
 import { normalizeTeacherRegister, teacherRegisterInstruction, TEACHER_REGISTERS, TEACHER_REGISTER_LABELS } from '../lib/teacher-register.js';
 import { isStrictLocalMode } from '../lib/strict-local.js';
+import { ErrorCategory } from '../lib/provider-errors.js';
+
+// Errors that mean "the network call went through but produced nothing
+// usable" (e.g. OpenRouter's free tier occasionally returning an empty
+// choices[0].message.content — observed live, see test-teacher-fallback.mjs)
+// or "the provider itself is down/slow right now". These are worth one local
+// retry rather than failing the whole learning step, since Ollama is already
+// installed for most users here. AUTH_FAILED/QUOTA_EXCEEDED are deliberately
+// excluded — those need the user to fix configuration, not a silent fallback
+// that would hide a misconfigured key behind an unrelated local answer.
+const RETRY_LOCAL_CATEGORIES = new Set([
+  ErrorCategory.UNKNOWN,
+  ErrorCategory.PROVIDER_UNAVAILABLE,
+  ErrorCategory.TIMEOUT,
+  ErrorCategory.NETWORK_ERROR,
+]);
+
+// Maps an internal ErrorCategory to a fixed, safe vocabulary for the
+// frontend — never the raw provider error text. Provider error messages can
+// embed arbitrary upstream content (some providers echo back request
+// fragments, and router.js's /router/test/:provider route already has to
+// aggressively strip API key fragments from similar messages elsewhere in
+// this codebase) — a Teacher fallback response must never carry that risk,
+// since fallback_reason is client-visible UI text, not a server log.
+const FALLBACK_REASON_CODES = {
+  [ErrorCategory.UNKNOWN]:              'unknown',
+  [ErrorCategory.PROVIDER_UNAVAILABLE]: 'provider_unavailable',
+  [ErrorCategory.TIMEOUT]:              'timeout',
+  [ErrorCategory.NETWORK_ERROR]:        'network_error',
+};
+
+const FALLBACK_REASON_LABELS = {
+  strict_local:          'Mode Strict Local actif',
+  provider_unavailable:  'Le fournisseur cloud est actuellement indisponible',
+  timeout:               'Le fournisseur cloud n\'a pas répondu à temps',
+  network_error:         'Impossible de joindre le fournisseur cloud',
+  unknown:               'Le fournisseur cloud n\'a pas produit de réponse exploitable',
+};
+
+// Builds the client-safe fallback description from a caught provider error —
+// a fixed code plus a fixed, pre-written label. Never forwards err.message.
+function fallbackReasonFromError(err) {
+  const code = FALLBACK_REASON_CODES[err?.category] ?? 'unknown';
+  return { code, label: FALLBACK_REASON_LABELS[code] };
+}
+
+// Same idea as FALLBACK_REASON_LABELS but for the general "the operation
+// failed outright" case (no local fallback applies — e.g. AUTH_FAILED,
+// CONTEXT_TOO_LONG — categories RETRY_LOCAL_CATEGORIES deliberately excludes,
+// since those need the user to act, not a silent local answer). Covers every
+// ErrorCategory a provider can throw, not just the fallback-eligible subset.
+const OPERATION_ERROR_LABELS = {
+  [ErrorCategory.MODEL_UNAVAILABLE]:      'Le modèle sélectionné n\'est pas disponible chez ce fournisseur.',
+  [ErrorCategory.QUOTA_EXCEEDED]:         'Quota atteint chez ce fournisseur cloud — réessaie plus tard ou choisis un autre modèle Professeur.',
+  [ErrorCategory.RATE_LIMITED]:           'Trop de requêtes envoyées à ce fournisseur cloud — réessaie dans un instant.',
+  [ErrorCategory.AUTH_FAILED]:            'Authentification refusée par ce fournisseur cloud — vérifie la clé API dans Paramètres.',
+  [ErrorCategory.PROVIDER_UNAVAILABLE]:   'Le fournisseur cloud est actuellement indisponible.',
+  [ErrorCategory.CONTEXT_TOO_LONG]:       'Le contenu à traiter est trop long pour ce modèle.',
+  [ErrorCategory.CAPABILITY_UNSUPPORTED]: 'Cette action n\'est pas prise en charge par ce modèle.',
+  [ErrorCategory.TIMEOUT]:                'Le fournisseur cloud n\'a pas répondu à temps.',
+  [ErrorCategory.NETWORK_ERROR]:          'Impossible de joindre le fournisseur cloud.',
+  [ErrorCategory.UNKNOWN]:                'Le fournisseur cloud n\'a pas produit de réponse exploitable.',
+};
+
+// Sanitizes any error before it reaches a c.json({ error }) response for a
+// Teacher route. err.category is only ever set by a provider module
+// (providers/*.js) — a Docteur-authored error (missing key, unknown
+// provider, isQuota-wrapped message) never sets it, and those messages are
+// safe to show as-is since Docteur wrote them itself, never echoing upstream
+// content. Any error carrying .category came from a real provider call and
+// its .message must never be forwarded verbatim — it can embed arbitrary
+// content a provider chose to echo back (seen with .category-bearing errors
+// elsewhere in this codebase; router.js's /router/test/:provider route has
+// to aggressively strip API key fragments from similar messages).
+function safeOperationErrorMessage(err, prefix) {
+  if (!err?.category) return err?.message ?? 'Erreur inconnue';
+  const label = OPERATION_ERROR_LABELS[err.category] ?? OPERATION_ERROR_LABELS[ErrorCategory.UNKNOWN];
+  return prefix ? `${prefix} : ${label}` : label;
+}
 
 const STRICT_LOCAL_ERROR = {
   error: 'Mode strictement local activé — le modèle Professeur configuré est un modèle cloud, désactivé pour le moment. Choisis un modèle local dans Paramètres.',
@@ -61,19 +140,40 @@ function resolveEffectiveTeacherModel() {
   const requested = settings.model || DEFAULT_TEACHER_MODEL;
   const { provider } = parseModelId(requested);
   if (strictLocal && provider !== 'local') {
-    return { modelId: 'local', provider: 'local', forcedLocal: true };
+    // Strict Local forced this before any network call was attempted —
+    // distinct from a runtime fallback (see callTeacherModel's catch
+    // blocks), so the caller can tell "you asked for X, Strict Local
+    // blocked it" apart from "X was tried and failed".
+    return {
+      modelId: 'local', provider: 'local', forcedLocal: true, requestedProvider: provider,
+      fallbackReasonCode: 'strict_local', fallbackReasonLabel: FALLBACK_REASON_LABELS.strict_local,
+    };
   }
-  return { modelId: requested, provider, forcedLocal: false };
+  return { modelId: requested, provider, forcedLocal: false, requestedProvider: provider, fallbackReasonCode: null, fallbackReasonLabel: null };
+}
+
+// requestedProvider/fallbackReasonCode/fallbackReasonLabel let the caller
+// (and the UI, via model_used/requested_provider/fallback_reason_code in the
+// route response) show the truth when a cloud call silently degrades to
+// local — e.g. "Provider demandé : OpenRouter · Provider utilisé : Ollama
+// (repli après échec)" — rather than letting the user believe the
+// originally-selected cloud provider produced the answer. forcedLocal alone
+// (Strict Local vs runtime fallback) was not enough to say *why* local was
+// used — but the *why* must always be one of the fixed, pre-written labels
+// in FALLBACK_REASON_LABELS, never the raw provider error text (which can
+// carry arbitrary upstream content the provider chose to echo back).
+async function callLocalTeacherModel({ messages, ollamaClient, forcedLocal, requestedProvider = 'local', fallbackReasonCode = null, fallbackReasonLabel = null }) {
+  const localModel = getRouterSettings()?.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M';
+  const text = await chatCompletion(ollamaClient, localModel, messages);
+  incrementTeacherModelUsage('local');
+  return { text, model: `local/${localModel}`, provider: 'local', forcedLocal, requestedProvider, fallbackReasonCode, fallbackReasonLabel };
 }
 
 async function callTeacherModel({ messages, ollamaClient }) {
-  const { modelId, provider, forcedLocal } = resolveEffectiveTeacherModel();
+  const { modelId, provider, forcedLocal, requestedProvider, fallbackReasonCode, fallbackReasonLabel } = resolveEffectiveTeacherModel();
 
   if (provider === 'local') {
-    const localModel = modelId === 'local' ? (getRouterSettings()?.chat_model ?? 'mistral-nemo:12b-instruct-2407-q4_K_M') : parseModelId(modelId).model;
-    const text = await chatCompletion(ollamaClient, localModel, messages);
-    incrementTeacherModelUsage('local');
-    return { text, model: `local/${localModel}`, provider: 'local', forcedLocal };
+    return callLocalTeacherModel({ messages, ollamaClient, forcedLocal, requestedProvider, fallbackReasonCode, fallbackReasonLabel });
   }
 
   if (provider === 'groq') {
@@ -86,12 +186,20 @@ async function callTeacherModel({ messages, ollamaClient }) {
     try {
       const result = await groqProvider.complete({ apiKey: keys.groq_key, messages, model });
       incrementTeacherModelUsage(model);
-      return { text: result.text, model: result.model, provider: 'groq', forcedLocal };
+      return { text: result.text, model: result.model, provider: 'groq', forcedLocal, requestedProvider: 'groq', fallbackReasonCode: null, fallbackReasonLabel: null };
     } catch (err) {
       if (err.isQuota) {
         const e = new Error(`Quota Groq atteint pour ce modèle (${model}) — réessaie plus tard ou choisis un autre modèle Professeur dans Paramètres.`);
         e.isQuota = true;
         throw e;
+      }
+      // A network-level or empty-response failure from Groq itself (not a
+      // quota/auth problem the user needs to fix) — fall back to the local
+      // model once rather than failing the whole learning step outright.
+      // err.message is intentionally never forwarded — see fallbackReasonFromError.
+      if (RETRY_LOCAL_CATEGORIES.has(err.category)) {
+        const { code, label } = fallbackReasonFromError(err);
+        return callLocalTeacherModel({ messages, ollamaClient, forcedLocal: true, requestedProvider: 'groq', fallbackReasonCode: code, fallbackReasonLabel: label });
       }
       throw err;
     }
@@ -106,12 +214,16 @@ async function callTeacherModel({ messages, ollamaClient }) {
     try {
       const result = await geminiProvider.complete({ apiKey: keys.gemini_key, model: parseModelId(modelId).model, messages });
       incrementTeacherModelUsage(`gemini:${result.model}`);
-      return { text: result.text, model: `gemini/${result.model}`, provider: 'gemini', forcedLocal };
+      return { text: result.text, model: `gemini/${result.model}`, provider: 'gemini', forcedLocal, requestedProvider: 'gemini', fallbackReasonCode: null, fallbackReasonLabel: null };
     } catch (err) {
       if (err.isQuota) {
         const e = new Error('Quota Gemini atteint pour le modèle sélectionné — réessaie plus tard ou choisis un autre modèle Professeur dans Paramètres.');
         e.isQuota = true;
         throw e;
+      }
+      if (RETRY_LOCAL_CATEGORIES.has(err.category)) {
+        const { code, label } = fallbackReasonFromError(err);
+        return callLocalTeacherModel({ messages, ollamaClient, forcedLocal: true, requestedProvider: 'gemini', fallbackReasonCode: code, fallbackReasonLabel: label });
       }
       throw err;
     }
@@ -126,12 +238,23 @@ async function callTeacherModel({ messages, ollamaClient }) {
     try {
       const result = await openrouterProvider.complete({ apiKey: keys.openrouter_key, messages });
       incrementTeacherModelUsage(`openrouter:${openrouterProvider.FREE_MODEL}`);
-      return { text: result.text, model: result.model, provider: 'openrouter', forcedLocal };
+      return { text: result.text, model: result.model, provider: 'openrouter', forcedLocal, requestedProvider: 'openrouter', fallbackReasonCode: null, fallbackReasonLabel: null };
     } catch (err) {
       if (err.isQuota) {
         const e = new Error(`Quota OpenRouter atteint pour le modèle gratuit (${openrouterProvider.FREE_MODEL}) — réessaie plus tard ou choisis un autre modèle Professeur dans Paramètres.`);
         e.isQuota = true;
         throw e;
+      }
+      // OpenRouter's free tier has been observed live to occasionally return
+      // choices[0].message.content empty (classified UNKNOWN by
+      // providers/openrouter.js "OpenRouter: réponse vide") — most likely the
+      // model exhausting its internal "thinking" token budget with nothing
+      // left for visible output. Retrying the same free model immediately
+      // isn't guaranteed to help and spends another call; falling back once
+      // to the local model keeps this learning step from dying outright.
+      if (RETRY_LOCAL_CATEGORIES.has(err.category)) {
+        const { code, label } = fallbackReasonFromError(err);
+        return callLocalTeacherModel({ messages, ollamaClient, forcedLocal: true, requestedProvider: 'openrouter', fallbackReasonCode: code, fallbackReasonLabel: label });
       }
       throw err;
     }
@@ -453,7 +576,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       return c.json({ ok: false, error: `Provider inconnu pour le modèle "${model}".` });
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack, model }, 'teacher: settings validation failed');
-      return c.json({ ok: false, error: err.message });
+      return c.json({ ok: false, error: safeOperationErrorMessage(err) });
     }
   });
 
@@ -479,7 +602,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.error({ err: err.message, stack: err.stack }, 'teacher: plan generation failed');
       if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-      return c.json({ error: `Échec de la génération du plan : ${err.message}` }, 503);
+      return c.json({ error: safeOperationErrorMessage(err, 'Échec de la génération du plan') }, 503);
     }
 
     if (!Array.isArray(plan) || plan.length === 0) {
@@ -500,7 +623,14 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       plan: cleanPlan,
     });
 
-    return c.json({ path: getLearningPathById(id), model_used: planResult.model, forced_local: planResult.forcedLocal }, 201);
+    return c.json({
+      path: getLearningPathById(id),
+      model_used: planResult.model,
+      forced_local: planResult.forcedLocal,
+      requested_provider: planResult.requestedProvider,
+      fallback_reason_code: planResult.fallbackReasonCode,
+      fallback_reason: planResult.fallbackReasonLabel,
+    }, 201);
   });
 
   // ── Parcours — ajuster le plan avant de commencer ───────────────────────
@@ -592,7 +722,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: step explanation failed');
       if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-      return c.json({ error: `Échec de l'explication : ${err.message}` }, 503);
+      return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'explication') }, 503);
     }
 
     updateLearningPathStep(step.id, { content: result.text.trim() });
@@ -600,6 +730,18 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       step: getLearningPathStepById(step.id),
       model_used: result.model,
       forced_local: result.forcedLocal,
+      // Never let the UI imply the originally-selected cloud provider
+      // answered when a runtime failure silently fell back to local —
+      // requested_provider/fallback_reason_code make that explicit.
+      // fallback_reason_code is a fixed enum value ('strict_local' |
+      // 'provider_unavailable' | 'timeout' | 'network_error' | 'unknown' |
+      // null) and fallback_reason a pre-written, sanitized label to match —
+      // NEVER the raw upstream provider error text (see
+      // fallbackReasonFromError — provider error messages can carry
+      // arbitrary content some providers echo back from the request).
+      requested_provider: result.requestedProvider,
+      fallback_reason_code: result.fallbackReasonCode,
+      fallback_reason: result.fallbackReasonLabel,
       sources_used: neurons.map(n => ({ id: n.id, title: n.title })),
     });
   });
@@ -631,7 +773,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: comprehension eval failed');
       if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-      return c.json({ error: `Échec de l'évaluation : ${err.message}` }, 503);
+      return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
     }
 
     const evaluation = result.text.trim();
@@ -649,6 +791,9 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       validated,
       model_used: result.model,
       forced_local: result.forcedLocal,
+      requested_provider: result.requestedProvider,
+      fallback_reason_code: result.fallbackReasonCode,
+      fallback_reason: result.fallbackReasonLabel,
     });
   });
 
@@ -707,7 +852,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: recap generation failed');
       if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-      return c.json({ error: `Échec de la génération de la fiche : ${err.message}` }, 503);
+      return c.json({ error: safeOperationErrorMessage(err, 'Échec de la génération de la fiche') }, 503);
     }
 
     if (!services?.indexNeuron) return c.json({ error: 'Indexation des neurones indisponible' }, 503);
@@ -743,7 +888,16 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: review question generation failed (non-blocking)');
     }
 
-    return c.json({ path: getLearningPathById(path.id), neuron_id: neuronId, review_items_created: reviewItemsCreated }, 201);
+    return c.json({
+      path: getLearningPathById(path.id),
+      neuron_id: neuronId,
+      review_items_created: reviewItemsCreated,
+      model_used: result.model,
+      forced_local: result.forcedLocal,
+      requested_provider: result.requestedProvider,
+      fallback_reason_code: result.fallbackReasonCode,
+      fallback_reason: result.fallbackReasonLabel,
+    }, 201);
   });
 
   // ── Révision espacée — session du jour ───────────────────────────────────
@@ -767,7 +921,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     } catch (err) {
       logger?.warn({ err: err.message, stack: err.stack }, 'teacher: review answer eval failed');
       if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-      return c.json({ error: `Échec de l'évaluation : ${err.message}` }, 503);
+      return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
     }
 
     const wasCorrect = evalResult.correct === true;
