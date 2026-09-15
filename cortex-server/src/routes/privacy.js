@@ -28,10 +28,12 @@ export function createPrivacyRoute({ logger }) {
     const providers = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai'];
 
     for (const provider of providers) {
-      // Test 1: private content → must be BLOCKED
+      // Test 1: private content → must be BLOCKED.
+      // simulate: true — this is a synthetic self-test, not a real runtime
+      // leak attempt, so it must not write to the incident log (see guardCloudCall).
       let blockedOk = false;
       try {
-        guardCloudCall({ messages: markedMessages, provider, functionCalled: 'privacy-test' });
+        guardCloudCall({ messages: markedMessages, provider, functionCalled: 'privacy-test', simulate: true });
         blockedOk = false; // should have thrown
       } catch (e) {
         blockedOk = e.isPrivacyViolation === true;
@@ -40,7 +42,7 @@ export function createPrivacyRoute({ logger }) {
       // Test 2: neutral content → must PASS through (not blocked)
       let passOk = false;
       try {
-        guardCloudCall({ messages: neutralMessages, provider, functionCalled: 'privacy-test' });
+        guardCloudCall({ messages: neutralMessages, provider, functionCalled: 'privacy-test', simulate: true });
         passOk = true; // no throw = correct
       } catch {
         passOk = false;

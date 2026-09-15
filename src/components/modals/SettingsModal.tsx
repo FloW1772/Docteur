@@ -3026,21 +3026,27 @@ export default function SettingsModal({
                         : <AlertTriangle size={13} style={{ color: '#ff4d58' }} />
                       }
                       <span className="font-mono text-xs" style={{ color: privacyTestResult.ok ? '#3dffaa' : '#ff4d58', fontWeight: 600 }}>
-                        {privacyTestResult.ok ? 'ÉTANCHE — tous les providers bloquent les données privées' : 'FUITE DÉTECTÉE — vérifier le verrou'}
+                        {privacyTestResult.ok ? 'TEST D\'ÉTANCHÉITÉ : VALIDÉ — tous les providers bloquent les données privées' : 'ÉCHEC DU TEST D\'ÉTANCHÉITÉ — vérifier le verrou'}
                       </span>
                     </div>
+                    {!privacyTestResult.ok && (
+                      <p className="font-mono text-xs mb-2" style={{ color: '#5a4a7a', lineHeight: 1.5 }}>
+                        Ce test est synthétique et déterministe — aucune donnée réelle n'a été envoyée à un provider cloud.
+                        Un échec ici signale que le verrou de sortie doit être corrigé, pas qu'une fuite a eu lieu.
+                      </p>
+                    )}
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '3px 12px' }}>
-                      {['Provider', 'Privé bloqué', 'Neutre passé'].map(h => (
+                      {['Provider', 'Donnée privée', 'Donnée neutre'].map(h => (
                         <span key={h} className="font-mono" style={{ fontSize: 9, color: '#3d3060', letterSpacing: '0.08em' }}>{h}</span>
                       ))}
                       {privacyTestResult.results.map(r => (
                         <Fragment key={r.provider}>
                           <span className="font-mono text-xs" style={{ color: '#9080c0' }}>{r.provider}</span>
                           <span className="font-mono" style={{ fontSize: 11, color: r.blocked_private ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
-                            {r.blocked_private ? '✓' : '✗'}
+                            {r.blocked_private ? '✓ Bloquée' : '✕ Non bloquée'}
                           </span>
                           <span className="font-mono" style={{ fontSize: 11, color: r.passed_neutral ? '#3dffaa' : '#ff4d58', textAlign: 'center' }}>
-                            {r.passed_neutral ? '✓' : '✗'}
+                            {r.passed_neutral ? '✓ Autorisée' : '✕ Bloquée à tort'}
                           </span>
                         </Fragment>
                       ))}

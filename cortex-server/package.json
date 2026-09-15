@@ -7,6 +7,7 @@
     "test:external-agents": "node --test --test-timeout=20000 test-external-agents.mjs",
     "test:video": "node --experimental-test-module-mocks --test test-video-audio.mjs test-video-pipeline.mjs",
     "test:freellmapi": "node --test test-freellmapi.mjs",
+    "test:privacy": "node --test test-privacy-guard.mjs",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "dev:local": "cross-env LOCAL_NETWORK=true nodemon src/server.js",
