@@ -440,6 +440,136 @@ export interface CloudKeysMasked {
   pair_endpoint:     string | null;
 }
 
+// ── Génération d'images ──────────────────────────────────────────────────────
+
+export interface ImageGenCapabilities {
+  text_to_image: boolean;
+  image_to_image: boolean;
+  image_edit: boolean;
+  negative_prompt: boolean;
+  seed: boolean;
+  custom_size: boolean;
+}
+
+export interface ComfyUiProviderStatus {
+  available: boolean;
+  endpoint: string;
+  isLocal: boolean;
+  classification: 'local';
+  version?: string | null;
+  gpu?: Array<{ name: string | null; vramTotalMb: number | null; vramFreeMb: number | null }>;
+  checkpoints?: string[];
+  hasCompatibleModel?: boolean;
+  error?: string;
+  message?: string;
+}
+
+export interface CloudImageProviderStatus {
+  configured: boolean;
+  provider: string;
+  classification: 'free_tier' | 'credit' | 'quota';
+  freeTierNote: string;
+  billingCaveat?: string;
+  capabilities: ImageGenCapabilities;
+}
+
+export interface ImageGenProvidersStatus {
+  ok: boolean;
+  strictLocal: boolean;
+  providers: {
+    comfyui: ComfyUiProviderStatus;
+    cloudflare: CloudImageProviderStatus;
+    huggingface: CloudImageProviderStatus;
+    pollinations: CloudImageProviderStatus;
+  };
+}
+
+export interface ImageGenSettingsResult {
+  ok: boolean;
+  settings: {
+    comfyui_endpoint: string;
+    priority: 'local' | 'cloud';
+    free_cloud_only: boolean;
+    comfyuiIsLoopback: boolean;
+  };
+  keys: {
+    cloudflare_account_id: { configured: boolean; status: 'absent' | 'valid' | 'invalid' };
+    cloudflare_api_token:  { configured: boolean; status: 'absent' | 'valid' | 'invalid' };
+    huggingface_token:     { configured: boolean; status: 'absent' | 'valid' | 'invalid' };
+    pollinations_key:      { configured: boolean; status: 'absent' | 'valid' | 'invalid' };
+  };
+}
+
+export interface ImageGenerationResult {
+  image_id: string;
+  provider_requested: string;
+  provider_used: string;
+  model_used: string | null;
+  local: boolean;
+  fallback: boolean;
+  fallback_reason_code: string | null;
+  width: number;
+  height: number;
+  seed: number | null;
+  generation_ms: number;
+  job_id: string;
+  generation_id: string;
+}
+
+export interface ImageGenerationRow {
+  id: string;
+  image_id: string | null;
+  prompt: string;
+  negative_prompt: string | null;
+  provider_requested: string;
+  provider_used: string | null;
+  model_used: string | null;
+  local: number;
+  fallback: number;
+  fallback_reason_code: string | null;
+  width: number | null;
+  height: number | null;
+  seed: number | null;
+  status: string;
+  error_code: string | null;
+  generation_ms: number | null;
+  job_id: string | null;
+  neuron_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ComfyUiInstallState {
+  kind: 'none' | 'managed' | 'external';
+  path: string | null;
+  status: 'not_installed' | 'installed' | 'stopped' | 'running' | 'starting' | 'incomplete' | 'error';
+  version: string | null;
+  installedAt?: number | null;
+  startWithDocteur: boolean;
+  pid: number | null;
+  startedAt: number | null;
+  lastError?: string | null;
+}
+
+export interface ComfyUiReleaseInfo {
+  tag: string;
+  assetName: string;
+  url: string;
+  approxSizeBytes: number;
+  checksum: string | null;
+}
+
+export interface ImageModelCatalogEntry {
+  id: string;
+  name: string;
+  filename?: string;
+  source: string;
+  license?: string;
+  approxSizeGb: number;
+  capabilities: ImageGenCapabilities;
+  recommendedVramGb?: number;
+}
+
 export interface CloudMonthStat {
   provider:    string;
   chosen_model: string;
@@ -1108,6 +1238,12 @@ function parseWhisperSseChunks(parts: string[], onProgress: (p: WhisperProgress)
 // ── Image URL helper (absolute, points to cortex-server on port 3001) ────────
 export function getImageUrl(id: string): string {
   return `${BASE}/api/image/${encodeURIComponent(id)}`;
+}
+
+// Le backend renvoie des chemins relatifs (`/api/audio-player/file?...`) —
+// les résoudre contre BASE plutôt que l'origine du frontend (peuvent différer en dev).
+export function resolveApiUrl(pathOrUrl: string): string {
+  return /^https?:\/\//i.test(pathOrUrl) ? pathOrUrl : `${BASE}${pathOrUrl}`;
 }
 
 // ── Vision (image analysis, 100% local) ──────────────────────────────────────
@@ -2031,6 +2167,173 @@ export const cortexClient = {
 
   async deleteImage(id: string): Promise<void> {
     await apiFetch(`/api/image/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  // ── Génération d'images (ComfyUI local + cloud gratuit/quota) ────────────────
+
+  async getImageGenProvidersStatus(): Promise<ImageGenProvidersStatus> {
+    const res = await apiFetch('/api/image-generation/providers/status');
+    if (!res.ok) throw new Error(`Providers status HTTP ${res.status}`);
+    return res.json() as Promise<ImageGenProvidersStatus>;
+  },
+
+  async getImageGenSettings(): Promise<ImageGenSettingsResult> {
+    const res = await apiFetch('/api/image-generation/settings');
+    if (!res.ok) throw new Error(`Image gen settings HTTP ${res.status}`);
+    return res.json() as Promise<ImageGenSettingsResult>;
+  },
+
+  async setImageGenSettings(updates: Partial<{ comfyui_endpoint: string; priority: 'local' | 'cloud'; free_cloud_only: boolean }>): Promise<ImageGenSettingsResult> {
+    const res = await apiFetch('/api/image-generation/settings', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(updates),
+    });
+    if (!res.ok) throw new Error(`Set image gen settings HTTP ${res.status}`);
+    return res.json() as Promise<ImageGenSettingsResult>;
+  },
+
+  async setImageCloudKey(id: string, value: string | null): Promise<{ ok: boolean; configured: boolean }> {
+    const res = await apiFetch(`/api/image-generation/keys/${encodeURIComponent(id)}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ value }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Set image cloud key HTTP ${res.status}`);
+    return body;
+  },
+
+  async generateImage(params: {
+    prompt: string; negativePrompt?: string; provider?: string;
+    width?: number; height?: number; steps?: number; seed?: number;
+  }): Promise<ImageGenerationResult> {
+    const res = await apiFetch('/api/image-generation/generate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(params),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(body.error ?? `Generate image HTTP ${res.status}`) as Error & { errorCode?: string };
+      err.errorCode = body.error_code;
+      throw err;
+    }
+    return body as ImageGenerationResult;
+  },
+
+  async getImageGenerationHistory(): Promise<{ ok: boolean; generations: ImageGenerationRow[] }> {
+    const res = await apiFetch('/api/image-generation/history');
+    if (!res.ok) throw new Error(`Image generation history HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; generations: ImageGenerationRow[] }>;
+  },
+
+  async getImageGeneration(id: string): Promise<{ ok: boolean; generation: ImageGenerationRow }> {
+    const res = await apiFetch(`/api/image-generation/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`Image generation HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; generation: ImageGenerationRow }>;
+  },
+
+  // ── ComfyUI install/lifecycle management ──────────────────────────────────
+
+  async getComfyUiInstall(): Promise<{ ok: boolean; install: ComfyUiInstallState; defaultManagedPath: string; release: ComfyUiReleaseInfo }> {
+    const res = await apiFetch('/api/image-generation/comfyui/install');
+    if (!res.ok) throw new Error(`ComfyUI install status HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; install: ComfyUiInstallState; defaultManagedPath: string; release: ComfyUiReleaseInfo }>;
+  },
+
+  async startComfyUiInstall(destination?: string): Promise<{ ok: boolean; jobId: string; destination: string }> {
+    const res = await apiFetch('/api/image-generation/comfyui/install', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(destination ? { destination } : {}),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Start ComfyUI install HTTP ${res.status}`);
+    return body;
+  },
+
+  async useExistingComfyUiInstall(path: string): Promise<{ ok: boolean; install: ComfyUiInstallState }> {
+    const res = await apiFetch('/api/image-generation/comfyui/use-existing', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ path }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Use existing ComfyUI install HTTP ${res.status}`);
+    return body;
+  },
+
+  async detachComfyUiInstall(): Promise<{ ok: boolean; install: ComfyUiInstallState }> {
+    const res = await apiFetch('/api/image-generation/comfyui/detach', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Detach ComfyUI install HTTP ${res.status}`);
+    return body;
+  },
+
+  async startComfyUi(): Promise<{ ok: boolean; install: ComfyUiInstallState }> {
+    const res = await apiFetch('/api/image-generation/comfyui/start', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Start ComfyUI HTTP ${res.status}`);
+    return body;
+  },
+
+  async stopComfyUi(): Promise<{ ok: boolean; install: ComfyUiInstallState }> {
+    const res = await apiFetch('/api/image-generation/comfyui/stop', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Stop ComfyUI HTTP ${res.status}`);
+    return body;
+  },
+
+  async cancelComfyUiInstall(jobId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/image-generation/comfyui/install/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Cancel install HTTP ${res.status}`);
+    return body;
+  },
+
+  async uninstallComfyUi(deleteModels: boolean = false): Promise<{ ok: boolean }> {
+    const res = await apiFetch('/api/image-generation/comfyui/uninstall', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ deleteModels }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Uninstall ComfyUI HTTP ${res.status}`);
+    return body;
+  },
+
+  // ── Local model catalog / download / delete ───────────────────────────────
+
+  async getImageModelCatalog(): Promise<{ ok: boolean; catalog: ImageModelCatalogEntry[] }> {
+    const res = await apiFetch('/api/image-generation/models/catalog');
+    if (!res.ok) throw new Error(`Model catalog HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; catalog: ImageModelCatalogEntry[] }>;
+  },
+
+  async downloadImageModel(modelId: string): Promise<{ ok: boolean; jobId: string }> {
+    const res = await apiFetch('/api/image-generation/models/download', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ modelId }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Download model HTTP ${res.status}`);
+    return body;
+  },
+
+  async deleteImageModel(filename: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/image-generation/models/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Delete model HTTP ${res.status}`);
+    return body;
+  },
+
+  async cancelImageModelDownload(jobId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/image-generation/models/download/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `Cancel model download HTTP ${res.status}`);
+    return body;
   },
 
   // ── Vision (analyse d'image 100% locale — jamais de bascule cloud) ──────────

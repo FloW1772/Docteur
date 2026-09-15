@@ -34,6 +34,7 @@ import { createDownloadRoute } from './routes/download.js';
 import { createResearchRoute } from './routes/research.js';
 import { createStyleExamplesRoute } from './routes/style-examples.js';
 import { createImageRoute } from './routes/image.js';
+import { createImageGenerationRoute } from './routes/image-generation.js';
 import { createVisionRoute } from './routes/vision.js';
 import { createChatRoute } from './routes/chat.js';
 import { ensureImageDir } from './lib/image.js';
@@ -1620,6 +1621,7 @@ app.route('/api', createResearchRoute({
   fallbackChat: (messages) => chatCompletion(ollamaClient, env.ANSWER_MODEL, messages),
 }));
 app.route('/api', createImageRoute({ logger }));
+app.route('/api', createImageGenerationRoute({ logger }));
 app.route('/api', createVisionRoute({ ollamaClient, env, logger }));
 app.route('/api', createChatRoute({ ollamaClient, env, logger }));
 app.route('/api', createClarifyRoute({ logger }));

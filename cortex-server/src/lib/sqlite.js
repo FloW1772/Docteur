@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import * as secretStore from './secret-store.js';
+import { RADIO_STATIONS } from './radio-catalog.js';
 
 let database;
 let statements;
@@ -398,6 +399,33 @@ export function initSqlite(sqlitePath) {
       prompt_text TEXT NOT NULL,
       order_index INTEGER NOT NULL DEFAULT 0,
       last_used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Génération d'images — métadonnées uniquement ; les octets vivent dans
+    -- data/images via lib/image.js (même stockage que les uploads/neurones).
+    -- Jamais de clé/token ici : provider_used/provider_requested sont des ids
+    -- courts ('comfyui','cloudflare',...), rien de plus.
+    CREATE TABLE IF NOT EXISTS image_generations (
+      id TEXT PRIMARY KEY,
+      image_id TEXT,
+      prompt TEXT NOT NULL,
+      negative_prompt TEXT,
+      provider_requested TEXT NOT NULL,
+      provider_used TEXT,
+      model_used TEXT,
+      local INTEGER NOT NULL DEFAULT 0,
+      fallback INTEGER NOT NULL DEFAULT 0,
+      fallback_reason_code TEXT,
+      width INTEGER,
+      height INTEGER,
+      seed INTEGER,
+      status TEXT NOT NULL DEFAULT 'queued',
+      error_code TEXT,
+      generation_ms INTEGER,
+      job_id TEXT,
+      neuron_id TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -832,6 +860,98 @@ export function deleteSiteShortcut(name) {
   const next = { ...current };
   delete next[name];
   setMeta(SHORTCUTS_META, next);
+}
+
+// ── Image generation settings ─────────────────────────────────────────────────
+
+const IMAGE_GEN_SETTINGS_DEFAULTS = {
+  comfyui_endpoint:    'http://127.0.0.1:8188',
+  priority:            'local',  // 'local' | 'cloud' — which side the AUTO router tries first
+  free_cloud_only:     true,     // when true: never route to a provider not confirmed free/free-tier
+};
+
+export function getImageGenSettings() {
+  const stored = getMeta('image_gen_settings', {});
+  return { ...IMAGE_GEN_SETTINGS_DEFAULTS, ...stored };
+}
+
+export function setImageGenSettings(updates) {
+  const current = getImageGenSettings();
+  setMeta('image_gen_settings', { ...current, ...updates });
+}
+
+// Image-provider API keys — same DPAPI-backed secret store as CLOUD_PROVIDERS
+// above, kept in a separate id list since these are gated by free-only/strict
+// local logic specific to image generation (see image-router.js).
+const IMAGE_CLOUD_PROVIDERS = ['cloudflare_account_id', 'cloudflare_api_token', 'huggingface_token', 'pollinations_key'];
+
+export function getImageCloudKeyStatuses() {
+  const result = {};
+  for (const id of IMAGE_CLOUD_PROVIDERS) {
+    result[id] = secretStore.getSecretStatus(id);
+  }
+  return result;
+}
+
+export function setImageCloudKey(id, value) {
+  if (!IMAGE_CLOUD_PROVIDERS.includes(id)) throw new Error(`Clé image inconnue: ${id}`);
+  secretStore.setSecret(id, value || null);
+}
+
+export function getImageCloudKey(id) {
+  if (!IMAGE_CLOUD_PROVIDERS.includes(id)) return null;
+  return secretStore.getSecret(id);
+}
+
+// ── Image generation jobs (metadata) ──────────────────────────────────────────
+
+export function insertImageGeneration(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO image_generations (
+      id, prompt, negative_prompt, provider_requested, width, height, seed, status, job_id
+    ) VALUES (@id, @prompt, @negative_prompt, @provider_requested, @width, @height, @seed, @status, @job_id)
+  `).run({
+    id: row.id,
+    prompt: row.prompt,
+    negative_prompt: row.negativePrompt ?? null,
+    provider_requested: row.providerRequested,
+    width: row.width ?? null,
+    height: row.height ?? null,
+    seed: row.seed ?? null,
+    status: row.status ?? 'queued',
+    job_id: row.jobId ?? null,
+  });
+}
+
+export function updateImageGeneration(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const values = {};
+  const map = {
+    imageId: 'image_id', providerUsed: 'provider_used', modelUsed: 'model_used',
+    local: 'local', fallback: 'fallback', fallbackReasonCode: 'fallback_reason_code',
+    status: 'status', errorCode: 'error_code', generationMs: 'generation_ms',
+    neuronId: 'neuron_id', width: 'width', height: 'height', seed: 'seed',
+  };
+  for (const [key, col] of Object.entries(map)) {
+    if (updates[key] === undefined) continue;
+    fields.push(`${col} = @${col}`);
+    values[col] = typeof updates[key] === 'boolean' ? (updates[key] ? 1 : 0) : updates[key];
+  }
+  if (!fields.length) return;
+  values.id = id;
+  database.prepare(`UPDATE image_generations SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`).run(values);
+}
+
+export function getImageGeneration(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM image_generations WHERE id = ?').get(id) ?? null;
+}
+
+export function listImageGenerations(limit = 50) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM image_generations ORDER BY created_at DESC LIMIT ?').all(limit);
 }
 
 // Returns masked version for display — never expose real keys to frontend
@@ -1396,23 +1516,12 @@ export function markInboxConsumed(id) {
 
 const AUDIO_PLAYER_META = 'audio_player_settings';
 
-// Verified 2026-09-06 with a real HTTP request (curl -A "Mozilla/5.0" -r 0-1024):
-// the old `ice.somafm.com/<id>` short-form URLs for gsclassic/lush/deepspaceone
-// returned 404 (dead). Replaced with the `ice1.somafm.com/<id>-128-mp3` mirror
-// form, same pattern already used successfully for groovesalad — confirmed 200.
-const SOMAFM_PRESETS = [
-  { id: 'groovesalad',        name: 'Groove Salad (SomaFM)',         url: 'https://ice5.somafm.com/groovesalad-128-mp3' },
-  { id: 'gsclassic',          name: 'Groove Salad Classic (SomaFM)', url: 'https://ice1.somafm.com/gsclassic-128-mp3' },
-  { id: 'lush',               name: 'Lush (SomaFM)',                 url: 'https://ice1.somafm.com/lush-128-mp3' },
-  { id: 'deepspaceone',       name: 'Deep Space One (SomaFM)',       url: 'https://ice1.somafm.com/deepspaceone-128-mp3' },
-];
-
 export function getAudioPlayerSettings() {
   return getMeta(AUDIO_PLAYER_META, {
     localFolder:      null,
     customStreams:    [],
     source:           'radio',
-    selectedRadioId:  SOMAFM_PRESETS[0].id,
+    selectedRadioId:  RADIO_STATIONS[0].id,
   });
 }
 
@@ -1422,7 +1531,7 @@ export function setAudioPlayerSettings(updates) {
 }
 
 export function getAudioPlayerPresets() {
-  return SOMAFM_PRESETS;
+  return RADIO_STATIONS;
 }
 
 // ── Fichiers déposés ────────────────────────────────────────────────────────

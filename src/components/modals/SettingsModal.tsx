@@ -3,6 +3,7 @@ import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, Ey
 import { FreeAiFinder } from '../settings/FreeAiFinder';
 import { exportAllToServer } from '../../lib/storage';
 import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
+import { ImagesSettingsTab } from '../settings/ImagesSettingsTab';
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
 
@@ -38,7 +39,7 @@ function formatCooldown(ms: number): string {
 }
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external';
+type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -757,7 +758,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
+          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio', 'external', 'images'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -769,7 +770,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -777,6 +778,7 @@ export default function SettingsModal({
         {/* Body */}
         <div style={{ maxHeight: 480, overflowY: 'auto' }}>
           {tab === 'external' && <ExternalAgentsPanel />}
+          {tab === 'images' && <ImagesSettingsTab strictLocalMode={!!settings.strict_local_mode} />}
           {loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />

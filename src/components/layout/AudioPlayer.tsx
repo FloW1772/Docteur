@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Music, Play, Pause, SkipForward, Volume2, VolumeX, Radio, FolderOpen, AlertTriangle } from 'lucide-react';
-import { cortexClient } from '../../lib/cortex/client';
+import { cortexClient, resolveApiUrl } from '../../lib/cortex/client';
 import type { AudioPlayerSettings, AudioLocalFile, AudioRadioPreset } from '../../lib/cortex/client';
 
 const VOLUME_KEY    = 'docteur_audio_volume';
@@ -55,15 +55,34 @@ export default function AudioPlayer({ registerToggle }: Props) {
   const [trackIdx, setTrackIdx]     = useState(0);
   const [error, setError]           = useState<string | null>(null);
   const [loadedOnce, setLoadedOnce] = useState(false);
+  const wantsPlaying = useRef(false);
+  const lastSavedSettings = useRef<Partial<AudioPlayerSettings> | null>(null);
 
   // ── Lazy settings load — only when player is first opened ─────────────────
   const ensureLoaded = useCallback(() => {
     if (loadedOnce) return;
     setLoadedOnce(true);
-    void cortexClient.getAudioPlayerSettings().then(s => setSettings(s)).catch(() => {
+    void cortexClient.getAudioPlayerSettings().then(s => {
+      setSettings(s);
+      lastSavedSettings.current = { source: s.source, selectedRadioId: s.selectedRadioId, localFolder: s.localFolder };
+    }).catch(() => {
       setError('Réglages du lecteur indisponibles.');
     });
   }, [loadedOnce]);
+
+  // N'écrire au backend que si la valeur a réellement changé depuis la
+  // dernière sauvegarde — évite les PUT répétés (ex. boucle d'erreur radio).
+  const saveSettings = useCallback((updates: Partial<Omit<AudioPlayerSettings, 'presets'>>) => {
+    const last = lastSavedSettings.current ?? {};
+    const changed = (Object.keys(updates) as (keyof typeof updates)[]).some(
+      k => JSON.stringify(updates[k]) !== JSON.stringify(last[k as keyof AudioPlayerSettings]),
+    );
+    if (!changed) return;
+    lastSavedSettings.current = { ...last, ...updates };
+    void cortexClient.setAudioPlayerSettings(updates).catch(() => {
+      setError('Impossible d\'enregistrer les réglages audio.');
+    });
+  }, []);
 
   useEffect(() => {
     if (expanded) ensureLoaded();
@@ -103,8 +122,24 @@ export default function AudioPlayer({ registerToggle }: Props) {
     return localFiles[idx] ?? null;
   })();
 
-  const currentSrc = settings?.source === 'local' ? (currentLocalTrack?.url ?? null) : (currentPreset?.url ?? null);
+  const currentSrc = settings?.source === 'local'
+    ? (currentLocalTrack?.url ? resolveApiUrl(currentLocalTrack.url) : null)
+    : (currentPreset?.url ?? null);
   const currentTitle = settings?.source === 'local' ? (currentLocalTrack?.name ?? '') : (currentPreset?.name ?? '');
+
+  // Le changement de `src` via React ne recharge pas toujours la ressource
+  // média (surtout sur un flux Icecast sans src initial) — appeler load()
+  // explicitement, puis relancer la lecture si l'utilisateur était en lecture.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !currentSrc) return;
+    audio.load();
+    audio.volume = muted ? 0 : volume;
+    if (wantsPlaying.current) {
+      void audio.play().catch(() => setError('Lecture impossible.'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSrc]);
 
   function playNext() {
     if (!settings) return;
@@ -119,9 +154,8 @@ export default function AudioPlayer({ registerToggle }: Props) {
       const idx = all.findIndex(p => p.id === settings.selectedRadioId);
       const next = all[(idx + 1) % all.length];
       if (next) {
-        const updated = { ...settings, selectedRadioId: next.id };
-        setSettings(updated);
-        void cortexClient.setAudioPlayerSettings({ selectedRadioId: next.id }).catch(() => {});
+        setSettings({ ...settings, selectedRadioId: next.id });
+        saveSettings({ selectedRadioId: next.id });
       }
     }
   }
@@ -130,8 +164,10 @@ export default function AudioPlayer({ registerToggle }: Props) {
     const audio = audioRef.current;
     if (!audio) return;
     if (playing) {
+      wantsPlaying.current = false;
       audio.pause();
     } else {
+      wantsPlaying.current = true;
       setError(null);
       void audio.play().catch(() => setError('Lecture impossible.'));
     }
@@ -144,13 +180,9 @@ export default function AudioPlayer({ registerToggle }: Props) {
 
   function switchSource(source: 'local' | 'radio') {
     if (!settings) return;
-    const wasPlaying = playing;
     audioRef.current?.pause();
     setSettings({ ...settings, source });
-    void cortexClient.setAudioPlayerSettings({ source }).catch(() => {});
-    if (wasPlaying) {
-      setTimeout(() => { void audioRef.current?.play().catch(() => {}); }, 50);
-    }
+    saveSettings({ source });
   }
 
   const collapsedGlyph = playing ? <Pause size={13} /> : <Play size={13} />;
@@ -164,9 +196,11 @@ export default function AudioPlayer({ registerToggle }: Props) {
         onPause={() => setPlaying(false)}
         onError={() => {
           if (currentSrc) {
-            setError('Flux indisponible.');
+            // Une seule tentative par clic utilisateur — pas de retry en
+            // boucle qui spammait /api/audio-player/settings via playNext().
+            wantsPlaying.current = false;
+            setError(settings?.source === 'radio' ? 'Radio actuellement indisponible.' : 'Flux indisponible.');
             setPlaying(false);
-            if (settings?.source === 'radio') playNext();
           }
         }}
         onEnded={() => { if (settings?.source === 'local') playNext(); }}

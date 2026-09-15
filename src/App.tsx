@@ -30,6 +30,7 @@ import VideoSummaryModal from './components/modals/VideoSummaryModal';
 import SkillsModal   from './components/modals/SkillsModal';
 import PromptGeneratorModal from './components/modals/PromptGeneratorModal';
 import TeacherModal from './components/modals/TeacherModal';
+import ImageGeneratorModal from './components/modals/ImageGeneratorModal';
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -1433,8 +1434,38 @@ export function PageEditor({
   return (
     <div className="h-full flex flex-col overflow-y-auto">
       {/* Header */}
-      <div className="flex-shrink-0 px-8 pt-8 pb-4" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)' }}>
-        <div className="flex items-center gap-2 mb-3">
+      <div className="flex-shrink-0 pt-8 pb-4" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', position: 'relative', paddingLeft: 32, paddingRight: 44 }}>
+        {onClose && (
+          <button
+            type="button"
+            title="Fermer (Echap)"
+            aria-label="Fermer la vue détail"
+            onClick={onClose}
+            className="flex items-center justify-center w-7 h-7 rounded transition-colors"
+            style={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              zIndex: 5,
+              color: '#5a4a7a',
+              background: 'rgba(90,74,122,0.12)',
+              border: '1px solid rgba(90,74,122,0.2)',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.color = '#e8d9ff';
+              e.currentTarget.style.background = 'rgba(94,231,255,0.12)';
+              e.currentTarget.style.borderColor = 'rgba(94,231,255,0.3)';
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = '#5a4a7a';
+              e.currentTarget.style.background = 'rgba(90,74,122,0.12)';
+              e.currentTarget.style.borderColor = 'rgba(90,74,122,0.2)';
+            }}
+          >
+            <X size={14} />
+          </button>
+        )}
+        <div className="flex items-center gap-2 mb-3" style={{ flexWrap: 'wrap', rowGap: 6 }}>
           <select
             value={page.kind}
             onChange={e => {
@@ -1867,34 +1898,6 @@ export function PageEditor({
             </button>
           )}
 
-          {/* Close button */}
-          {onClose && (
-            <button
-              type="button"
-              title="Fermer (Echap)"
-              aria-label="Fermer la vue détail"
-              onClick={onClose}
-              className="flex items-center justify-center w-7 h-7 rounded transition-colors"
-              style={{ 
-                color: '#5a4a7a', 
-                background: 'rgba(90,74,122,0.12)',
-                border: '1px solid rgba(90,74,122,0.2)'
-              }}
-              onMouseEnter={e => { 
-                e.currentTarget.style.color = '#e8d9ff';
-                e.currentTarget.style.background = 'rgba(94,231,255,0.12)';
-                e.currentTarget.style.borderColor = 'rgba(94,231,255,0.3)';
-              }}
-              onMouseLeave={e => { 
-                e.currentTarget.style.color = '#5a4a7a';
-                e.currentTarget.style.background = 'rgba(90,74,122,0.12)';
-                e.currentTarget.style.borderColor = 'rgba(90,74,122,0.2)';
-              }}
-            >
-              <X size={14} />
-            </button>
-          )}
-
           {/* Kebab menu */}
           <div className="relative" ref={menuRef}>
             <button
@@ -2291,6 +2294,8 @@ export default function App() {
   useModalOpenTracking(kiwixOpen);
   const [teacherOpen, setTeacherOpen]          = useState(false);
   useModalOpenTracking(teacherOpen);
+  const [imageGeneratorOpen, setImageGeneratorOpen] = useState(false);
+  useModalOpenTracking(imageGeneratorOpen);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
   useModalOpenTracking(todoOpen);
@@ -4501,6 +4506,7 @@ export default function App() {
           onPromptGeneratorOpen={() => setPromptGeneratorOpen(true)}
           onKiwixOpen={() => setKiwixOpen(true)}
           onTeacherOpen={() => setTeacherOpen(true)}
+          onImageGeneratorOpen={() => setImageGeneratorOpen(true)}
           onTodoOpen={() => setTodoOpen(true)}
           todoPendingCount={todoPendingCount}
           voiceEnabled={voiceSettings?.enabled ?? false}
@@ -4854,6 +4860,14 @@ export default function App() {
         <TeacherModal
           onClose={() => setTeacherOpen(false)}
           strictLocalMode={strictLocalMode}
+        />
+      )}
+
+      {imageGeneratorOpen && (
+        <ImageGeneratorModal
+          onClose={() => setImageGeneratorOpen(false)}
+          strictLocalMode={strictLocalMode}
+          onOpenSettings={() => { setImageGeneratorOpen(false); setSettingsOpen(true); }}
         />
       )}
 
