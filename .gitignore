@@ -66,3 +66,6 @@ Thumbs.db
 
 # ── Claude Code project settings (local machine, not shared) ───────────────
 .claude/
+
+# Sherlock dedicated environment: dependencies and temporary setup HOME.
+external/Sherlock-runtime/

@@ -300,8 +300,8 @@
     {
       "file": "test-phase7-sherlock.mjs",
       "code": 0,
-      "tests": 18,
-      "pass": 18,
+      "tests": 54,
+      "pass": 54,
       "fail": 0,
       "cancelled": 0,
       "skipped": 0
@@ -371,8 +371,8 @@
     }
   ],
   "total": {
-    "tests": 627,
-    "pass": 627,
+    "tests": 663,
+    "pass": 663,
     "fail": 0,
     "cancelled": 0,
     "skipped": 0

@@ -1,0 +1,121 @@
+{
+  "repo": "sherlock-project/sherlock",
+  "sha": "a38ba54fda799cd786a2ab67a50143e1a63169e6",
+  "files": [
+    {
+      "path": "pyproject.toml",
+      "sha256": "a130a3f030543e4830ed5d1c3c5ee3b12a706cb7fdcfea53216354e87c5efca5",
+      "bytes": 1910
+    },
+    {
+      "path": "sherlock_project/__init__.py",
+      "sha256": "7907da0d366fc33e4080b42c3578787dac329ca7dd3fb3cd97153938a57d0ac9",
+      "bytes": 1025
+    },
+    {
+      "path": "sherlock_project/__main__.py",
+      "sha256": "9d39f057afd8727006e7d314a66fc21532810147521d3f52b1733ff76b9ee4ac",
+      "bytes": 559
+    },
+    {
+      "path": "sherlock_project/notify.py",
+      "sha256": "ad99be36eb42669bdcff782d436642ade9e82ea358980d8d1e9921a1316f0f01",
+      "bytes": 9141
+    },
+    {
+      "path": "sherlock_project/resources/data.json",
+      "sha256": "3fdfc6694c5cd99798881215554b09e617c6d5284a6219fae309882566a9fb30",
+      "bytes": 104039
+    },
+    {
+      "path": "sherlock_project/resources/data.schema.json",
+      "sha256": "c3ade340b2ca78e1867a101e2a352569c01557ef64e21ecb32fbae7a68c30998",
+      "bytes": 4388
+    },
+    {
+      "path": "sherlock_project/result.py",
+      "sha256": "04cf794bb667b94443957cb1e56030024647253523685374f39bfa7595c14cd3",
+      "bytes": 3184
+    },
+    {
+      "path": "sherlock_project/sherlock.py",
+      "sha256": "85bcc8f7f03c7d723ef03fac369bae4d7b834849f4151e60eb1e547168fb84ad",
+      "bytes": 34683
+    },
+    {
+      "path": "sherlock_project/sites.py",
+      "sha256": "d795de649277c4fab2e6e5ca1027d7b676c78c4f00b541b1f00e58a5a33fdf42",
+      "bytes": 10181
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "PySocks-1.7.1-py3-none-any.whl",
+      "sha256": "2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5"
+    },
+    {
+      "name": "certifi-2026.7.22-py3-none-any.whl",
+      "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
+    },
+    {
+      "name": "charset_normalizer-3.5.1-cp310-cp310-win_amd64.whl",
+      "sha256": "be47f99644b208bff7766314013f9acf57b056b04191d570d68ad14022cf5b1d"
+    },
+    {
+      "name": "colorama-0.4.6-py2.py3-none-any.whl",
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+    },
+    {
+      "name": "et_xmlfile-2.0.0-py3-none-any.whl",
+      "sha256": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa"
+    },
+    {
+      "name": "idna-3.20-py3-none-any.whl",
+      "sha256": "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c"
+    },
+    {
+      "name": "numpy-2.2.6-cp310-cp310-win_amd64.whl",
+      "sha256": "f0fd6321b839904e15c46e0d257fdd101dd7f530fe03fd6359c1ea63738703f3"
+    },
+    {
+      "name": "openpyxl-3.1.5-py2.py3-none-any.whl",
+      "sha256": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2"
+    },
+    {
+      "name": "pandas-2.3.3-cp310-cp310-win_amd64.whl",
+      "sha256": "503cf027cf9940d2ceaa1a93cfb5f8c8c7e6e90720a2850378f0b3f3b1e06826"
+    },
+    {
+      "name": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+    },
+    {
+      "name": "pytz-2026.3.post1-py2.py3-none-any.whl",
+      "sha256": "dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815"
+    },
+    {
+      "name": "requests-2.34.2-py3-none-any.whl",
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"
+    },
+    {
+      "name": "requests_futures-1.1.0-py3-none-any.whl",
+      "sha256": "c9bd8a88d27630a5b418a809f1a89d451d4bc4bdca87c07a50735ab6f66f423a"
+    },
+    {
+      "name": "six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+    },
+    {
+      "name": "tomli-2.4.1-py3-none-any.whl",
+      "sha256": "0d85819802132122da43cb86656f8d1f8c6587d54ae7dcaf30e90533028b49fe"
+    },
+    {
+      "name": "tzdata-2026.4-py2.py3-none-any.whl",
+      "sha256": "c2169a8b0a7a5e9674da5a135ccdfb2b3e671b333ed9fed17b41f73c34476e81"
+    },
+    {
+      "name": "urllib3-2.8.0-py3-none-any.whl",
+      "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
+    }
+  ]
+}

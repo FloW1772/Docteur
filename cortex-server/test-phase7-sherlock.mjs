@@ -1,231 +1,148 @@
-// PHASE 7 — Sherlock OSINT integration (MASTER mission). Certifies:
-// shell:false everywhere, input validation (injection resistance), no
-// auto-install, install/search lifecycle via the shared job registry, and
-// graceful handling when sherlock/pipx are not installed (the actual state
-// of this test environment — no mocking needed for those paths, they
-// exercise the real ENOENT behavior of spawn()).
-// Run: node --test test-phase7-sherlock.mjs
+// SH-15 supersedes Phase 7's assumptions that pipx/Sherlock are absent.
 import './test-setup.mjs';
-import { test, before, after, beforeEach } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { Hono } from 'hono';
-
-import { initSqlite, setMeta } from './src/lib/sqlite.js';
-import {
-  getInstallState, validateUsername, parseSherlockOutput,
-  testInstall, startInstall, startUninstall, startSearch, cancelSearch,
-} from './src/lib/sherlock.js';
-import { getJob } from './src/routes/jobs.js';
+import { createSherlockGateway, getInstallState, startInstall, startUninstall, parseSherlockOutput } from './src/lib/sherlock.js';
 import { createSherlockRoute } from './src/routes/sherlock.js';
+import { validateSite } from './src/lib/sherlock-policy.js';
+import { validateUsername, publicAddress, publicUrl, resolvePublic, publicRequest, checkedPath, childEnvironment, WORKSPACES_ROOT, LIMITS, loadSites } from './src/lib/sherlock-policy.js';
 
-const TEST_DB = './data-test-sherlock/test.db';
-
-before(() => {
-  fs.rmSync('./data-test-sherlock', { recursive: true, force: true });
-  initSqlite(TEST_DB);
-});
-
-after(() => {
-  try { fs.rmSync('./data-test-sherlock', { recursive: true, force: true }); } catch { /* ignore */ }
-});
-
-beforeEach(() => {
-  // Reset persisted install state between tests — startInstall/startUninstall
-  // write real state via setMeta(), and tests must not leak into each other.
-  setMeta('sherlock_install', { status: 'not_installed', version: null, installedAt: null, lastError: null });
-});
-
-function buildApp(services = {}) {
-  const app = new Hono();
-  app.route('/api', createSherlockRoute({ services, logger: { info() {}, warn() {} } }));
-  return app;
-}
-
-async function waitForJob(jobId, { timeoutMs = 10_000 } = {}) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const job = getJob(jobId);
-    if (job && job.status !== 'running') return job;
-    await new Promise(r => setTimeout(r, 50));
-  }
-  throw new Error(`job ${jobId} did not finish within ${timeoutMs}ms`);
-}
-
-// ── Username validation — injection resistance ──────────────────────────
-
-test('validateUsername: accepts plausible usernames', () => {
-  assert.equal(validateUsername('john_doe'), 'john_doe');
-  assert.equal(validateUsername('user.name-123'), 'user.name-123');
-  assert.equal(validateUsername('  spaced  '), 'spaced');
-});
-
-test('validateUsername: rejects shell metacharacters, spaces, and command-injection attempts', () => {
-  for (const bad of [
-    'user; rm -rf /',
-    'user && whoami',
-    'user`whoami`',
-    'user$(whoami)',
-    'user | cat /etc/passwd',
-    'user"quote',
-    "user'quote",
-    'user with spaces',
-    '../../../etc/passwd',
-    '',
-    'x'.repeat(65),
-  ]) {
-    assert.throws(() => validateUsername(bad), /invalide/, `must reject: ${bad}`);
+const owned = [];
+test('compromised site database entry cannot target private networks or file URLs', () => {
+  for (const url of ['http://127.0.0.1/{}', 'http://192.168.1.2/{}', 'http://169.254.169.254/{}', 'file:///C:/{}']) {
+    assert.throws(() => validateSite({ url }));
+    assert.throws(() => validateSite({ url: 'https://example.com/{}', urlProbe: url }));
   }
 });
-
-// ── Output parsing — never fabricates a result ──────────────────────────
-
-test('parseSherlockOutput: extracts only [+] found lines, ignores [-] not-found and noise', () => {
-  const stdout = [
-    '[*] Checking username john on:',
-    '[+] GitHub: https://github.com/john',
-    '[-] Twitter: Not Found!',
-    '[+] Reddit: https://reddit.com/user/john',
-    'Some unrelated log line',
-  ].join('\n');
-  const results = parseSherlockOutput(stdout);
-  assert.equal(results.length, 2);
-  assert.deepEqual(results[0], { site: 'GitHub', url: 'https://github.com/john', status: 'found' });
-  assert.deepEqual(results[1], { site: 'Reddit', url: 'https://reddit.com/user/john', status: 'found' });
+test('cancel also releases a pending DNS operation without any connection', async () => {
+  const controller = new AbortController(); let connects = 0;
+  const pending = publicRequest('https://example.com', { signal: controller.signal, lookup: () => new Promise(() => {}), transport: () => { connects++; } });
+  controller.abort(); await assert.rejects(pending, /request_cancelled/); assert.equal(connects, 0);
 });
+const success = async url => ({ status: 200, url, body: Buffer.from('public fixture').toString('base64') });
+async function wait(gateway, id) {
+  for (let i = 0; i < 150; i++) { const job = gateway.getJob(id); if (job.status !== 'running') return job; await new Promise(r => setTimeout(r, 50)); }
+  gateway.cancelSearch(id); throw Error('test deadline');
+}
+function launch(gateway, options = {}) { const result = gateway.searchUsername({ username: 'docteur-fixture', siteFilter: ['GitHub'], ...options }); owned.push(result.jobId); return result.jobId; }
+after(() => { for (const id of owned) { const dir = checkedPath(WORKSPACES_ROOT, id); assert.equal(path.dirname(dir), WORKSPACES_ROOT); fs.rmSync(dir, { recursive: true, force: true }); } });
 
-test('parseSherlockOutput: empty/garbage stdout produces zero results, never a fabricated hit', () => {
-  assert.deepEqual(parseSherlockOutput(''), []);
-  assert.deepEqual(parseSherlockOutput('random garbage\nno matches here'), []);
+test('username preserves normal and Unicode data', () => {
+  for (const value of ['docteur-fixture', 'user.name', 'élève42', 'user_1']) assert.equal(validateUsername(value), value);
 });
-
-// ── Install lifecycle — never automatic, always via explicit job ────────
-
-test('getInstallState defaults to not_installed', () => {
-  const state = getInstallState();
-  assert.equal(state.status, 'not_installed');
+for (const value of ['--help', '-o', '../escape', '..', ' user ', 'two words', 'a\nb', 'a\0b', 'a;whoami', 'a/b', 'x'.repeat(65), 42, null]) test(`username rejects ${JSON.stringify(value)}`, () => assert.throws(() => validateUsername(value), /username_invalid/));
+for (const ip of ['127.0.0.1', '127.3.4.5', '10.0.0.1', '172.16.0.1', '192.168.1.2', '169.254.169.254', '100.100.100.200', '0.0.0.0', '::1', '::ffff:127.0.0.1', 'fe80::1', 'fd00::1', '2002:7f00:1::', '64:ff9b::7f00:1']) test(`private/reserved address blocked ${ip}`, () => assert.equal(publicAddress(ip), false));
+test('public IP literals and URLs allowed without credentials', () => {
+  assert.ok(publicAddress('8.8.8.8')); assert.ok(publicAddress('2606:4700:4700::1111'));
+  assert.equal(publicUrl('https://github.com/example').hostname, 'github.com');
 });
-
-test('testInstall: correctly reports not installed when sherlock is absent (real ENOENT path, no mocking)', async () => {
-  const result = await testInstall();
-  assert.equal(result.installed, false);
-  assert.equal(getInstallState().status, 'not_installed');
+for (const url of ['file:///etc/passwd', 'ftp://example.com', 'http://localhost', 'http://127.1', 'http://2130706433', 'http://metadata.google.internal', 'https://user:pass@example.com', 'http://example.com:8080']) test(`URL denied ${url}`, () => assert.throws(() => publicUrl(url)));
+test('DNS private answers and mixed public/private answers denied', async () => {
+  await assert.rejects(resolvePublic('https://example.com', async () => [{ address: '10.0.0.2', family: 4 }]));
+  await assert.rejects(resolvePublic('https://example.com', async () => [{ address: '8.8.8.8', family: 4 }, { address: '::1', family: 6 }]));
 });
-
-test('startInstall: registers a job and completes with a clear pipx-not-found error when pipx is absent (real environment state)', async () => {
-  const { jobId } = startInstall();
-  assert.ok(jobId);
-  const job = await waitForJob(jobId);
-  assert.equal(job.status, 'error');
-  assert.ok(job.summary?.error, 'a clear error message must be present, not a silent failure');
-});
-
-test('startUninstall: registers a job and handles pipx absence gracefully', async () => {
-  const { jobId } = startUninstall();
-  const job = await waitForJob(jobId);
-  assert.ok(['error', 'done'].includes(job.status));
-});
-
-// ── Search — shell:false, validation, concurrency limit ──────────────────
-
-test('startSearch: rejects an invalid username BEFORE ever spawning a process', () => {
-  assert.throws(() => startSearch('bad username; rm -rf /'), /invalide/);
-});
-
-test('startSearch: registers a job and reports sherlock-not-installed clearly (real ENOENT path)', async () => {
-  const { jobId, username } = startSearch('__PHASE7_TEST_USERNAME__');
-  assert.equal(username, '__PHASE7_TEST_USERNAME__');
-  const job = await waitForJob(jobId);
-  assert.equal(job.status, 'error');
-  assert.match(job.summary.error, /n'est pas installé/);
-});
-
-test('cancelSearch: cancelling an unknown/already-finished job id returns cancelled:false, never throws', () => {
-  const result = cancelSearch('nonexistent-job-id-xyz');
-  assert.equal(result.cancelled, false);
-});
-
-// ── Route integration ────────────────────────────────────────────────────
-
-test('GET /api/sherlock/status returns the real install state', async () => {
-  const app = buildApp();
-  const res = await app.request('/api/sherlock/status');
-  const body = await res.json();
-  assert.equal(res.status, 200);
-  assert.equal(body.status, 'not_installed');
-});
-
-test('POST /api/sherlock/search rejects an invalid username with 400, never spawns', async () => {
-  const app = buildApp();
-  const res = await app.request('/api/sherlock/search', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'bad; whoami' }),
-  });
-  assert.equal(res.status, 400);
-});
-
-test('POST /api/sherlock/search with a valid username returns 202 + jobId, job eventually reports not-installed', async () => {
-  const app = buildApp();
-  const res = await app.request('/api/sherlock/search', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'test_user_phase7' }),
-  });
-  assert.equal(res.status, 202);
-  const body = await res.json();
-  assert.ok(body.jobId);
-  const job = await waitForJob(body.jobId);
-  assert.equal(job.status, 'error');
-});
-
-test('GET /api/sherlock/search/:jobId returns 404 for an unknown job', async () => {
-  const app = buildApp();
-  const res = await app.request('/api/sherlock/search/does-not-exist');
-  assert.equal(res.status, 404);
-});
-
-// ── save-as-neuron — always private/local_only by default ──────────────
-
-test('POST /api/sherlock/save-as-neuron creates a neuron tagged private + local_only, never cloud-eligible by default', async () => {
-  const indexed = [];
-  const savedPages = [];
-  const services = {
-    indexNeuron: async (payload) => { indexed.push(payload); return { ok: true }; },
+function transportFor(handler) {
+  return (url, options, callback) => {
+    const req = new EventEmitter(); req.destroy = error => { if (error) req.emit('error', error); req.emit('close'); };
+    req.end = () => queueMicrotask(() => handler(url, options, callback, req)); return req;
   };
-  // savePageToStore is imported directly from sqlite.js inside routes/sherlock.js,
-  // not injected — verify via the real (isolated test) DB instead.
-  const app = buildApp(services);
-  const res = await app.request('/api/sherlock/save-as-neuron', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'test_user', site: 'GitHub', url: 'https://github.com/test_user' }),
+}
+test('redirect to localhost blocked before second request; DNS pinned to socket', async () => {
+  let connections = 0;
+  const transport = transportFor((url, options, callback, req) => {
+    connections++; options.lookup(url.hostname, {}, (error, ip) => assert.equal(ip, '8.8.8.8'));
+    const res = new PassThrough(); res.statusCode = 302; res.headers = { location: 'http://127.0.0.1/private' };
+    callback(res); res.end(); req.emit('close');
   });
-  const body = await res.json();
-  assert.equal(res.status, 201);
-  assert.equal(indexed.length, 1);
-  assert.equal(indexed[0].metadata.egress_policy, 'local_only');
-  assert.equal(indexed[0].metadata.source, 'osint_sherlock');
-
-  const { getPageFromStore } = await import('./src/lib/sqlite.js');
-  const page = getPageFromStore(body.id);
-  assert.equal(page.private, true, 'OSINT-derived neurons must be private by default');
+  await assert.rejects(publicRequest('https://example.com', { lookup: async () => [{ address: '8.8.8.8', family: 4 }], transport }), /network_destination_denied/);
+  assert.equal(connections, 1);
 });
-
-test('POST /api/sherlock/save-as-neuron requires username, site, and url', async () => {
-  const app = buildApp({ indexNeuron: async () => ({ ok: true }) });
-  const res = await app.request('/api/sherlock/save-as-neuron', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'x' }),
-  });
-  assert.equal(res.status, 400);
+test('massive HTTP response aborted', async () => {
+  const transport = transportFor((_url, _opts, callback, req) => { const res = new PassThrough(); res.statusCode = 200; res.headers = {}; callback(res); res.end(Buffer.alloc(LIMITS.responseBytes + 1)); req.emit('close'); });
+  await assert.rejects(publicRequest('https://example.com', { lookup: async () => [{ address: '8.8.8.8', family: 4 }], transport }), /response_too_large/);
 });
-
-// ── Static security checks ───────────────────────────────────────────────
-
-test('static check: every actual spawn()/execFile() call line in lib/sherlock.js explicitly sets shell:false, and none sets shell:true', () => {
-  const source = fs.readFileSync('./src/lib/sherlock.js', 'utf8');
-  // Line-based check (every real call in this file is single-line) — avoids
-  // matching prose in comments that happen to mention "shell:true" while
-  // explaining why it must never be used.
-  const callLines = source.split('\n').filter(line => /^\s*(const \w+ = )?(spawn|execFile)\(/.test(line));
-  assert.ok(callLines.length >= 3, `expected to find at least 3 spawn/execFile call lines, found ${callLines.length}`);
-  for (const line of callLines) {
-    assert.ok(!/shell:\s*true/.test(line), `no spawn/execFile call may set shell:true: ${line.trim()}`);
-    assert.ok(/shell:\s*false/.test(line), `every spawn/execFile call must set shell:false explicitly: ${line.trim()}`);
+test('explicit environment excludes credentials, proxy and real HOME', () => {
+  const id = 'env-fixture'; owned.push(id); const root = checkedPath(WORKSPACES_ROOT, id); fs.mkdirSync(root, { recursive: true });
+  const env = childEnvironment(root, { OPENAI_API_KEY: 'secret', SSH_AUTH_SOCK: 'secret', HTTPS_PROXY: 'http://secret', HOME: 'C:\\Users\\real', USERPROFILE: 'C:\\Users\\real' });
+  assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.SSH_AUTH_SOCK, undefined); assert.equal(env.HTTPS_PROXY, undefined);
+  for (const key of ['HOME', 'USERPROFILE', 'TEMP', 'TMP']) assert.ok(env[key].startsWith(root));
+});
+test('traversal and junction escape blocked', () => {
+  assert.throws(() => checkedPath(WORKSPACES_ROOT, '../escape'));
+  assert.throws(() => checkedPath(WORKSPACES_ROOT, 'C:\\Windows'));
+  assert.throws(() => checkedPath(WORKSPACES_ROOT, '\\\\host\\share'));
+  const id = 'junction-fixture'; owned.push(id); const root = checkedPath(WORKSPACES_ROOT, id); fs.mkdirSync(root, { recursive: true });
+  const link = path.join(root, 'escape'); fs.symlinkSync(path.resolve('..'), link, 'junction');
+  assert.throws(() => checkedPath(root, 'escape/package.json'), /symlink_denied/); fs.unlinkSync(link);
+});
+test('site names only; pinned database rejects unknown selection', () => {
+  assert.ok(loadSites(['GitHub']).GitHub);
+  assert.throws(() => loadSites(['http://localhost'])); assert.throws(() => loadSites(['GitHub', 'GitHub']));
+});
+test('installation state verifies pinned source without executing CLI; no pipx API', () => {
+  assert.equal(getInstallState().status, 'installed'); assert.throws(startInstall, /operator_setup/); assert.throws(startUninstall, /operator_action/);
+});
+test('real Sherlock receives HTTP fixture through gateway; structured results only', async () => {
+  let calls = 0, child;
+  const gateway = createSherlockGateway({ network: async url => { calls++; return success(url); }, spawnProcess(binary, args, opts) {
+    assert.ok(binary.includes('Sherlock-runtime')); assert.equal(opts.shell, false); assert.equal(opts.windowsHide, true);
+    assert.ok(args.includes('-I')); assert.ok(!args.includes('docteur-fixture')); assert.equal(opts.env.OPENAI_API_KEY, undefined);
+    child = spawn(binary, args, opts); return child;
+  } });
+  const job = await wait(gateway, launch(gateway));
+  assert.equal(job.status, 'done', JSON.stringify(job)); assert.equal(calls, 1); assert.equal(job.summary.results[0].status, 'found');
+  assert.equal(job.summary.results[0].metadata.untrusted, true); assert.equal(job.summary.results[0].response_text, undefined);
+  assert.throws(() => process.kill(child.pid, 0));
+});
+test('network failure normalized as data without internal error or secret', async () => {
+  const gateway = createSherlockGateway({ network: async () => { throw Error('SENSITIVE_INTERNAL_ERROR'); } });
+  const job = await wait(gateway, launch(gateway));
+  assert.equal(job.summary.results[0].status, 'error'); assert.ok(!JSON.stringify(job).includes('SENSITIVE_INTERNAL_ERROR'));
+});
+for (const mode of ['cancel', 'timeout']) test(`real ${mode} terminates child, no orphan`, async () => {
+  let child;
+  const gateway = createSherlockGateway({ network: (_url, { signal }) => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(Error('aborted')), { once: true }); }), spawnProcess: (...args) => (child = spawn(...args)) });
+  const start = Date.now(), id = launch(gateway, { timeoutMs: mode === 'timeout' ? 150 : 10000 });
+  assert.throws(() => launch(gateway), /concurrency_limit/);
+  if (mode === 'cancel') gateway.cancelSearch(id);
+  const job = await wait(gateway, id);
+  assert.equal(job.status, mode === 'cancel' ? 'cancelled' : 'error'); assert.equal(job.summary.error, mode === 'cancel' ? 'cancelled' : 'timeout');
+  assert.ok(Date.now() - start < 5000); assert.throws(() => process.kill(child.pid, 0));
+});
+test('massive child stdout killed', async () => {
+  const gateway = createSherlockGateway({ limits: { ...LIMITS, outputBytes: 32 }, network: success });
+  const job = await wait(gateway, launch(gateway)); assert.equal(job.status, 'error'); assert.equal(job.summary.error, 'output_limit');
+});
+test('rate limit remains after completed search', async () => {
+  const gateway = createSherlockGateway({ limits: { ...LIMITS, rateCount: 1 }, network: success });
+  await wait(gateway, launch(gateway)); assert.throws(() => launch(gateway), /rate_limited/);
+});
+test('legacy output never accepts script URLs or huge output', () => {
+  assert.deepEqual(parseSherlockOutput('[+] Evil: javascript:alert(1)'), []);
+  assert.throws(() => parseSherlockOutput('x'.repeat(LIMITS.outputBytes + 1)));
+});
+test('routes enforce loopback, host, origin, JSON, body size and semantic schema', async () => {
+  let starts = 0;
+  const service = { searchUsername() { starts++; return { jobId: 'fixture' }; }, getJob() { return null; }, cancelSearch() {} };
+  const app = new Hono().route('/api', createSherlockRoute({ isLocal: () => true, gateway: service }));
+  const blocked = new Hono().route('/api', createSherlockRoute({ isLocal: () => false }));
+  assert.equal((await blocked.request('http://localhost/api/sherlock/status')).status, 403);
+  assert.equal((await app.request('http://evil.example/api/sherlock/status')).status, 403);
+  assert.equal((await app.request('http://localhost/api/sherlock/status', { headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await app.request('http://localhost/api/sherlock/search', { method: 'POST' })).status, 415);
+  for (const body of [{ username: 'valid', args: ['--browse'] }, { username: 'valid', url: 'http://localhost' }, null, []]) {
+    assert.equal((await app.request('http://localhost/api/sherlock/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 400);
   }
+  assert.equal((await app.request('http://localhost/api/sherlock/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'x'.repeat(5000) }) })).status, 413);
+  assert.equal(starts, 0);
+  assert.equal((await app.request('http://localhost/api/sherlock/search', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'valid' }) })).status, 202);
+  assert.equal(starts, 1);
+  assert.equal((await app.request('http://localhost/api/sherlock/jobs/unknown')).status, 404);
+  assert.equal((await app.request('http://localhost/api/sherlock/save-as-neuron', { method: 'POST' })).status, 410);
 });

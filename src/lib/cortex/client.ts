@@ -1069,13 +1069,20 @@ export interface SherlockInstallState {
 export interface SherlockSearchResult {
   site:   string;
   url:    string;
-  status: 'found';
+  username: string;
+  profileUrl: string;
+  status: 'found' | 'absent' | 'invalid' | 'error';
+  responseTime: number | null;
 }
 
 export interface SherlockJob {
   id:        string;
   operation: string;
   status:    string;
+  username: string;
+  duration: number;
+  current: number;
+  total: number;
   summary:   { results?: SherlockSearchResult[]; error?: string; exitCode?: number } | null;
 }
 
@@ -3807,12 +3814,13 @@ export const cortexClient = {
   },
 
   async cancelSherlockSearch(jobId: string): Promise<{ cancelled: boolean }> {
-    const res = await apiFetch(`/api/sherlock/search/${jobId}/cancel`, { method: 'POST' });
+    const res = await apiFetch(`/api/sherlock/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    if (!res.ok) throw new Error('Sherlock cancellation failed');
     return res.json();
   },
 
   async getSherlockJob(jobId: string): Promise<SherlockJob> {
-    const res = await apiFetch(`/api/sherlock/search/${jobId}`, { method: 'GET' });
+    const res = await apiFetch(`/api/sherlock/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' });
     if (!res.ok) throw new Error(`Sherlock job HTTP ${res.status}`);
     return res.json();
   },

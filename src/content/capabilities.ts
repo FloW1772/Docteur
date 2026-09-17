@@ -117,7 +117,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     emoji: '🕵️',
     title: 'OSINT',
     items: [
-      { name: 'Sherlock', description: 'Recherche de présence d\'un pseudonyme sur des sites publics — usage sur ses propres comptes uniquement (onglet Modèles).', feature: 'settings-models', state: 'a_configurer' },
+      { name: 'Sherlock', description: 'Recherche de pseudonyme sur des sites publics via Docteur (onglet Modèles). États, durée, profils trouvés ou absents et annulation. Le pseudonyme est transmis aux sites consultés.', feature: 'settings-models', state: 'disponible', keywords: ['pseudonyme', 'OSINT', 'profil'] },
     ],
   },
 ];
@@ -206,7 +206,7 @@ export const LIMITATIONS: string[] = [
   'HTTPS hors-ligne complet (mkcert) partiellement en place — les PWA Android peuvent nécessiter un certificat installé',
   'Ne va pas chercher sur internet tout seul : analyse uniquement ce que tu lui donnes ou ce que la veille IA rapporte',
   'Connecteurs Google Drive / OneDrive / YouTube : interface de configuration disponible (Paramètres → Connexions), mais aucune connexion réelle n\'a encore été établie — nécessite de créer des identifiants OAuth (Google Cloud / Azure) hors de Docteur, puis de lancer la connexion',
-  'Sherlock (recherche de pseudonyme) : code présent, mais l\'outil externe pipx/sherlock n\'est pas installé sur ce poste',
+  'Sherlock : environnement dédié requis, base de sites figée, une recherche à la fois et 3 départs par minute. Une correspondance ne prouve pas une identité ; les résultats ne deviennent pas des instructions pour les agents.',
   'Notebook : résumé et questions/réponses disponibles ; FAQ, flashcards et chronologie pas encore implémentés',
 ];
 

@@ -63,6 +63,7 @@ import { createNotebookRoute }     from './routes/notebook.js';
 import { createNotebookLmRoute }   from './routes/notebooklm.js';
 import { createBrowserRoute }      from './routes/browser.js';
 import { createSherlockRoute }     from './routes/sherlock.js';
+import { shutdownSherlock } from './lib/sherlock.js';
 import { createSecretScanRoute }   from './routes/secret-scan.js';
 import { createVoiceRoute }        from './routes/voice.js';
 import { createCompareRoute }      from './routes/compare.js';
@@ -1677,7 +1678,7 @@ const externalAgents = new ExternalAgents({
 });
 app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
-  void externalAgents.shutdown().finally(() => process.exit(0));
+  void Promise.allSettled([externalAgents.shutdown(), shutdownSherlock()]).finally(() => process.exit(0));
 });
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createOpenMontageRoute());
