@@ -316,6 +316,40 @@ export function initSqlite(sqlitePath) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Studio MetaGPT (MG-6) — mission = un job du pipeline sécurisé
+    -- planning -> génération de code texte -> diff -> approbation -> apply.
+    -- current_state suit la state machine explicite documentée dans
+    -- metagpt-orchestrator.js ; metadata stocke le mode, target_scope,
+    -- diff_sha256, approval, etc. en JSON (jamais de credentials/secrets).
+    CREATE TABLE IF NOT EXISTS metagpt_missions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      requirement TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      current_state TEXT NOT NULL DEFAULT 'CREATED',
+      model_used TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      finished_at TEXT,
+      error_message TEXT,
+      cancelled INTEGER NOT NULL DEFAULT 0,
+      diff_sha256 TEXT,
+      approved INTEGER NOT NULL DEFAULT 0,
+      metadata TEXT NOT NULL DEFAULT '{}'
+    );
+
+    -- Une ligne par transition d'état — journal d'audit MG-6P, jamais de
+    -- credentials/env/secrets dans detail (uniquement des faits structurels :
+    -- hashes, compteurs, codes d'erreur de policy).
+    CREATE TABLE IF NOT EXISTS metagpt_mission_events (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL,
+      from_state TEXT,
+      to_state TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     -- Module Professeur — apprentissage pas-à-pas + révision espacée.
     -- Stockage entièrement séparé des neurones (pas un neurone par étape).
     CREATE TABLE IF NOT EXISTS learning_paths (
@@ -3307,4 +3341,69 @@ export function getReviewStats() {
     success_rate: totalAttempts > 0 ? Number((correct / totalAttempts).toFixed(3)) : 0,
     subjects_studied: subjectsStudied,
   };
+}
+
+// ---------------------------------------------------------------------
+// Studio MetaGPT (MG-6) — missions + audit trail. metadata/detail are
+// always JSON-serialized structural facts (state, hashes, counts, policy
+// error codes) — never credentials, never raw env, never secrets.
+// ---------------------------------------------------------------------
+
+function parseMetaGptMission(row) {
+  if (!row) return null;
+  let metadata = {};
+  try { metadata = JSON.parse(row.metadata || '{}'); } catch { metadata = {}; }
+  return { ...row, cancelled: !!row.cancelled, approved: !!row.approved, metadata };
+}
+
+export function insertMetaGptMission({ id, title, requirement, mode }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO metagpt_missions (id, title, requirement, mode, current_state, created_at, updated_at, metadata)
+    VALUES (?, ?, ?, ?, 'CREATED', ?, ?, '{}')
+  `).run(id, title, requirement, mode, now, now);
+}
+
+export function updateMetaGptMission(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (updates.current_state !== undefined) { fields.push('current_state = ?'); vals.push(updates.current_state); }
+  if (updates.model_used    !== undefined) { fields.push('model_used = ?');    vals.push(updates.model_used); }
+  if (updates.finished_at   !== undefined) { fields.push('finished_at = ?');   vals.push(updates.finished_at); }
+  if (updates.error_message !== undefined) { fields.push('error_message = ?'); vals.push(updates.error_message); }
+  if (updates.cancelled     !== undefined) { fields.push('cancelled = ?');     vals.push(updates.cancelled ? 1 : 0); }
+  if (updates.diff_sha256   !== undefined) { fields.push('diff_sha256 = ?');   vals.push(updates.diff_sha256); }
+  if (updates.approved      !== undefined) { fields.push('approved = ?');      vals.push(updates.approved ? 1 : 0); }
+  if (updates.metadata      !== undefined) { fields.push('metadata = ?');      vals.push(JSON.stringify(updates.metadata)); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE metagpt_missions SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getMetaGptMissionById(id) {
+  if (!database) return null;
+  return parseMetaGptMission(database.prepare('SELECT * FROM metagpt_missions WHERE id = ?').get(id));
+}
+
+export function getAllMetaGptMissions() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM metagpt_missions ORDER BY updated_at DESC').all().map(parseMetaGptMission);
+}
+
+export function insertMetaGptMissionEvent({ id, mission_id, from_state, to_state, detail = {} }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO metagpt_mission_events (id, mission_id, from_state, to_state, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, mission_id, from_state ?? null, to_state, JSON.stringify(detail), new Date().toISOString());
+}
+
+export function getMetaGptMissionEvents(missionId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM metagpt_mission_events WHERE mission_id = ? ORDER BY created_at ASC')
+    .all(missionId)
+    .map(row => ({ ...row, detail: (() => { try { return JSON.parse(row.detail || '{}'); } catch { return {}; } })() }));
 }

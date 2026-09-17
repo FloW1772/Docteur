@@ -38,6 +38,7 @@ import TeacherModal from './components/modals/TeacherModal';
 // actions the user may never use in a given session. Batch B (finding F9).
 const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
 const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
+const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -2320,6 +2321,8 @@ export default function App() {
   const [notebookOpen, setNotebookOpen]        = useState(false);
   useModalOpenTracking(notebookOpen);
   const [imageGeneratorOpen, setImageGeneratorOpen] = useState(false);
+  const [metaGptStudioOpen, setMetaGptStudioOpen] = useState(false);
+  useModalOpenTracking(metaGptStudioOpen);
   useModalOpenTracking(imageGeneratorOpen);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
@@ -4829,6 +4832,7 @@ export default function App() {
               case 'agents':          setAgentsOpen(true); break;
               case 'skills':          setSkillsOpen(true); break;
               case 'images':          setImageGeneratorOpen(true); break;
+              case 'metagpt':         setMetaGptStudioOpen(true); break;
               case 'kiwix':           setKiwixOpen(true); break;
               case 'todo':            setTodoOpen(true); break;
               case 'backup':          setBackupOpen(true); break;
@@ -4937,6 +4941,7 @@ export default function App() {
           />
         </Suspense>
       )}
+      {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
 
       {kiwixOpen && (
         <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />

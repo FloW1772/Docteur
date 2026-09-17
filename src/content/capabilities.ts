@@ -16,7 +16,7 @@ export interface CapabilitySection {
 export type FeatureKey =
   | 'capture' | 'console' | 'notebook' | 'teacher' | 'agents' | 'skills'
   | 'images' | 'kiwix' | 'todo' | 'backup' | 'corpus' | 'prompt-generator'
-  | 'video-summary'
+  | 'video-summary' | 'metagpt'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
   | 'settings-external' | 'settings-connections';
@@ -42,6 +42,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     emoji: '🤖',
     title: 'IA',
     items: [
+      { name: 'Studio MetaGPT', description: 'Ollama local : PRD, Design, Tasks, génération de code texte, diff et application dans un sample isolé après approbation du hash et des fichiers exacts. V1 : aucun Terminal, Bash, Browser, Git, Internet externe, cloud, exécution de code, installation de packages ou auto-apply.', feature: 'metagpt', state: 'local', keywords: ['studio', 'code', 'diff', 'approbation', 'plan'] },
       { name: 'Modèles et providers', description: 'Choisir le modèle local (Ollama) ou les clés cloud (Gemini, Groq, OpenRouter, Anthropic, OpenAI) — priorité Local rapide / Équilibré / Qualité max.', feature: 'settings-models', state: 'disponible', keywords: ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'ollama', 'router'] },
       { name: 'Professeur', description: 'Parcours d\'apprentissage guidés avec plan, explications et révisions espacées — bascule locale automatique si le cloud échoue.', feature: 'teacher', state: 'disponible' },
       { name: 'Agents', description: 'Agents de veille automatisés : création, exécution manuelle, historique.', feature: 'agents', state: 'disponible' },

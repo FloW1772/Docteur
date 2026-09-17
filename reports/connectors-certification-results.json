@@ -172,6 +172,24 @@
       "skipped": 0
     },
     {
+      "file": "test-metagpt-policy.mjs",
+      "code": 0,
+      "tests": 25,
+      "pass": 25,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-metagpt-studio.mjs",
+      "code": 0,
+      "tests": 13,
+      "pass": 13,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
       "file": "test-neurons-all-meta.mjs",
       "code": 0,
       "tests": 2,
@@ -181,10 +199,37 @@
       "skipped": 0
     },
     {
+      "file": "test-openmontage-adapter.mjs",
+      "code": 0,
+      "tests": 30,
+      "pass": 30,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-openmontage-route.mjs",
+      "code": 0,
+      "tests": 20,
+      "pass": 20,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
       "file": "test-openrouter-regression.mjs",
       "code": 0,
       "tests": 16,
       "pass": 16,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-phase1-credential-isolation.mjs",
+      "code": 0,
+      "tests": 9,
+      "pass": 9,
       "fail": 0,
       "cancelled": 0,
       "skipped": 0
@@ -326,8 +371,8 @@
     }
   ],
   "total": {
-    "tests": 530,
-    "pass": 530,
+    "tests": 627,
+    "pass": 627,
     "fail": 0,
     "cancelled": 0,
     "skipped": 0

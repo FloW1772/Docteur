@@ -47,6 +47,19 @@ tmp/
 # being committed by accident if cleanup is missed) ──────────────────────────
 __E2E_TEST__*
 
+# ── MetaGPT V1 runtime artifacts ─────────────────────────────────────────────
+# Python bytecode cache from the MetaGPT policy/runner modules under
+# cortex-server/src/lib/ (no existing Python rule in this repo otherwise).
+__pycache__/
+*.pyc
+# metagpt_runner_apply.py's atomic write uses a same-directory temp file
+# (.{name}.mg6-tmp-{pid}) before os.replace(); normally renamed away or
+# deleted on failure, but guards against one surviving a crash mid-write.
+.mg6-tmp-*
+# MG-5B/MG-6J sample outputs applied under src/ after an approved diff —
+# disposable demo/smoke content, never part of the real application source.
+src/_metagpt_generated_samples/
+
 # ── OS junk ─────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
