@@ -7,6 +7,9 @@ import { useModalOpenTracking, useAnyModalOpen } from './hooks/useModalRegistry'
 import { useVoiceActivation } from './hooks/useVoiceActivation';
 import { useGestureCamera, getGestureSensitivity, setGestureSensitivity, getEasterEggEnabled, setEasterEggEnabled } from './hooks/useGestureCamera';
 import { useScreenShare } from './hooks/useScreenShare';
+import { useCortexState } from './hooks/useCortexState';
+import type { ActivityEntry } from './components/layout/ActivityPanel';
+import ActivityPanel from './components/layout/ActivityPanel';
 import { speakEasterEgg } from './lib/easterEggVoice';
 import VoiceIndicator from './components/layout/VoiceIndicator';
 import GestureOverlay from './components/layout/GestureOverlay';
@@ -2324,6 +2327,11 @@ export default function App() {
   const [metaGptStudioOpen, setMetaGptStudioOpen] = useState(false);
   useModalOpenTracking(metaGptStudioOpen);
   useModalOpenTracking(imageGeneratorOpen);
+  // Activity panel is a lightweight, non-blocking overlay (role="dialog"
+  // aria-modal="false") — deliberately NOT registered with
+  // useModalOpenTracking, since it must not count as "a modal is open" for
+  // features that pause behind that check (voice wake-word, etc.).
+  const [activityPanelOpen, setActivityPanelOpen] = useState(false);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
   useModalOpenTracking(todoOpen);
@@ -4485,6 +4493,36 @@ export default function App() {
   const pendingDeletePage = pendingDeleteId ? pages.find(p => p.id === pendingDeleteId) : null;
   const cortexBusy        = cortex.indexing.size > 0 || cortex.queueSize > 0;
 
+  // ── Cortex Command Center: derived visual state + activity entries ────────
+  // Every input below is state App.tsx already tracks for existing features
+  // (TopBar's cortex badge, reindex button, batch progress) — no new polling,
+  // no simulated status.
+  const cortexVisualState = useCortexState({
+    cortexAvailable: cortex.available,
+    cortexBusy,
+    voiceState: voice.state,
+    searchActive: reindexRunning,
+    generatingActive: !!batchProgress,
+  });
+
+  const activityEntries: ActivityEntry[] = [
+    ...(cortex.indexing.size > 0
+      ? [{ id: 'cortex-indexing', label: 'Cortex indexe', detail: `${cortex.indexing.size} en cours`, state: 'thinking' as const }]
+      : []),
+    ...(cortex.queueSize > 0
+      ? [{ id: 'cortex-queue', label: 'File d\'indexation', detail: `${cortex.queueSize} en attente`, state: 'thinking' as const }]
+      : []),
+    ...(reindexRunning
+      ? [{ id: 'reindex', label: 'Réindexation en cours', state: 'searching' as const }]
+      : []),
+    ...(batchProgress
+      ? [{ id: 'batch', label: batchProgress.operation, detail: `${batchProgress.current}/${batchProgress.total}`, state: 'generating' as const }]
+      : []),
+    ...(!cortex.available
+      ? [{ id: 'cortex-offline', label: 'Serveur cognitif déconnecté', state: 'error' as const }]
+      : []),
+  ];
+
   // Load voice settings once cortex is available
   useEffect(() => {
     if (!cortex.available) return;
@@ -4505,8 +4543,16 @@ export default function App() {
           indexingIds={cortex.indexing}
           highlightedIds={sourceHighlights}
           gestureInputRef={gestureInputRef}
+          cortexState={cortexVisualState}
         />
       )}
+
+      <ActivityPanel
+        cortexState={cortexVisualState}
+        entries={activityEntries}
+        open={activityPanelOpen}
+        onClose={() => setActivityPanelOpen(false)}
+      />
 
       <div className="shell-topbar">
         <TopBar
@@ -4521,6 +4567,8 @@ export default function App() {
           onBackupOpen={() => setBackupOpen(true)}
           onCorpusOpen={() => setCorpusOpen(true)}
           onActivityLogOpen={() => setActivityLogOpen(true)}
+          onActivityPanelOpen={() => setActivityPanelOpen(open => !open)}
+          activityCount={activityEntries.length}
           onSettingsOpen={() => setSettingsOpen(true)}
           onHelpOpen={() => setHelpOpen(true)}
           onRoadmapOpen={() => setRoadmapOpen(true)}

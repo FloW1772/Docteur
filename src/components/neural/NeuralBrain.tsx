@@ -6,6 +6,8 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { Page } from '../../lib/types';
+import type { CortexVisualState } from '../../hooks/useCortexState';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 
 interface OrbitalNode {
   pageId: string;
@@ -125,7 +127,16 @@ interface Props {
   indexingIds?: Set<string>;    // IDs currently being indexed by the cortex server
   highlightedIds?: Set<string>; // IDs of search result sources to highlight
   gestureInputRef?: React.MutableRefObject<((rotDx: number, rotDy: number, zoomDelta: number) => void) | null>;
+  /** Cortex Command Center global activity state — a subtle tint/intensity
+   * shift on the core plasma, mapped from useCortexState(). Optional so
+   * every existing caller keeps working unchanged. */
+  cortexState?: CortexVisualState;
 }
+
+// Index into the shader's uCortexState — order matches CORTEX_STATE_INDEX below.
+const CORTEX_STATE_INDEX: Record<CortexVisualState, number> = {
+  idle: 0, listening: 1, thinking: 2, searching: 3, generating: 4, done: 5, error: 6,
+};
 
 // ── Visual control panel ──────────────────────────────────────────────────────
 
@@ -360,11 +371,14 @@ function createCorePlasmaMaterial(): THREE.ShaderMaterial {
       uTime: { value: 0 },
       uHover: { value: 0 },
       uWake: { value: 0 },
+      uCortexState: { value: 0 },
+      uCortexPulse: { value: 0 },
     },
     vertexShader: `
       uniform float uTime;
       uniform float uHover;
       uniform float uWake;
+      uniform float uCortexPulse;
       varying vec3 vNormal;
       varying vec3 vPosition;
       varying vec2 vUv;
@@ -410,7 +424,10 @@ function createCorePlasmaMaterial(): THREE.ShaderMaterial {
         float n = fbm(position * 2.4 + vec3(uTime * 0.45, uTime * 0.28, uTime * 0.18));
         float ripple = sin(uTime * 2.1 + position.y * 7.0 + n * 5.0) * 0.05;
         float wake = sin(uTime * 3.2 + uWake * 6.2831) * 0.025;
-        vec3 displaced = position + normal * (n * 0.06 + ripple + wake + uHover * 0.015);
+        // Cortex activity adds a gentle extra breathing amplitude — never a
+        // sharp jump, so state transitions read as a mood shift, not a glitch.
+        float cortexBreath = sin(uTime * 2.6) * 0.02 * uCortexPulse;
+        vec3 displaced = position + normal * (n * 0.06 + ripple + wake + uHover * 0.015 + cortexBreath);
         gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
       }
     `,
@@ -418,6 +435,8 @@ function createCorePlasmaMaterial(): THREE.ShaderMaterial {
       uniform float uTime;
       uniform float uHover;
       uniform float uWake;
+      uniform float uCortexState;
+      uniform float uCortexPulse;
       varying vec3 vNormal;
       varying vec3 vPosition;
       varying vec2 vUv;
@@ -453,6 +472,28 @@ function createCorePlasmaMaterial(): THREE.ShaderMaterial {
         // Subtle violet corona at rim
         vec3 corona = vec3(0.15, 0.08, 0.25);
         color = mix(color, corona, fresnel * 0.18);
+
+        // Cortex activity tint — a measured, STATIC color shift toward the
+        // state's accent, applied only at the rim (fresnel). Deliberately
+        // independent of uCortexPulse (which only drives the animated
+        // vertex "breathing" amplitude) so the tint stays visible even
+        // under prefers-reduced-motion, where breathing is suppressed but
+        // a color cue is not motion and stays informative. idle (state 0)
+        // has no tintX branch matched, so it naturally stays neutral.
+        vec3 tintListening = vec3(0.05, 0.55, 0.35);  // emerald
+        vec3 tintThinking  = vec3(0.10, 0.35, 0.55);  // cyan
+        vec3 tintSearching = vec3(0.10, 0.35, 0.55);  // cyan (same family as thinking)
+        vec3 tintGenerating = vec3(0.55, 0.35, 0.08); // amber
+        vec3 tintDone      = vec3(0.05, 0.55, 0.35);  // emerald
+        vec3 tintError     = vec3(0.55, 0.10, 0.12);  // red
+        vec3 cortexTint = vec3(0.0);
+        if (uCortexState > 0.5 && uCortexState < 1.5) cortexTint = tintListening;
+        else if (uCortexState > 1.5 && uCortexState < 2.5) cortexTint = tintThinking;
+        else if (uCortexState > 2.5 && uCortexState < 3.5) cortexTint = tintSearching;
+        else if (uCortexState > 3.5 && uCortexState < 4.5) cortexTint = tintGenerating;
+        else if (uCortexState > 4.5 && uCortexState < 5.5) cortexTint = tintDone;
+        else if (uCortexState > 5.5) cortexTint = tintError;
+        color = mix(color, cortexTint, fresnel * 0.32);
 
         float alpha = 0.48 + hotspot * 0.35 + fresnel * 0.08;
         gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
@@ -532,6 +573,9 @@ class OrbitalBrain {
   private hoveredNodeId: string | null = null;
   private hoveredCentral = false;
   private wakePulse = 0;
+  private cortexState: CortexVisualState = 'idle';
+  private cortexPulse = 0; // eased toward 1 when cortexState !== 'idle'/'done', else toward 0
+  reducedMotion = false; // set externally; dampens breathing/wake amplitude when true
   private dragActive = false;
   private readonly dragStart = new THREE.Vector2();
   private readonly dragTargetRotation = new THREE.Vector2(0, 0);
@@ -1437,6 +1481,10 @@ class OrbitalBrain {
     }
   }
 
+  setCortexState(state: CortexVisualState): void {
+    this.cortexState = state;
+  }
+
   setIndexingIds(ids: Set<string>): void {
     this.indexingIds = ids;
   }
@@ -1752,10 +1800,21 @@ class OrbitalBrain {
     if (this.centralGlass && this.centralGlass.material instanceof THREE.MeshPhysicalMaterial) {
       this.centralGlass.material.emissiveIntensity = 0.38 + this.wakePulse * 0.06 + Math.sin(t * 1.5) * 0.02;
     }
+    // Ease cortexPulse toward its target rather than snapping — this is the
+    // "measured variation, no glitch" requirement: a state change nudges the
+    // core's mood over ~1s instead of jumping instantly.
+    const cortexTarget = this.cortexState === 'idle' ? 0 : 1;
+    this.cortexPulse += (cortexTarget - this.cortexPulse) * 0.04;
+
     if (this.centralPlasma && this.centralPlasma.material instanceof THREE.ShaderMaterial) {
       this.centralPlasma.material.uniforms.uTime.value = t;
       this.centralPlasma.material.uniforms.uHover.value = this.hoveredCentral ? 1 : 0;
-      this.centralPlasma.material.uniforms.uWake.value = this.wakePulse;
+      // Reduced motion: drop wake/breathing displacement (movement), but
+      // keep the state color tint (uCortexState) — the tint alone still
+      // communicates activity without producing motion.
+      this.centralPlasma.material.uniforms.uWake.value = this.reducedMotion ? 0 : this.wakePulse;
+      this.centralPlasma.material.uniforms.uCortexState.value = CORTEX_STATE_INDEX[this.cortexState];
+      this.centralPlasma.material.uniforms.uCortexPulse.value = this.reducedMotion ? 0 : this.cortexPulse;
     }
 
     this.ringMeshes.forEach((mesh, index) => {
@@ -1946,7 +2005,9 @@ function NeuralBrain({
   indexingIds,
   highlightedIds,
   gestureInputRef,
+  cortexState,
 }: Props) {
+  const reducedMotion = useReducedMotion();
   const canvasRef        = useRef<HTMLCanvasElement>(null);
   const tooltipRef       = useRef<HTMLDivElement>(null);
   const brainRef         = useRef<OrbitalBrain | null>(null);
@@ -2020,6 +2081,7 @@ function NeuralBrain({
       bloomEnabled,
     );
     brain.setVisualSettings(settingsRef.current);
+    brain.reducedMotion = reducedMotion;
     brainRef.current = brain;
 
     canvasRef.current.style.width = '100%';
@@ -2118,6 +2180,14 @@ function NeuralBrain({
   useEffect(() => {
     brainRef.current?.setHighlightedIds(highlightedIds ?? new Set());
   }, [highlightedIds]);
+
+  useEffect(() => {
+    brainRef.current?.setCortexState(cortexState ?? 'idle');
+  }, [cortexState]);
+
+  useEffect(() => {
+    if (brainRef.current) brainRef.current.reducedMotion = reducedMotion;
+  }, [reducedMotion]);
 
   useEffect(() => {
     if (!tooltipRef.current) return;
@@ -2399,5 +2469,6 @@ export default memo(NeuralBrain, (prev, next) =>
   prev.onNodeSelect === next.onNodeSelect &&
   prev.bloomEnabled === next.bloomEnabled &&
   setsEqual(prev.indexingIds, next.indexingIds) &&
-  setsEqual(prev.highlightedIds, next.highlightedIds)
+  setsEqual(prev.highlightedIds, next.highlightedIds) &&
+  prev.cortexState === next.cortexState
 );

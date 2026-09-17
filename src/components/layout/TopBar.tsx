@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Clapperboard, Cog, GraduationCap, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2, Library, Image as ImageIcon, NotebookText } from 'lucide-react';
+import { Activity, Bot, Clapperboard, Cog, GraduationCap, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2, Library, Image as ImageIcon, NotebookText } from 'lucide-react';
 import type { VoiceState } from '../../hooks/useVoiceActivation';
 import type { GestureState } from '../../hooks/useGestureCamera';
 import type { ScreenShareState } from '../../hooks/useScreenShare';
@@ -17,6 +17,8 @@ interface Props {
   readonly onBackupOpen:     () => void;
   readonly onCorpusOpen:     () => void;
   readonly onActivityLogOpen: () => void;
+  readonly onActivityPanelOpen?: () => void;
+  readonly activityCount?: number;
   readonly onSettingsOpen:   () => void;
   readonly onHelpOpen:       () => void;
   readonly onRoadmapOpen:    () => void;
@@ -56,6 +58,8 @@ export default function TopBar({
   onBackupOpen,
   onCorpusOpen,
   onActivityLogOpen,
+  onActivityPanelOpen,
+  activityCount = 0,
   onSettingsOpen,
   onHelpOpen,
   onRoadmapOpen,
@@ -348,6 +352,30 @@ export default function TopBar({
         <button className="topbar-action topbar-action--icon" type="button" title="Journal d'activité" onClick={onActivityLogOpen}>
           <ScrollText size={12} />
         </button>
+
+        {onActivityPanelOpen && (
+          <button
+            className="topbar-action topbar-action--icon"
+            type="button"
+            title="Panneau d'activité Cortex"
+            onClick={onActivityPanelOpen}
+            style={{ position: 'relative' }}
+          >
+            <Activity size={12} />
+            {activityCount > 0 && (
+              <span style={{
+                position: 'absolute', top: 0, right: 0,
+                background: '#5ee7ff', color: '#0a0814',
+                borderRadius: '50%', width: 10, height: 10,
+                fontSize: 7, fontWeight: 700,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                lineHeight: 1,
+              }}>
+                {activityCount > 9 ? '9+' : activityCount}
+              </span>
+            )}
+          </button>
+        )}
 
         <button className="topbar-action topbar-action--icon" type="button" title="Agents automatiques" onClick={onAgentsOpen}>
           <Bot size={12} />
