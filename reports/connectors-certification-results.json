@@ -154,6 +154,42 @@
       "skipped": 0
     },
     {
+      "file": "test-investment-calc.mjs",
+      "code": 0,
+      "tests": 47,
+      "pass": 47,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-investment-route.mjs",
+      "code": 0,
+      "tests": 33,
+      "pass": 33,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-investment-scoring.mjs",
+      "code": 0,
+      "tests": 25,
+      "pass": 25,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-investment-timeline.mjs",
+      "code": 0,
+      "tests": 21,
+      "pass": 21,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
       "file": "test-jobs-route.mjs",
       "code": 0,
       "tests": 5,
@@ -371,8 +407,8 @@
     }
   ],
   "total": {
-    "tests": 663,
-    "pass": 663,
+    "tests": 789,
+    "pass": 789,
     "fail": 0,
     "cancelled": 0,
     "skipped": 0

@@ -42,6 +42,7 @@ import TeacherModal from './components/modals/TeacherModal';
 const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
 const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
 const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioModal'));
+const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -2332,6 +2333,8 @@ export default function App() {
   // useModalOpenTracking, since it must not count as "a modal is open" for
   // features that pause behind that check (voice wake-word, etc.).
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
+  const [investmentStudioOpen, setInvestmentStudioOpen] = useState(false);
+  useModalOpenTracking(investmentStudioOpen);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
   useModalOpenTracking(todoOpen);
@@ -4881,6 +4884,7 @@ export default function App() {
               case 'skills':          setSkillsOpen(true); break;
               case 'images':          setImageGeneratorOpen(true); break;
               case 'metagpt':         setMetaGptStudioOpen(true); break;
+              case 'investment':      setInvestmentStudioOpen(true); break;
               case 'kiwix':           setKiwixOpen(true); break;
               case 'todo':            setTodoOpen(true); break;
               case 'backup':          setBackupOpen(true); break;
@@ -4990,6 +4994,7 @@ export default function App() {
         </Suspense>
       )}
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
+      {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
 
       {kiwixOpen && (
         <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />

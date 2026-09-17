@@ -574,6 +574,136 @@ export function initSqlite(sqlitePath) {
       generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (notebook_id, level, theme_key)
     );
+
+    -- Investment Agent (analysis + research + PAPER TRADING ONLY — see
+    -- reports/INVESTMENT_AGENT_2026-09.md). No table here ever represents a
+    -- real broker connection, a real order, or real money. financial_periods
+    -- rows are user-entered (V1 has no live market data feed); each
+    -- research_sources row records exact provenance (URL, retrieval
+    -- timestamp, whether the content is real-time/delayed/historical) for
+    -- any web-derived fact.
+    CREATE TABLE IF NOT EXISTS securities (
+      id TEXT PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      asset_class TEXT NOT NULL DEFAULT 'equity',
+      currency TEXT NOT NULL DEFAULT 'USD',
+      exchange TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- User-entered fundamentals for one security over one reporting period.
+    -- V1 has no live market data API (deliberate choice — see mission
+    -- decision), so every number here traces back to a research_sources row
+    -- or explicit manual entry, never an unattributed live feed.
+    CREATE TABLE IF NOT EXISTS financial_periods (
+      id TEXT PRIMARY KEY,
+      security_id TEXT NOT NULL,
+      period_label TEXT NOT NULL,
+      period_type TEXT NOT NULL DEFAULT 'annual',
+      fiscal_end_date TEXT,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      data TEXT NOT NULL DEFAULT '{}',
+      data_kind TEXT NOT NULL DEFAULT 'reported',
+      source_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Provenance record for every externally-sourced fact used in an
+    -- analysis. data_recency distinguishes real_time / delayed / last_close
+    -- / historical / analyst_estimate — never presented as more current
+    -- than it is (mission requirement 2).
+    CREATE TABLE IF NOT EXISTS research_sources (
+      id TEXT PRIMARY KEY,
+      security_id TEXT,
+      url TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      source_type TEXT NOT NULL DEFAULT 'web',
+      data_recency TEXT NOT NULL DEFAULT 'historical',
+      financial_period_label TEXT,
+      currency TEXT,
+      limitations TEXT NOT NULL DEFAULT '',
+      retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      untrusted INTEGER NOT NULL DEFAULT 1,
+      content_excerpt TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS investment_reports (
+      id TEXT PRIMARY KEY,
+      security_id TEXT,
+      report_type TEXT NOT NULL DEFAULT 'fundamentals',
+      title TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '{}',
+      source_ids TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Paper (simulated) portfolios only. No broker_id, no credentials,
+    -- no live-order fields exist on this table by design.
+    CREATE TABLE IF NOT EXISTS paper_portfolios (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT 'Portefeuille simulé',
+      base_currency TEXT NOT NULL DEFAULT 'USD',
+      starting_cash REAL NOT NULL DEFAULT 100000,
+      cash REAL NOT NULL DEFAULT 100000,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS paper_positions (
+      id TEXT PRIMARY KEY,
+      portfolio_id TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      avg_cost_basis REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (portfolio_id, symbol)
+    );
+
+    -- action is always PAPER_BUY or PAPER_SELL (enforced in
+    -- investment-policy.js, never REAL_BUY/REAL_SELL/LIVE_ORDER — see
+    -- mission requirement 11). simulated_price is a user-supplied or
+    -- research-derived price snapshot, never a live execution price.
+    CREATE TABLE IF NOT EXISTS paper_transactions (
+      id TEXT PRIMARY KEY,
+      portfolio_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      simulated_price REAL NOT NULL,
+      cash_after REAL NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS investment_watchlists (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT 'Watchlist',
+      symbols TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- News/events timeline entries (mission MG-... Investment Agent V1
+    -- finalization). Every row must reference a research_sources id —
+    -- events are built exclusively from already-collected, sourced
+    -- content, never invented. date_reliable=0 means the event is kept
+    -- out of chronological ordering (see investment-timeline.js).
+    CREATE TABLE IF NOT EXISTS investment_events (
+      id TEXT PRIMARY KEY,
+      security_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      event_date TEXT,
+      date_reliable INTEGER NOT NULL DEFAULT 0,
+      event_type TEXT NOT NULL DEFAULT 'other',
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      market_interpretation_statement TEXT,
+      market_interpretation_basis TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Idempotent migrations — ignore if column/index already exists
@@ -3406,4 +3536,244 @@ export function getMetaGptMissionEvents(missionId) {
   return database.prepare('SELECT * FROM metagpt_mission_events WHERE mission_id = ? ORDER BY created_at ASC')
     .all(missionId)
     .map(row => ({ ...row, detail: (() => { try { return JSON.parse(row.detail || '{}'); } catch { return {}; } })() }));
+}
+
+// ---------------------------------------------------------------------
+// Investment Agent — analysis + research + PAPER TRADING ONLY.
+// No table/function here ever touches a real broker or moves real money.
+// ---------------------------------------------------------------------
+
+export function upsertSecurity({ id, symbol, name = '', asset_class = 'equity', currency = 'USD', exchange = '' }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO securities (id, symbol, name, asset_class, currency, exchange, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET symbol = excluded.symbol, name = excluded.name, asset_class = excluded.asset_class,
+      currency = excluded.currency, exchange = excluded.exchange, updated_at = excluded.updated_at
+  `).run(id, symbol, name, asset_class, currency, exchange, now, now);
+}
+
+export function getSecurityById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM securities WHERE id = ?').get(id) ?? null;
+}
+
+export function findSecuritiesBySymbol(symbol) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM securities WHERE symbol = ? COLLATE NOCASE').all(symbol);
+}
+
+export function getAllSecurities() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM securities ORDER BY symbol ASC').all();
+}
+
+function parseFinancialPeriod(row) {
+  if (!row) return null;
+  let data = {};
+  try { data = JSON.parse(row.data || '{}'); } catch { data = {}; }
+  return { ...row, data };
+}
+
+export function insertFinancialPeriod({ id, security_id, period_label, period_type = 'annual', fiscal_end_date = null, currency = 'USD', data = {}, data_kind = 'reported', source_id = null }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO financial_periods (id, security_id, period_label, period_type, fiscal_end_date, currency, data, data_kind, source_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, security_id, period_label, period_type, fiscal_end_date, currency, JSON.stringify(data), data_kind, source_id, now, now);
+}
+
+export function getFinancialPeriodsForSecurity(securityId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM financial_periods WHERE security_id = ? ORDER BY fiscal_end_date ASC, period_label ASC')
+    .all(securityId).map(parseFinancialPeriod);
+}
+
+export function insertResearchSource({ id, security_id = null, url, title = '', source_type = 'web', data_recency = 'historical', financial_period_label = null, currency = null, limitations = '', untrusted = true, content_excerpt = '' }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO research_sources (id, security_id, url, title, source_type, data_recency, financial_period_label, currency, limitations, retrieved_at, untrusted, content_excerpt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, security_id, url, title, source_type, data_recency, financial_period_label, currency, limitations, new Date().toISOString(), untrusted ? 1 : 0, content_excerpt);
+}
+
+export function getResearchSourcesForSecurity(securityId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM research_sources WHERE security_id = ? ORDER BY retrieved_at DESC')
+    .all(securityId).map(row => ({ ...row, untrusted: !!row.untrusted }));
+}
+
+export function getResearchSourceById(id) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM research_sources WHERE id = ?').get(id);
+  return row ? { ...row, untrusted: !!row.untrusted } : null;
+}
+
+export function insertInvestmentReport({ id, security_id = null, report_type = 'fundamentals', title = '', content = {}, source_ids = [] }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO investment_reports (id, security_id, report_type, title, content, source_ids, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, security_id, report_type, title, JSON.stringify(content), JSON.stringify(source_ids), new Date().toISOString());
+}
+
+export function getInvestmentReportById(id) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM investment_reports WHERE id = ?').get(id);
+  if (!row) return null;
+  let content = {}, source_ids = [];
+  try { content = JSON.parse(row.content || '{}'); } catch { content = {}; }
+  try { source_ids = JSON.parse(row.source_ids || '[]'); } catch { source_ids = []; }
+  return { ...row, content, source_ids };
+}
+
+export function getInvestmentReportsForSecurity(securityId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM investment_reports WHERE security_id = ? ORDER BY created_at DESC').all(securityId)
+    .map(row => getInvestmentReportById(row.id));
+}
+
+// ── Paper portfolio (simulation only — never a real broker) ────────────
+
+export function createPaperPortfolio({ id, name = 'Portefeuille simulé', base_currency = 'USD', starting_cash = 100000 }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO paper_portfolios (id, name, base_currency, starting_cash, cash, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, base_currency, starting_cash, starting_cash, now, now);
+}
+
+export function getPaperPortfolioById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM paper_portfolios WHERE id = ?').get(id) ?? null;
+}
+
+export function getAllPaperPortfolios() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM paper_portfolios ORDER BY updated_at DESC').all();
+}
+
+export function getPaperPositions(portfolioId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM paper_positions WHERE portfolio_id = ? AND quantity != 0 ORDER BY symbol ASC').all(portfolioId);
+}
+
+export function getPaperPosition(portfolioId, symbol) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM paper_positions WHERE portfolio_id = ? AND symbol = ? COLLATE NOCASE').get(portfolioId, symbol) ?? null;
+}
+
+export function getPaperTransactions(portfolioId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM paper_transactions WHERE portfolio_id = ? ORDER BY created_at DESC').all(portfolioId);
+}
+
+/**
+ * Applies one PAPER_BUY or PAPER_SELL transaction atomically: updates cash,
+ * upserts the position (weighted-average cost basis on buy; reduces
+ * quantity on sell), and records the transaction row. Caller
+ * (investment-policy.js) is responsible for validating `action` is one of
+ * PAPER_BUY/PAPER_SELL before calling this — this function trusts its
+ * caller's action value but never accepts REAL_BUY/REAL_SELL/LIVE_ORDER
+ * because no caller in this codebase is permitted to construct one (see
+ * investment-policy.js's explicit rejection).
+ */
+export function applyPaperTransaction({ id, portfolio_id, action, symbol, quantity, simulated_price, note = '' }) {
+  if (!database) return { ok: false, error: 'database_unavailable' };
+  const portfolio = getPaperPortfolioById(portfolio_id);
+  if (!portfolio) return { ok: false, error: 'portfolio_not_found' };
+
+  const cost = quantity * simulated_price;
+  const existing = getPaperPosition(portfolio_id, symbol);
+  const now = new Date().toISOString();
+
+  if (action === 'PAPER_BUY') {
+    if (portfolio.cash < cost) return { ok: false, error: 'insufficient_cash' };
+    const newQuantity = (existing?.quantity ?? 0) + quantity;
+    const newCostBasis = existing
+      ? ((existing.quantity * existing.avg_cost_basis) + cost) / newQuantity
+      : simulated_price;
+    const newCash = portfolio.cash - cost;
+
+    const txn = database.transaction(() => {
+      database.prepare(`
+        INSERT INTO paper_positions (id, portfolio_id, symbol, quantity, avg_cost_basis, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(portfolio_id, symbol) DO UPDATE SET quantity = excluded.quantity, avg_cost_basis = excluded.avg_cost_basis, updated_at = excluded.updated_at
+      `).run(existing?.id ?? id + '-pos', portfolio_id, symbol, newQuantity, newCostBasis, now);
+      database.prepare('UPDATE paper_portfolios SET cash = ?, updated_at = ? WHERE id = ?').run(newCash, now, portfolio_id);
+      database.prepare(`
+        INSERT INTO paper_transactions (id, portfolio_id, action, symbol, quantity, simulated_price, cash_after, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, portfolio_id, action, symbol, quantity, simulated_price, newCash, note, now);
+    });
+    txn();
+    return { ok: true, cash: newCash, quantity: newQuantity, avgCostBasis: newCostBasis };
+  }
+
+  if (action === 'PAPER_SELL') {
+    if (!existing || existing.quantity < quantity) return { ok: false, error: 'position_insufficient' };
+    const newQuantity = existing.quantity - quantity;
+    const newCash = portfolio.cash + cost;
+
+    const txn = database.transaction(() => {
+      database.prepare('UPDATE paper_positions SET quantity = ?, updated_at = ? WHERE id = ?').run(newQuantity, now, existing.id);
+      database.prepare('UPDATE paper_portfolios SET cash = ?, updated_at = ? WHERE id = ?').run(newCash, now, portfolio_id);
+      database.prepare(`
+        INSERT INTO paper_transactions (id, portfolio_id, action, symbol, quantity, simulated_price, cash_after, note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, portfolio_id, action, symbol, quantity, simulated_price, newCash, note, now);
+    });
+    txn();
+    return { ok: true, cash: newCash, quantity: newQuantity, avgCostBasis: existing.avg_cost_basis };
+  }
+
+  return { ok: false, error: 'action_denied' };
+}
+
+export function insertInvestmentWatchlist({ id, name = 'Watchlist', symbols = [] }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO investment_watchlists (id, name, symbols, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, name, JSON.stringify(symbols), now, now);
+}
+
+export function updateInvestmentWatchlist(id, { name, symbols }) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (name !== undefined) { fields.push('name = ?'); vals.push(name); }
+  if (symbols !== undefined) { fields.push('symbols = ?'); vals.push(JSON.stringify(symbols)); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE investment_watchlists SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getAllInvestmentWatchlists() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM investment_watchlists ORDER BY updated_at DESC').all()
+    .map(row => ({ ...row, symbols: (() => { try { return JSON.parse(row.symbols || '[]'); } catch { return []; } })() }));
+}
+
+// ── Timeline events — built exclusively from already-sourced research ──
+
+export function insertInvestmentEvent({ id, security_id, source_id, event_date = null, date_reliable = false, event_type = 'other', title, summary = '', market_interpretation_statement = null, market_interpretation_basis = null }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO investment_events (id, security_id, source_id, event_date, date_reliable, event_type, title, summary, market_interpretation_statement, market_interpretation_basis, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, security_id, source_id, event_date, date_reliable ? 1 : 0, event_type, title, summary, market_interpretation_statement, market_interpretation_basis, new Date().toISOString());
+}
+
+export function getInvestmentEventsForSecurity(securityId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM investment_events WHERE security_id = ? ORDER BY date_reliable DESC, event_date ASC')
+    .all(securityId)
+    .map(row => ({ ...row, date_reliable: !!row.date_reliable }));
 }
