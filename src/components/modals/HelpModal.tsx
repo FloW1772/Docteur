@@ -1,12 +1,29 @@
-import { useEffect } from 'react';
-import { X, HelpCircle } from 'lucide-react';
-import { CAPABILITIES, LIMITATIONS, SHORTCUTS, GESTURES } from '../../content/capabilities';
+import { useEffect, useMemo, useState } from 'react';
+import { X, HelpCircle, Search } from 'lucide-react';
+import { CAPABILITIES, LIMITATIONS, SHORTCUTS, GESTURES, HELP_DIRECTORY, type FeatureKey, type FeatureState } from '../../content/capabilities';
 
 interface Props {
   onClose: () => void;
+  onOpenFeature: (feature: FeatureKey) => void;
 }
 
-export default function HelpModal({ onClose }: Props) {
+const STATE_LABEL: Record<FeatureState, string> = {
+  disponible:   'Disponible',
+  local:        'Local',
+  a_configurer: 'À configurer',
+  partiel:      'Partiel',
+};
+
+const STATE_COLOR: Record<FeatureState, string> = {
+  disponible:   '#3dffaa',
+  local:        '#5ee7ff',
+  a_configurer: '#ff8b3d',
+  partiel:      '#a78bfa',
+};
+
+export default function HelpModal({ onClose, onOpenFeature }: Props) {
+  const [query, setQuery] = useState('');
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
@@ -15,13 +32,28 @@ export default function HelpModal({ onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  const filteredDirectory = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return HELP_DIRECTORY;
+    return HELP_DIRECTORY
+      .map(category => ({
+        ...category,
+        items: category.items.filter(item =>
+          item.name.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q) ||
+          item.keywords?.some(k => k.toLowerCase().includes(q))
+        ),
+      }))
+      .filter(category => category.items.length > 0);
+  }, [query]);
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
         className="modal-box"
         onClick={e => e.stopPropagation()}
         style={{
-          width: 'min(600px, calc(100vw - 24px))',
+          width: 'min(720px, calc(100vw - 24px))',
           border: '1px solid rgba(94,231,255,0.2)',
           borderRadius: 12,
           padding: 0,
@@ -40,10 +72,10 @@ export default function HelpModal({ onClose }: Props) {
           <HelpCircle size={16} style={{ color: '#5ee7ff', flexShrink: 0 }} />
           <div className="flex-1">
             <h3 className="font-grotesk font-semibold text-base" style={{ color: '#f0eaff' }}>
-              Capacités de Docteur
+              Centre d'aide
             </h3>
             <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
-              Ce que Docteur sait — et ne sait pas encore — faire
+              Fonctionnalités de Docteur — cherche ou parcours, puis ouvre directement
             </p>
           </div>
           <button type="button" title="Fermer (Echap)" style={{ color: '#5a4a7a' }} onClick={onClose}>
@@ -51,8 +83,106 @@ export default function HelpModal({ onClose }: Props) {
           </button>
         </div>
 
+        {/* Search */}
+        <div className="px-5 py-3" style={{ borderBottom: '1px solid rgba(94,231,255,0.1)', flexShrink: 0 }}>
+          <div className="flex items-center gap-2" style={{
+            background: 'rgba(94,231,255,0.05)',
+            border: '1px solid rgba(94,231,255,0.15)',
+            borderRadius: 8,
+            padding: '7px 10px',
+          }}>
+            <Search size={13} style={{ color: '#5ee7ff', flexShrink: 0 }} />
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Rechercher une fonctionnalité (ex. drive, mémoire, images…)"
+              aria-label="Rechercher une fonctionnalité"
+              className="font-mono text-xs flex-1"
+              style={{ background: 'transparent', border: 'none', outline: 'none', color: '#e4e0f5' }}
+            />
+          </div>
+        </div>
+
         {/* Scrollable body */}
         <div style={{ overflowY: 'auto', flex: 1 }}>
+
+          {/* Feature directory */}
+          <div className="px-5 py-4 flex flex-col gap-5">
+            {filteredDirectory.length === 0 && (
+              <p className="font-mono text-xs" style={{ color: '#5a4a7a' }}>
+                Aucune fonctionnalité ne correspond à « {query} ».
+              </p>
+            )}
+            {filteredDirectory.map(category => (
+              <div key={category.title}>
+                <p className="font-mono text-xs mb-2" style={{ color: '#5ee7ff', letterSpacing: '0.15em' }}>
+                  {category.emoji} {category.title.toUpperCase()}
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {category.items.map(item => (
+                    <div
+                      key={item.name}
+                      className="flex items-start gap-2"
+                      style={{
+                        background: 'rgba(255,255,255,0.02)',
+                        border: '1px solid rgba(255,255,255,0.05)',
+                        borderRadius: 8,
+                        padding: '8px 10px',
+                      }}
+                    >
+                      <div className="flex-1" style={{ minWidth: 0 }}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-grotesk text-xs font-semibold" style={{ color: '#e4e0f5' }}>
+                            {item.name}
+                          </span>
+                          <span
+                            className="font-mono"
+                            style={{
+                              fontSize: 8,
+                              color: STATE_COLOR[item.state],
+                              border: `1px solid ${STATE_COLOR[item.state]}33`,
+                              background: `${STATE_COLOR[item.state]}14`,
+                              borderRadius: 4,
+                              padding: '1px 6px',
+                              letterSpacing: '0.05em',
+                            }}
+                          >
+                            {STATE_LABEL[item.state]}
+                          </span>
+                        </div>
+                        <p className="font-mono text-xs mt-1" style={{ color: '#8070a8', lineHeight: 1.5 }}>
+                          {item.description}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onOpenFeature(item.feature)}
+                        className="font-mono"
+                        style={{
+                          fontSize: 10,
+                          flexShrink: 0,
+                          color: '#5ee7ff',
+                          background: 'rgba(94,231,255,0.08)',
+                          border: '1px solid rgba(94,231,255,0.2)',
+                          borderRadius: 6,
+                          padding: '5px 10px',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Ouvrir
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {!query.trim() && (
+          <>
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', margin: '0 20px' }} />
 
           {/* Capabilities sections */}
           <div className="px-5 py-4 flex flex-col gap-5">
@@ -179,6 +309,8 @@ export default function HelpModal({ onClose }: Props) {
               Pour mettre à jour ce contenu : src/content/capabilities.ts
             </p>
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>

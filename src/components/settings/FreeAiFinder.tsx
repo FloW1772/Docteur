@@ -58,6 +58,51 @@ function openDocsUrl(url: string | null) {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+function ProviderCard({ p }: { p: FreeAiProvider }) {
+  const state = DOCTEUR_STATE_LABELS[p.docteurState];
+  const freshnessNote = FRESHNESS_LABELS[p.verificationFreshness];
+  return (
+    <div className="px-3 py-3 rounded flex flex-col gap-1.5" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-grotesk font-semibold text-xs" style={{ color: '#f0eaff' }}>{p.name}</span>
+        {p.freeType && (
+          <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, background: 'rgba(61,255,170,0.1)', color: '#3dffaa', border: '1px solid rgba(61,255,170,0.2)' }}>
+            {FREE_TYPE_LABELS[p.freeType] ?? '❓ Conditions à vérifier'}
+          </span>
+        )}
+        <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, color: state.color, border: `1px solid ${state.color}40`, background: `${state.color}14` }}>
+          {state.label}
+        </span>
+      </div>
+
+      {p.freeTier && <p className="font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>{p.freeTier}</p>}
+
+      <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono" style={{ fontSize: 9, color: '#5a4a7a' }}>
+        <span>💳 Carte : {tristateLabel(p.cardRequired, 'Oui', 'Non')}</span>
+        <span>📱 Téléphone : {tristateLabel(p.phoneRequired, 'Oui', 'Non')}</span>
+        <span>🔌 {p.openAICompatible === true ? 'OpenAI compatible' : p.openAICompatible === false ? 'API propriétaire' : 'Compatibilité inconnue'}</span>
+        {p.commercialUse !== null && <span>🏢 Usage commercial : {tristateLabel(p.commercialUse, 'Oui', 'Non')}</span>}
+        {p.modalities.length > 0 && <span>🧠 {p.modalities.join(' / ')}</span>}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap font-mono" style={{ fontSize: 9, color: '#3d3060' }}>
+        <span>{p.verified ? '✅ Vérifié' : '⚠ Information communautaire'}{p.lastVerified ? ` le ${p.lastVerified}` : ''}</span>
+        {freshnessNote && <span style={{ color: '#f59e0b' }}>· {freshnessNote}</span>}
+      </div>
+
+      <div className="flex items-center gap-2 pt-1 flex-wrap">
+        {isSafeExternalUrl(p.docsUrl) && (
+          <button type="button" onClick={() => openDocsUrl(p.docsUrl)} className="font-mono text-xs px-2.5 py-1.5 rounded flex items-center gap-1.5" style={{ background: 'rgba(94,231,255,0.08)', border: '1px solid rgba(94,231,255,0.2)', color: '#5ee7ff', cursor: 'pointer' }}>
+            <ExternalLink size={10} /> Voir la documentation
+          </button>
+        )}
+      </div>
+
+      {p.notes && <p className="font-mono" style={{ fontSize: 9, color: '#3d3060' }}>ℹ {p.notes}</p>}
+    </div>
+  );
+}
+
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'jamais';
   const ms = Date.now() - new Date(iso).getTime();
@@ -144,11 +189,13 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
         return true;
       })
       .sort((a, b) => {
-        // 1. Configuré dans Docteur, 2. Free tier continu, 3. Sans carte,
-        // 4. OpenAI-compatible, 5. vérification récente, 6. reste.
+        // Free tier continu, sans carte, OpenAI-compatible, vérification
+        // récente, reste — "configured" no longer affects sort order here
+        // since configured/discoverable providers are now rendered as two
+        // separate lists (see configuredProviders/discoverableProviders
+        // below) rather than one interleaved, sorted-to-top list.
         const rank = (p: FreeAiProvider) => {
           let r = 0;
-          if (p.docteurState === 'configured') r -= 1000;
           if (p.freeType === 'perpetual' || p.freeType === 'renewing-quota') r -= 100;
           if (p.cardRequired === false) r -= 10;
           if (p.openAICompatible === true) r -= 5;
@@ -158,6 +205,13 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
         return rank(a) - rank(b);
       });
   }, [providers, search, freeTypeFilter, noCard, noPhone, openAIOnly, modalityFilter]);
+
+  // Mission requirement: a provider already configured natively in Docteur
+  // must no longer appear in "À découvrir" — it moves to its own "Déjà
+  // configurés" section instead of being interleaved (previously sorted
+  // first but still mixed into the same list).
+  const configuredProviders = useMemo(() => filtered.filter(p => p.docteurState === 'configured'), [filtered]);
+  const discoverableProviders = useMemo(() => filtered.filter(p => p.docteurState !== 'configured'), [filtered]);
 
   const counts = useMemo(() => {
     const list = providers ?? [];
@@ -293,50 +347,25 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
           </div>
         )}
 
-        {filtered.map(p => {
-          const state = DOCTEUR_STATE_LABELS[p.docteurState];
-          const freshnessNote = FRESHNESS_LABELS[p.verificationFreshness];
-          return (
-            <div key={p.id} className="px-3 py-3 rounded flex flex-col gap-1.5" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-grotesk font-semibold text-xs" style={{ color: '#f0eaff' }}>{p.name}</span>
-                {p.freeType && (
-                  <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, background: 'rgba(61,255,170,0.1)', color: '#3dffaa', border: '1px solid rgba(61,255,170,0.2)' }}>
-                    {FREE_TYPE_LABELS[p.freeType] ?? '❓ Conditions à vérifier'}
-                  </span>
-                )}
-                <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, color: state.color, border: `1px solid ${state.color}40`, background: `${state.color}14` }}>
-                  {state.label}
-                </span>
-              </div>
+        {configuredProviders.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <span className="font-mono" style={{ fontSize: 10, color: '#3dffaa', letterSpacing: '0.08em' }}>
+              ✅ DÉJÀ CONFIGURÉS ({configuredProviders.length})
+            </span>
+            {configuredProviders.map(p => <ProviderCard key={p.id} p={p} />)}
+          </div>
+        )}
 
-              {p.freeTier && <p className="font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>{p.freeTier}</p>}
-
-              <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono" style={{ fontSize: 9, color: '#5a4a7a' }}>
-                <span>💳 Carte : {tristateLabel(p.cardRequired, 'Oui', 'Non')}</span>
-                <span>📱 Téléphone : {tristateLabel(p.phoneRequired, 'Oui', 'Non')}</span>
-                <span>🔌 {p.openAICompatible === true ? 'OpenAI compatible' : p.openAICompatible === false ? 'API propriétaire' : 'Compatibilité inconnue'}</span>
-                {p.commercialUse !== null && <span>🏢 Usage commercial : {tristateLabel(p.commercialUse, 'Oui', 'Non')}</span>}
-                {p.modalities.length > 0 && <span>🧠 {p.modalities.join(' / ')}</span>}
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap font-mono" style={{ fontSize: 9, color: '#3d3060' }}>
-                <span>{p.verified ? '✅ Vérifié' : '⚠ Information communautaire'}{p.lastVerified ? ` le ${p.lastVerified}` : ''}</span>
-                {freshnessNote && <span style={{ color: '#f59e0b' }}>· {freshnessNote}</span>}
-              </div>
-
-              <div className="flex items-center gap-2 pt-1 flex-wrap">
-                {isSafeExternalUrl(p.docsUrl) && (
-                  <button type="button" onClick={() => openDocsUrl(p.docsUrl)} className="font-mono text-xs px-2.5 py-1.5 rounded flex items-center gap-1.5" style={{ background: 'rgba(94,231,255,0.08)', border: '1px solid rgba(94,231,255,0.2)', color: '#5ee7ff', cursor: 'pointer' }}>
-                    <ExternalLink size={10} /> Voir la documentation
-                  </button>
-                )}
-              </div>
-
-              {p.notes && <p className="font-mono" style={{ fontSize: 9, color: '#3d3060' }}>ℹ {p.notes}</p>}
-            </div>
-          );
-        })}
+        {discoverableProviders.length > 0 && (
+          <div className="flex flex-col gap-2" style={{ marginTop: configuredProviders.length > 0 ? 8 : 0 }}>
+            {configuredProviders.length > 0 && (
+              <span className="font-mono" style={{ fontSize: 10, color: '#5a4a7a', letterSpacing: '0.08em' }}>
+                🔍 À DÉCOUVRIR ({discoverableProviders.length})
+              </span>
+            )}
+            {discoverableProviders.map(p => <ProviderCard key={p.id} p={p} />)}
+          </div>
+        )}
       </div>
 
       <p className="font-mono" style={{ fontSize: 9, color: '#2e2555' }}>

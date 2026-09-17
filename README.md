@@ -101,6 +101,9 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Persistance SQLite locale, avec chargement rapide au démarrage (neurones récents d'abord, reste à la demande).
 - Recherche par similarité vectorielle (embeddings Ollama, index LanceDB).
 - Import documentaire : `.xlsx`, `.csv`, `.txt`, `.md`, `.json`, avec chunking pour le contexte envoyé au modèle.
+- **Notebook local** : regroupe des sources existantes (neurones) dans un espace de travail dédié, questions/réponses avec citations structurées (jamais une source inventée), résumé global — RAG scopé uniquement aux sources du Notebook, jamais à l'ensemble de la base. Uniquement local (Ollama) : aucun appel cloud possible depuis ce module, par construction (le code ne connaît même pas de provider cloud). Voir [Notebook local](#-notebook-local).
+- **Mémoire adaptative locale** : apprentissage progressif à partir des recherches, neurones créés et corrections en conversation — extraction 100 % locale (règles + option Ollama), jamais de contenu envoyé à un provider cloud pour décider quoi retenir. Budget de contexte borné (jamais toute la mémoire injectée), déduplication automatique. Réglable/consultable/réinitialisable depuis Paramètres → Mémoire.
+- **Connecteurs YouTube et Microsoft OneDrive** — 🚧 architecture backend complète et testée (OAuth officiel, déduplication, stockage DPAPI), mais **aucune UI de connexion n'est encore disponible** et aucun compte réel n'a été testé (nécessite tes propres identifiants d'application Google Cloud / Azure). Tout contenu importé serait automatiquement marqué privé/local uniquement. Voir [Limitations connues](#-limitations-connues).
 
 ### 🤖 IA
 
@@ -108,6 +111,8 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Routeur central qui choisit ou bascule entre providers selon disponibilité, clés configurées et mode Strict Local.
 - Comparaison de plusieurs modèles sur la même question.
 - Support Claude Code, Codex et providers API (Groq, Gemini, OpenRouter, Anthropic, OpenAI, FreeLLMAPI, PAIR).
+- **Free AI Finder** : catalogue d'offres IA gratuites (communautaire), sépare clairement les providers déjà configurés dans Docteur de ceux à découvrir — jamais de provider déjà actif suggéré comme nouveauté.
+- **NotebookLM (Google) — préparation future, non active** : un champ permet d'enregistrer une clé API par avance, mais **aucun appel à l'API NotebookLM n'est jamais effectué actuellement**, même avec une clé enregistrée. Le Notebook local fonctionne entièrement indépendamment de Google. Un export manuel (fichier Markdown local) est disponible pour préparer un contenu à importer soi-même dans NotebookLM si tu le souhaites — aucun envoi automatique.
 
 ### ⚙️ Outils
 
@@ -116,6 +121,8 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Module Professeur : parcours pédagogiques, répétition espacée, modèle IA dédié.
 - Prompt Generator : aide à la rédaction de prompts avec sélection de provider/modèle.
 - Import/analyse de CV (PDF) et génération de contenu pour candidature.
+- **Navigateur configurable** : choix du navigateur utilisé pour ouvrir les liens externes depuis Docteur (détection des navigateurs réellement installés, ou chemin personnalisé), indépendant du navigateur affichant Docteur lui-même.
+- **Sherlock OSINT** — 🧪 optionnel, non installé par défaut. Intégration de l'outil officiel [sherlock-project](https://github.com/sherlock-project/sherlock) (MIT) pour rechercher l'existence d'un nom d'utilisateur public sur des sites tiers — jamais de mot de passe, cookie, compte privé, force brute ni contournement d'authentification. Installation déclenchée uniquement par toi (Paramètres → Sherlock OSINT) ; les résultats sauvegardés en neurone sont privés/locaux par défaut.
 
 ### 🎥 Multimédia
 
@@ -308,8 +315,14 @@ Aucun chemin ni identifiant personnel n'est indiqué ici : l'emplacement exact d
 - Protection contre les requêtes SSRF sur les URLs traitées côté serveur (blocage des adresses locales/privées).
 - Les clés API sont chiffrées via DPAPI Windows avant stockage — jamais en clair, jamais exposées au frontend.
 - Les journaux (logs) masquent automatiquement les clés et tokens détectés.
-- Les appels aux CLI Claude Code et Codex se font sans interprétation shell des arguments dynamiques.
+- Les appels aux CLI Claude Code et Codex, à Sherlock OSINT et à la sélection de navigateur se font sans interprétation shell des arguments dynamiques (`shell:false` systématique).
 - Contrôle de taille et de format sur les fichiers importés.
+
+### Verrou de confidentialité (`egress_policy`)
+
+Toute donnée dérivée d'une source marquée privée (neurone verrouillé, CV/candidature, contenu synchronisé OneDrive/YouTube, résultat OSINT) porte une politique de sortie `local_only`, qui se propage automatiquement à tout ce qui en dérive (résumé, mémoire adaptative, Notebook) — impossible de repasser cette donnée en `cloud_allowed` sans retirer la source responsable. Un garde-fou (`guardCloudCall`) bloque toute tentative d'appel cloud avec du contenu marqué privé, appliqué directement à la frontière de chaque provider cloud plutôt que dans l'interface uniquement — un contournement au niveau du routeur ne suffit pas à passer outre. Testé explicitement : aucun provider cloud (Gemini, Groq, OpenRouter, OpenAI, Anthropic, FreeLLMAPI, Claude Code, Codex) ne peut recevoir de contenu privé, y compris via une chaîne de fallback (un cloud bloqué n'essaie jamais un autre cloud pour le même contenu). Le repli vers Ollama local reste toujours autorisé.
+
+Paramètres → Confidentialité propose un test d'étanchéité synthétique (aucune vraie donnée envoyée) qui vérifie ce comportement à la demande.
 
 > [!IMPORTANT]
 > Docteur considère la session Windows courante comme un environnement de confiance.
@@ -346,19 +359,29 @@ Le temps de traitement dépend de la durée de la vidéo. Certaines plateformes 
 
 Docteur peut retrouver des éléments pertinents dans les connaissances déjà stockées (neurones, documents importés) afin de les ajouter au contexte envoyé au modèle IA, plutôt que de se limiter à ce que tu écris dans ta question. Cette recherche s'appuie sur des embeddings calculés localement via Ollama et un index vectoriel LanceDB.
 
+## 📓 Notebook local
+
+Un Notebook regroupe des sources déjà existantes dans Docteur (neurones) sans jamais les dupliquer — ajouter une source à un Notebook crée uniquement une référence, jamais une copie de l'embedding. La recherche pour répondre à une question est limitée exclusivement aux sources du Notebook consulté (jamais à l'ensemble de la base), et chaque citation renvoyée correspond à un extrait réellement retrouvé — aucune référence n'est inventée.
+
+- **Toujours local** : le module Notebook n'importe aucun provider cloud dans son code — il n'existe littéralement aucun chemin possible vers un appel cloud depuis ce module, indépendamment de tes réglages.
+- **Confidentialité héritée automatiquement** : un Notebook adopte le niveau de confidentialité le plus restrictif de ses sources — ajouter une seule source privée (CV, contenu synchronisé marqué privé) rend tout le Notebook local uniquement, de façon irréversible tant que cette source n'est pas retirée.
+- Supprimer une source d'un Notebook, ou supprimer le Notebook lui-même, ne supprime jamais les neurones sous-jacents.
+- **Fonctionnalités disponibles actuellement** : résumé global, questions/réponses avec citations.
+- **Non encore implémenté** (annoncé honnêtement dans l'interface plutôt que simulé) : points clés, FAQ, fiche d'étude, flashcards, chronologie, glossaire, comparaison de sources, résumés par thème.
+
 ## ✅ Tests et qualité
 
 État constaté à la dernière vérification (suites isolées, sans appel réseau ni donnée réelle) :
 
 | Vérification | Résultat |
 |---|---|
-| Tests standards | ✅ 175 / 175, 11 suites |
+| Tests standards | ✅ 232 / 232 |
 | Build (`tsc && vite build`) | ✅ |
 | TypeScript (`tsc --noEmit`) | ✅ 0 erreur |
 | Appels cloud pendant les tests standards | ✅ 0 |
 | Couverture end-to-end | 🚧 Partielle |
 
-Les suites couvrent notamment : fallback/routage IA, providers, résolution sécurisée des CLI Codex/Claude, mode Strict Local, import de fichiers, agents externes, FreeLLMAPI, transcription vidéo. Certaines suites end-to-end (navigateur, serveur de développement déjà lancé) ne sont pas exécutées automatiquement et nécessitent un environnement complet.
+Les suites couvrent notamment : fallback/routage IA, providers, résolution sécurisée des CLI Codex/Claude, mode Strict Local, import de fichiers, agents externes, FreeLLMAPI, transcription vidéo, verrou de confidentialité/egress (certification dédiée), connecteurs OAuth (mocks), mémoire adaptative, Notebook local (retrieval scopé, citations), NotebookLM (zéro appel réseau certifié), navigateur configurable (validation d'URL, injection), Sherlock OSINT (validation d'entrée, `shell:false`). Certaines suites end-to-end (navigateur, serveur de développement déjà lancé) ne sont pas exécutées automatiquement et nécessitent un environnement complet.
 
 Les tests unitaires/intégration ne remplacent pas une validation end-to-end complète.
 
@@ -377,6 +400,7 @@ Docteur/
 │   │   └── routes/          # Une route par fonctionnalité
 │   └── test-*.mjs           # Suites de tests isolées
 │
+├── reports/                 # Rapports d'audit et de phase (voir mission MASTER)
 ├── Docteur-Launcher.bat     # Lanceur Windows (menu interactif)
 ├── package.json
 └── README.md
@@ -440,9 +464,19 @@ Ce message signifie qu'aucun endpoint valide n'a été renseigné dans les régl
 | Neurones | ✅ |
 | Chat local | ✅ |
 | RAG | ✅ |
+| Notebook local (résumé + questions/réponses avec citations) | ✅ |
+| Notebook — outils avancés (FAQ, flashcards, chronologie, etc.) | 🚧 non implémenté |
+| Mémoire adaptative locale | ✅ |
 | Vidéo / transcription | ✅ |
 | Providers multiples | ✅ |
+| Verrou de confidentialité (`egress_policy` / local_only) | ✅ certifié par tests |
 | Strict Local | ✅ |
+| Free AI Finder | ✅ |
+| NotebookLM (Google) | ⚙️ préparation uniquement, aucun appel actif |
+| Connecteurs YouTube / OneDrive | 🚧 backend prêt, aucune UI, aucun compte réel testé |
+| Navigateur configurable | ✅ |
+| Sherlock OSINT | 🧪 optionnel, non installé par défaut |
+| Entraînement local (LoRA/QLoRA) | 📋 étudié, non implémenté (voir `reports/`) |
 | Gestes caméra | 🧪 |
 | FreeLLMAPI | ⚙️ nécessite configuration |
 | PAIR | ⚙️ nécessite endpoint |
@@ -458,6 +492,11 @@ Docteur est un projet personnel activement développé — il n'est pas présent
 - La reconnaissance de gestes par caméra reste expérimentale et sensible aux conditions d'utilisation.
 - L'authentification d'un processus local arbitraire n'est pas prise en charge (voir [Sécurité et confidentialité](#-sécurité-et-confidentialité)).
 - Certaines suites de tests end-to-end nécessitent un environnement de développement complet et ne sont pas exécutées automatiquement.
+- **Connecteurs YouTube et OneDrive** : le backend (OAuth, synchronisation, déduplication, stockage sécurisé) est implémenté et testé, mais **aucune interface de connexion n'est encore disponible dans les Paramètres**, et aucun compte réel n'a été testé (nécessite des identifiants d'application Google Cloud / Azure fournis par l'utilisateur). L'API officielle YouTube ne permet pas d'accéder à l'historique de visionnage complet (limitation de Google, pas de contournement prévu). OneDrive : formats réellement importables limités à `.md`, `.txt`, `.pdf`, `.xlsx` (pas `.docx`, aucune dépendance de lecture pour ce format actuellement).
+- **NotebookLM (Google)** : uniquement une préparation d'architecture. Une clé API peut être enregistrée, mais aucun appel réel n'est jamais déclenché — c'est un espace réservé pour une intégration future, pas une fonctionnalité active.
+- **Notebook local** : seuls le résumé global et les questions/réponses avec citations sont disponibles. Points clés, FAQ, fiche d'étude, flashcards, chronologie, glossaire et comparaison de sources ne sont pas implémentés.
+- **Sherlock OSINT** : outil tiers optionnel (non développé par Docteur), à installer explicitement depuis les Paramètres — recherche par nom d'utilisateur public uniquement.
+- **Entraînement local (LoRA/QLoRA)** : étudié (voir `reports/MASTER_PHASE_8_TRAINING_FEASIBILITY.md`) mais non implémenté — le RAG et la mémoire adaptative existants couvrent mieux les besoins identifiés que ne le ferait un fine-tuning sur le matériel typique visé par Docteur.
 
 ## 🗺️ Roadmap
 

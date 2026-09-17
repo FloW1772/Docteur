@@ -1,7 +1,7 @@
-// Opt-in real provider calls; all test settings and learning paths stay in memory.
+// Mock-only maintenance regression: no real credentials or user database.
+import './test-setup.mjs';
 import assert from 'node:assert/strict';
 import { Ollama } from 'ollama';
-import { execFileSync } from 'node:child_process';
 import { initSqlite, setCloudKey, setRouterSettings } from './src/lib/sqlite.js';
 import { createTeacherRoute } from './src/routes/teacher.js';
 import { needsCompaction } from './src/lib/lancedb.js';
@@ -9,18 +9,8 @@ assert.equal(needsCompaction({ numFragments: 182, diskBytes: 11111887083, totalB
 assert.equal(needsCompaction({ numFragments: 1, diskBytes: 24352313, totalBytes: 24352313 }), false);
 assert.equal(needsCompaction({ numFragments: 1000, diskBytes: 1, totalBytes: 1 }), true);
 assert.equal(needsCompaction(null), false);
-// Keys are now DPAPI-encrypted at rest (see secret-store.js), not stored in
-// the legacy plaintext `cloud_api_keys` field (intentionally blanked after
-// migration). initSqlite() is a process-wide singleton, so we can't open the
-// real DB here and then re-open an in-memory one in the same process — read
-// the real keys in a short-lived child process instead, then copy them into
-// this test's own in-memory DB below.
-const dbPath = new URL('./data/cortex.sqlite', import.meta.url).pathname.replace(/^\/(\w:)/, '$1');
-const keys = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `
-  import { initSqlite, getCloudKeys } from ${JSON.stringify(new URL('./src/lib/sqlite.js', import.meta.url).href)};
-  initSqlite(${JSON.stringify(dbPath)});
-  process.stdout.write(JSON.stringify(getCloudKeys()));
-`], { encoding: 'utf8' }));
+assert.equal(process.argv.includes('--live'), false, 'This regression suite is mock-only');
+const keys = { gemini_key: 'fake-maintenance-gemini', groq_key: 'fake-maintenance-groq', openrouter_key: 'fake-maintenance-openrouter' };
 initSqlite(':memory:');
 let calledLocalModel;
 const mockOllama = {
@@ -48,6 +38,16 @@ console.log('CONFIGURATION', JSON.stringify({ strictLocal: available.strict_loca
 if (!process.argv.includes('--live')) {
   assert.equal((await request('/teacher/settings/validate', { model: 'dedicated:latest' })).body.ok, true);
   await request('/teacher/settings', { model: 'dedicated:latest' });
+  // A "local" Teacher model setting only tells resolveEffectiveTeacherModel
+  // to route to Ollama — the actual model string used for the completion
+  // call comes from the router's own chat_model setting instead
+  // (callLocalTeacherModel, routes/teacher.js), which is a separate,
+  // independent setting. Configure it explicitly here — on this test's own
+  // :memory: DB, never the real one — so this assertion verifies the real
+  // contract (chat_model drives the local call) instead of assuming the
+  // Teacher model string does, and stays deterministic regardless of
+  // whatever chat_model default happens to exist.
+  setRouterSettings({ chat_model: 'dedicated:latest' });
   assert.equal((await request('/teacher/paths', { subject: 'Fractions' })).status, 201);
   assert.equal(calledLocalModel, 'dedicated:latest');
   const originalFetch = globalThis.fetch;

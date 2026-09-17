@@ -10,7 +10,7 @@ import dotenv from 'dotenv';
 import { createLogger } from './lib/logger.js';
 import { createOllamaClient, embedText, chatCompletion, chatCompletionPowerful, unloadModel, getInstalledModels, verifyModelAvailability } from './lib/ollama.js';
 import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, needsCompaction, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
-import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
+import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getRequestLogRetentionDays, purgeRequestLogsOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from './lib/style-examples.js';
 import { routedCompletion } from './lib/router.js';
 import { loadPairEndpointFromStorage } from './lib/providers/pair.js';
@@ -52,7 +52,15 @@ import { createInboxRoute }       from './routes/inbox.js';
 import { startInboxWatcher }      from './lib/inbox-watcher.js';
 import { buildPersonaPrompt, buildPersonaToneNote, getPersonaSettings } from './lib/persona.js';
 import { markPrivate }             from './lib/privacy-guard.js';
+import { isLocalOnlySource }       from './lib/source-privacy.js';
+import { getMemorySettings, isWorthRemembering, addEpisodicMemoryDeduped, privacyFromSource } from './lib/memory.js';
 import { createPrivacyRoute }      from './routes/privacy.js';
+import { createConnectorsRoute }   from './routes/connectors.js';
+import { createMemoryRoute }       from './routes/memory.js';
+import { createNotebookRoute }     from './routes/notebook.js';
+import { createNotebookLmRoute }   from './routes/notebooklm.js';
+import { createBrowserRoute }      from './routes/browser.js';
+import { createSherlockRoute }     from './routes/sherlock.js';
 import { createSecretScanRoute }   from './routes/secret-scan.js';
 import { createVoiceRoute }        from './routes/voice.js';
 import { createCompareRoute }      from './routes/compare.js';
@@ -159,6 +167,15 @@ loadPairEndpointFromStorage(getMeta, logger);
   const retentionDays = getActivityLogRetentionDays();
   const purged = purgeActivityLogOlderThan(retentionDays);
   if (purged > 0) logger.info({ purged, retentionDays }, 'activity log: old entries purged');
+}
+
+// Purge request_logs entries past the retention window (default 30 days) on
+// every boot, in small bounded batches — see purgeRequestLogsOlderThan for
+// why this table needs batching where activity_log doesn't.
+{
+  const retentionDays = getRequestLogRetentionDays();
+  const purged = purgeRequestLogsOlderThan(retentionDays);
+  if (purged > 0) logger.info({ purged, retentionDays }, 'request logs: old entries purged');
 }
 
 const ollamaClient = createOllamaClient(env.OLLAMA_URL);
@@ -287,6 +304,22 @@ async function indexNeuron(payload) {
   });
   const lancedb_ms = Math.round(performance.now() - t1);
 
+  // Local, rule-based "learn from neurons" (Phase 3 adaptive memory) — never
+  // an AI call, never cloud. Scoped to manually created neurons only (not
+  // bulk imports like corpus/connector, which would flood episodic memory
+  // with hundreds of unrelated titles per sync) — kind is the same signal
+  // server.js already uses to decide privacy auto-detection just below.
+  const BULK_IMPORT_KINDS = new Set(['corpus', 'connector']);
+  try {
+    const memorySettings = getMemorySettings();
+    if (memorySettings.enabled && memorySettings.learn_from_neurons && !BULK_IMPORT_KINDS.has(payload.kind) && isWorthRemembering(payload.title)) {
+      addEpisodicMemoryDeduped({
+        text: String(payload.title).slice(0, 300), category: 'neuron_interest', source: 'neuron_created', sourceRef: payload.id,
+        ...privacyFromSource({ kind: payload.kind, isPrivatePage: payload.private, metadata: payload.metadata }), importance: 0.4, confidence: 0.4,
+      });
+    }
+  } catch { /* best-effort — must never break neuron indexing */ }
+
   return {
     ok: true,
     dimensions: embedding.length,
@@ -384,8 +417,8 @@ async function searchNeuronsEndpoint(payload) {
   // otherwise guard on this flag — it was previously not exposed here at all.
   const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
   const isPrivate = (r) => {
-    if (AUTO_PRIVATE_KINDS.has(r.kind)) return true;
-    try { return getPageFromStore(r.id)?.private === true; } catch { return false; }
+    if (isLocalOnlySource(r)) return true;
+    try { return isLocalOnlySource(getPageFromStore(r.id)); } catch { return false; }
   };
 
   return {
@@ -508,7 +541,8 @@ async function answerQuestion(payload) {
     title: item.title,
     score: Number(item.score.toFixed(4)),
     kind: item.kind,
-    content: item.content
+    content: item.content,
+    metadata: item.metadata,
   }));
 
   // ── Sources ZIM (Kiwix) additionnelles, selon le réglage "portée de recherche" ─
@@ -559,15 +593,15 @@ async function answerQuestion(payload) {
   // pages marquées private:true par l'utilisateur
   const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
   const hasPrivateSources = sources.some(s => {
-    if (AUTO_PRIVATE_KINDS.has(s.kind)) return true;
-    try { return getPageFromStore(s.id)?.private === true; } catch { return false; }
+    if (isLocalOnlySource(s)) return true;
+    try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; }
   });
 
   // Belt-and-suspenders: tag private content with sentinel so provider-level
   // guard catches it even if routing logic has a bug.
   const taggedSources = sources.map(s => {
-    const isPriv = AUTO_PRIVATE_KINDS.has(s.kind) ||
-      (() => { try { return getPageFromStore(s.id)?.private === true; } catch { return false; } })();
+    const isPriv = isLocalOnlySource(s) ||
+      (() => { try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; } })();
     return isPriv ? { ...s, content: markPrivate(s.content) } : s;
   });
   const messages = buildContextMessages(payload.question, taggedSources, payload.clarification_context ?? []);
@@ -739,17 +773,17 @@ async function compareModels({ question, models, max_context, onEvent }) {
   // Privacy check
   const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
   const hasPrivateSources = retrieved.some(s => {
-    if (AUTO_PRIVATE_KINDS.has(s.kind)) return true;
-    try { return getPageFromStore(s.id)?.private === true; } catch { return false; }
+    if (isLocalOnlySource(s)) return true;
+    try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; }
   });
 
   const sources = retrieved.slice(0, maxCtx).map(item => ({
-    id: item.id, title: item.title, score: Number(item.score.toFixed(4)), kind: item.kind, content: item.content,
+    id: item.id, title: item.title, score: Number(item.score.toFixed(4)), kind: item.kind, content: item.content, metadata: item.metadata,
   }));
 
   const taggedSources = sources.map(s => {
-    const isPriv = AUTO_PRIVATE_KINDS.has(s.kind) ||
-      (() => { try { return getPageFromStore(s.id)?.private === true; } catch { return false; } })();
+    const isPriv = isLocalOnlySource(s) ||
+      (() => { try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; } })();
     return isPriv ? { ...s, content: markPrivate(s.content) } : s;
   });
 
@@ -1649,6 +1683,12 @@ app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger })
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());
 app.route('/api', createPrivacyRoute({ logger }));
+app.route('/api', createConnectorsRoute({ services, logger }));
+app.route('/api', createMemoryRoute({ logger }));
+app.route('/api', createNotebookRoute({ ollamaClient, env, logger }));
+app.route('/api', createNotebookLmRoute({ logger }));
+app.route('/api', createBrowserRoute({ logger }));
+app.route('/api', createSherlockRoute({ services, logger }));
 app.route('/api', createSecretScanRoute({ logger }));
 app.route('/api', createVoiceRoute({ logger }));
 app.route('/api', createInboxRoute({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger }));

@@ -1,0 +1,20 @@
+﻿[
+    {
+        "File":  "cortex.sqlite",
+        "Length":  19542016,
+        "LastWriteTimeUtc":  "2026-09-15T23:44:00.4219471Z",
+        "SHA256":  "A163EF4157795CA5FC3A95E8082ECFF2D68EEA4AB9EA7404E7B78D2BCC522ED2"
+    },
+    {
+        "File":  "cortex.sqlite-shm",
+        "Length":  32768,
+        "LastWriteTimeUtc":  "2026-09-15T23:36:05.8610517Z",
+        "SHA256":  "165628E4A512B22BFD5B03A376448CBF4B5A0495FB3FD743A9583C6D47198AF6"
+    },
+    {
+        "File":  "cortex.sqlite-wal",
+        "Length":  4124152,
+        "LastWriteTimeUtc":  "2026-09-15T23:52:10.4187955Z",
+        "SHA256":  "062D646B65BC1E3903E77BB1DE755BEBCDE23608A401577468E3DC83AB9726A2"
+    }
+]

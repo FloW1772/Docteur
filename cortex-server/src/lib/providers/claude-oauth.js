@@ -8,6 +8,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { BaseProvider } from './base-provider.js';
 import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
+import { guardCloudCall } from '../privacy-guard.js';
 
 const CLAUDE_CLI_EXECUTABLE = 'claude';
 const TIMEOUT_MS = 90_000;
@@ -411,6 +412,7 @@ export class ClaudeOAuthProvider extends BaseProvider {
   async generate(request) {
     assertLiveCallAllowed();
     const { messages, model: requestedModel, maxTokens = 4096, temperature = 0.7 } = request;
+    guardCloudCall({ messages, provider: 'claude-oauth', functionCalled: 'generate' });
     if (requestedModel && !/^[A-Za-z0-9_.\-/]{1,128}$/.test(requestedModel)) {
       throw this.createError(
         'Claude Code: nom de modèle invalide (caractères non autorisés)',

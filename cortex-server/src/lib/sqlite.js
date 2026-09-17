@@ -429,6 +429,117 @@ export function initSqlite(sqlitePath) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- OAuth connectors (YouTube Data API, Microsoft Graph/OneDrive) — connection
+    -- STATE only. Never stores an access/refresh token: those live exclusively
+    -- in secret-store.js (DPAPI-encrypted), keyed as
+    -- 'oauth:<provider>:access_token' / 'oauth:<provider>:refresh_token'.
+    -- The frontend reads only this table's non-secret columns (connected,
+    -- account_label, scopes, last_sync_at) — see routes/connectors.js.
+    CREATE TABLE IF NOT EXISTS oauth_connections (
+      provider TEXT PRIMARY KEY,
+      connected INTEGER NOT NULL DEFAULT 0,
+      account_label TEXT,
+      scopes TEXT NOT NULL DEFAULT '[]',
+      auto_sync INTEGER NOT NULL DEFAULT 0,
+      last_sync_at TEXT,
+      last_sync_status TEXT,
+      last_sync_error TEXT,
+      connected_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Dedup ledger for connector sync (YouTube video id / OneDrive item id →
+    -- the Docteur page id it became). Prevents re-importing the same item on
+    -- every manual sync. delta_token supports incremental sync when the
+    -- remote API offers one (Microsoft Graph delta query); NULL otherwise.
+    CREATE TABLE IF NOT EXISTS connector_sync_items (
+      provider TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      page_id TEXT NOT NULL,
+      content_hash TEXT,
+      synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (provider, external_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS connector_sync_state (
+      provider TEXT PRIMARY KEY,
+      delta_token TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Adaptive local memory — episodic tier (mid-term: things learned from
+    -- searches/neurons/corrections, expected to fade if unused). The
+    -- long-term tier reuses the existing preference_facts table (additive
+    -- columns below); session tier reuses existing conversations/
+    -- conversation_messages. See lib/memory.js for extraction/retrieval.
+    -- egress_policy propagates from source: a memory extracted from
+    -- local_only content (OneDrive/YouTube private, private neuron, OSINT)
+    -- is itself local_only and can never be included in a cloud-bound prompt.
+    CREATE TABLE IF NOT EXISTS episodic_memories (
+      id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'general',
+      source TEXT NOT NULL DEFAULT 'manual',
+      source_ref TEXT,
+      privacy INTEGER NOT NULL DEFAULT 0,
+      egress_policy TEXT NOT NULL DEFAULT 'cloud_allowed',
+      importance REAL NOT NULL DEFAULT 0.5,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      usage_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Local Notebook (documentary/RAG workspace) — Phase 5 (MASTER mission).
+    -- A Notebook groups references to EXISTING content (neurons, connector
+    -- syncs, manual text saved as a neuron); it never copies or re-embeds
+    -- content already indexed in the neurons LanceDB table. privacy/
+    -- egress_policy here are DERIVED (recomputed) from notebook_sources —
+    -- see lib/notebook.js computeNotebookPrivacy() — never set directly by
+    -- a client, so a client can never claim a notebook is less restrictive
+    -- than its actual sources.
+    CREATE TABLE IF NOT EXISTS notebooks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      privacy INTEGER NOT NULL DEFAULT 0,
+      egress_policy TEXT NOT NULL DEFAULT 'cloud_allowed',
+      settings TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- source_id references a neuron id in the LanceDB 'neurons' table (the
+    -- neuron itself is untouched — this is a reference row only). Removing
+    -- a NotebookSource never deletes the underlying neuron; deleting a
+    -- Notebook never deletes its sources' neurons (mission requirement).
+    CREATE TABLE IF NOT EXISTS notebook_sources (
+      id TEXT PRIMARY KEY,
+      notebook_id TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'neuron',
+      source_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      provenance TEXT NOT NULL DEFAULT '',
+      privacy INTEGER NOT NULL DEFAULT 0,
+      egress_policy TEXT NOT NULL DEFAULT 'cloud_allowed',
+      added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Cached hierarchical summaries per notebook (level 1 = global, level 2
+    -- = per-theme, level 3 = on-demand detail — see lib/notebook.js).
+    -- Invalidated (row deleted) whenever the notebook's source set changes,
+    -- recomputed lazily on next request rather than eagerly on every edit.
+    CREATE TABLE IF NOT EXISTS notebook_summaries (
+      notebook_id TEXT NOT NULL,
+      level INTEGER NOT NULL,
+      theme_key TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
+      sources_hash TEXT NOT NULL,
+      generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (notebook_id, level, theme_key)
+    );
   `);
 
   // Idempotent migrations — ignore if column/index already exists
@@ -441,6 +552,20 @@ export function initSqlite(sqlitePath) {
     'ALTER TABLE file_results ADD COLUMN cloud_allowed INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE agent_runs ADD COLUMN similarity_note TEXT DEFAULT NULL',
     'ALTER TABLE agents ADD COLUMN last_output_content TEXT DEFAULT NULL',
+    // Adaptive memory metadata — additive to the existing manual-entry
+    // preference_facts table. Existing rows (added via /chat/preferences
+    // before this phase) default to source='manual', egress_policy=
+    // 'cloud_allowed' (their historical, already-cloud-safe behavior is
+    // unchanged), importance/confidence at neutral 0.5.
+    'ALTER TABLE preference_facts ADD COLUMN source TEXT NOT NULL DEFAULT "manual"',
+    'ALTER TABLE preference_facts ADD COLUMN source_ref TEXT',
+    'ALTER TABLE preference_facts ADD COLUMN privacy INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE preference_facts ADD COLUMN egress_policy TEXT NOT NULL DEFAULT "cloud_allowed"',
+    'ALTER TABLE preference_facts ADD COLUMN importance REAL NOT NULL DEFAULT 0.5',
+    'ALTER TABLE preference_facts ADD COLUMN confidence REAL NOT NULL DEFAULT 0.5',
+    'ALTER TABLE preference_facts ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE preference_facts ADD COLUMN last_used_at TEXT',
+    'ALTER TABLE preference_facts ADD COLUMN updated_at TEXT',
   ]) {
     try { database.exec(col); } catch { /* already exists */ }
   }
@@ -465,6 +590,14 @@ export function initSqlite(sqlitePath) {
       ON inbox_pending(consumed);
     CREATE INDEX IF NOT EXISTS idx_skill_runs_skill_id
       ON skill_runs(skill_id);
+    CREATE INDEX IF NOT EXISTS idx_episodic_memories_updated_at
+      ON episodic_memories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_episodic_memories_category
+      ON episodic_memories(category);
+    CREATE INDEX IF NOT EXISTS idx_notebook_sources_notebook_id
+      ON notebook_sources(notebook_id);
+    CREATE INDEX IF NOT EXISTS idx_notebook_sources_source_id
+      ON notebook_sources(source_id);
     CREATE INDEX IF NOT EXISTS idx_file_results_original_id
       ON file_results(original_id);
     CREATE INDEX IF NOT EXISTS idx_file_results_path
@@ -507,6 +640,8 @@ export function initSqlite(sqlitePath) {
       ON candidature_saved_prompts(order_index ASC);
     CREATE INDEX IF NOT EXISTS idx_prompt_templates_order
       ON prompt_templates(order_index ASC);
+    CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp
+      ON request_logs(timestamp);
   `);
 
   statements = {
@@ -640,6 +775,59 @@ export function logRequest({ endpoint, latencyMs, modelUsed = null, payloadSize 
     ok ? 1 : 0,
     message
   );
+}
+
+export function getRequestLogRetentionDays() {
+  return getMeta('request_log_retention_days', 30);
+}
+
+export function setRequestLogRetentionDays(days) {
+  const clamped = Math.max(1, Math.min(365, Number(days) || 30));
+  setMeta('request_log_retention_days', clamped);
+  return clamped;
+}
+
+export function getRequestLogStats() {
+  if (!database) return { count: 0, sizeBytes: 0, retentionDays: 30 };
+  const count = database.prepare('SELECT COUNT(*) AS n FROM request_logs').get().n;
+  let sizeBytes = 0;
+  try {
+    const row = database.prepare("SELECT SUM(pgsize) AS n FROM dbstat WHERE name = 'request_logs'").get();
+    sizeBytes = row?.n ?? 0;
+  } catch {
+    // dbstat virtual table not compiled in this better-sqlite3 build — rough estimate instead
+    sizeBytes = count * 150;
+  }
+  return { count, sizeBytes, retentionDays: getRequestLogRetentionDays() };
+}
+
+// Deletes request_logs rows older than `days`, in bounded batches rather than
+// one unbounded DELETE — request_logs is written on every single HTTP request
+// (unlike activity_log's coarser, user-facing events) so it can grow far
+// larger, and a single multi-hundred-thousand-row DELETE would hold the SQLite
+// write lock for an unacceptably long, unbounded time. Runs at most
+// `maxBatches` batches per call so a huge backlog (e.g. first purge ever, or a
+// long-idle install) is trimmed gradually across restarts instead of stalling
+// boot.
+const REQUEST_LOG_PURGE_BATCH_SIZE = 500;
+const REQUEST_LOG_PURGE_MAX_BATCHES = 20;
+
+export function purgeRequestLogsOlderThan(days, { batchSize = REQUEST_LOG_PURGE_BATCH_SIZE, maxBatches = REQUEST_LOG_PURGE_MAX_BATCHES } = {}) {
+  if (!database) return 0;
+  const numDays = Number(days);
+  if (!Number.isFinite(numDays)) return 0; // invalid input — no-op rather than risk a bad cutoff
+  const cutoff = new Date(Date.now() - numDays * 86_400_000).toISOString();
+  const deleteBatch = database.prepare(
+    'DELETE FROM request_logs WHERE id IN (SELECT id FROM request_logs WHERE timestamp < ? LIMIT ?)'
+  );
+
+  let totalDeleted = 0;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const result = deleteBatch.run(cutoff, batchSize);
+    totalDeleted += result.changes;
+    if (result.changes < batchSize) break; // fewer rows than the batch size means we've caught up
+  }
+  return totalDeleted;
 }
 
 export function setMeta(key, value) {
@@ -1781,6 +1969,102 @@ export function deleteCorpusSource(id) {
   database.prepare('DELETE FROM corpus_sources WHERE id = ?').run(id);
 }
 
+// ── OAuth connectors (YouTube / OneDrive) — connection state only, never a
+// token (tokens live in secret-store.js). See routes/connectors.js. ────────
+
+export function getConnectorState(provider) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM oauth_connections WHERE provider = ?').get(provider);
+  if (!row) return null;
+  return { ...row, connected: !!row.connected, auto_sync: !!row.auto_sync, scopes: JSON.parse(row.scopes || '[]') };
+}
+
+export function getAllConnectorStates() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM oauth_connections').all()
+    .map(row => ({ ...row, connected: !!row.connected, auto_sync: !!row.auto_sync, scopes: JSON.parse(row.scopes || '[]') }));
+}
+
+export function upsertConnectorState(provider, { connected, account_label, scopes, auto_sync, connected_at } = {}) {
+  if (!database) return;
+  const existing = getConnectorState(provider);
+  database.prepare(`
+    INSERT INTO oauth_connections (provider, connected, account_label, scopes, auto_sync, connected_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(provider) DO UPDATE SET
+      connected = excluded.connected,
+      account_label = excluded.account_label,
+      scopes = excluded.scopes,
+      auto_sync = excluded.auto_sync,
+      connected_at = COALESCE(excluded.connected_at, oauth_connections.connected_at),
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    provider,
+    connected !== undefined ? (connected ? 1 : 0) : (existing?.connected ? 1 : 0),
+    account_label !== undefined ? account_label : (existing?.account_label ?? null),
+    JSON.stringify(scopes !== undefined ? scopes : (existing?.scopes ?? [])),
+    auto_sync !== undefined ? (auto_sync ? 1 : 0) : (existing?.auto_sync ? 1 : 0),
+    connected_at !== undefined ? connected_at : (existing?.connected_at ?? null),
+  );
+}
+
+export function recordConnectorSyncResult(provider, { status, error = null } = {}) {
+  if (!database) return;
+  database.prepare(`
+    UPDATE oauth_connections SET last_sync_at = CURRENT_TIMESTAMP, last_sync_status = ?, last_sync_error = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE provider = ?
+  `).run(status, error, provider);
+}
+
+export function disconnectConnector(provider) {
+  if (!database) return;
+  database.prepare(`
+    UPDATE oauth_connections SET connected = 0, connected_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE provider = ?
+  `).run(provider);
+}
+
+// ── Connector sync dedup ledger ──────────────────────────────────────────────
+
+export function getConnectorSyncItem(provider, externalId) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM connector_sync_items WHERE provider = ? AND external_id = ?').get(provider, externalId) ?? null;
+}
+
+export function upsertConnectorSyncItem(provider, externalId, { pageId, contentHash = null } = {}) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO connector_sync_items (provider, external_id, page_id, content_hash, synced_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(provider, external_id) DO UPDATE SET
+      page_id = excluded.page_id, content_hash = excluded.content_hash, synced_at = CURRENT_TIMESTAMP
+  `).run(provider, externalId, pageId, contentHash);
+}
+
+export function getConnectorSyncItemsCount(provider) {
+  if (!database) return 0;
+  return database.prepare('SELECT COUNT(*) AS n FROM connector_sync_items WHERE provider = ?').get(provider)?.n ?? 0;
+}
+
+export function deleteConnectorSyncItems(provider) {
+  if (!database) return [];
+  const rows = database.prepare('SELECT page_id FROM connector_sync_items WHERE provider = ?').all(provider);
+  database.prepare('DELETE FROM connector_sync_items WHERE provider = ?').run(provider);
+  return rows.map(r => r.page_id);
+}
+
+export function getConnectorDeltaToken(provider) {
+  if (!database) return null;
+  return database.prepare('SELECT delta_token FROM connector_sync_state WHERE provider = ?').get(provider)?.delta_token ?? null;
+}
+
+export function setConnectorDeltaToken(provider, deltaToken) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO connector_sync_state (provider, delta_token, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(provider) DO UPDATE SET delta_token = excluded.delta_token, updated_at = CURRENT_TIMESTAMP
+  `).run(provider, deltaToken);
+}
+
 // ── Conversation mode (chat) — always private, own tables, never indexed ─────
 
 export function createConversation(id, title = '') {
@@ -1853,7 +2137,11 @@ const MAX_PREFERENCE_FACTS = 50;
 
 export function listPreferenceFacts() {
   if (!database) return [];
-  return database.prepare('SELECT * FROM preference_facts ORDER BY created_at ASC').all();
+  // Batch C (audit finding F4): the table is already capped at write time by
+  // MAX_PREFERENCE_FACTS below, so this LIMIT changes no real behavior today
+  // — it just makes the read side explicitly consistent with the paginated
+  // pattern used elsewhere instead of relying solely on the write-side gate.
+  return database.prepare('SELECT * FROM preference_facts ORDER BY created_at ASC LIMIT ?').all(MAX_PREFERENCE_FACTS);
 }
 
 export function countPreferenceFacts() {
@@ -1861,20 +2149,33 @@ export function countPreferenceFacts() {
   return database.prepare('SELECT COUNT(*) AS n FROM preference_facts').get().n;
 }
 
-export function addPreferenceFact(fact) {
+// `meta` is optional and additive — existing callers (manual /chat/preferences
+// entry) keep working unchanged with source='manual', egress_policy=
+// 'cloud_allowed' (their historical behavior). The adaptive-memory extractor
+// (lib/memory.js) passes source/privacy/egress_policy/importance/confidence
+// explicitly, propagating the privacy level of whatever it learned from.
+export function addPreferenceFact(fact, meta = {}) {
   if (!database) return null;
   if (countPreferenceFacts() >= MAX_PREFERENCE_FACTS) {
     throw new Error(`Limite de ${MAX_PREFERENCE_FACTS} faits retenus atteinte — supprimez-en un avant d'en ajouter un nouveau.`);
   }
   const id = crypto.randomUUID();
-  database.prepare('INSERT INTO preference_facts (id, fact, created_at) VALUES (?, ?, ?)')
-    .run(id, fact, new Date().toISOString());
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO preference_facts (id, fact, created_at, updated_at, source, source_ref, privacy, egress_policy, importance, confidence)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, fact, now, now,
+    meta.source ?? 'manual', meta.sourceRef ?? null,
+    meta.privacy ? 1 : 0, meta.egressPolicy ?? (meta.privacy ? 'local_only' : 'cloud_allowed'),
+    meta.importance ?? 0.5, meta.confidence ?? 0.5,
+  );
   return id;
 }
 
 export function updatePreferenceFact(id, fact) {
   if (!database) return;
-  database.prepare('UPDATE preference_facts SET fact = ? WHERE id = ?').run(fact, id);
+  database.prepare('UPDATE preference_facts SET fact = ?, updated_at = ? WHERE id = ?').run(fact, new Date().toISOString(), id);
 }
 
 export function deletePreferenceFact(id) {
@@ -1885,6 +2186,182 @@ export function deletePreferenceFact(id) {
 export function clearPreferenceFacts() {
   if (!database) return;
   database.prepare('DELETE FROM preference_facts').run();
+}
+
+export function touchPreferenceFact(id) {
+  if (!database) return;
+  database.prepare('UPDATE preference_facts SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
+}
+
+// ── Episodic memory — mid-term tier, extracted from searches/neurons/corrections ─
+
+const MAX_EPISODIC_MEMORIES = 2000; // scale ceiling; dedup keeps real growth well below this
+
+export function listEpisodicMemories({ limit = 500, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM episodic_memories ORDER BY updated_at DESC LIMIT ? OFFSET ?').all(limit, offset);
+}
+
+export function countEpisodicMemories() {
+  if (!database) return 0;
+  return database.prepare('SELECT COUNT(*) AS n FROM episodic_memories').get().n;
+}
+
+export function getEpisodicMemory(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM episodic_memories WHERE id = ?').get(id) ?? null;
+}
+
+export function addEpisodicMemory({ text, category = 'general', source = 'manual', sourceRef = null, privacy = false, egressPolicy = null, importance = 0.5, confidence = 0.5 }) {
+  if (!database) return null;
+  if (countEpisodicMemories() >= MAX_EPISODIC_MEMORIES) {
+    // Evict the least-valuable memory (lowest importance, then oldest last_used)
+    // rather than throwing — episodic memory is meant to self-manage, unlike
+    // the hard-capped manual preference_facts list.
+    const victim = database.prepare(`
+      SELECT id FROM episodic_memories ORDER BY importance ASC, COALESCE(last_used_at, created_at) ASC LIMIT 1
+    `).get();
+    if (victim) database.prepare('DELETE FROM episodic_memories WHERE id = ?').run(victim.id);
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO episodic_memories (id, text, category, source, source_ref, privacy, egress_policy, importance, confidence, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, text, category, source, sourceRef, privacy ? 1 : 0, egressPolicy ?? (privacy ? 'local_only' : 'cloud_allowed'), importance, confidence, now, now);
+  return id;
+}
+
+export function touchEpisodicMemory(id) {
+  if (!database) return;
+  database.prepare('UPDATE episodic_memories SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
+}
+
+export function deleteEpisodicMemory(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM episodic_memories WHERE id = ?').run(id);
+}
+
+export function clearEpisodicMemories() {
+  if (!database) return;
+  database.prepare('DELETE FROM episodic_memories').run();
+}
+
+// ── Local Notebook (Phase 5) ────────────────────────────────────────────────
+
+function parseNotebook(row) {
+  if (!row) return null;
+  return { ...row, privacy: !!row.privacy, settings: JSON.parse(row.settings || '{}') };
+}
+
+export function createNotebook({ id, title, description = '' }) {
+  if (!database) return null;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO notebooks (id, title, description, privacy, egress_policy, settings, created_at, updated_at)
+    VALUES (?, ?, ?, 0, 'cloud_allowed', '{}', ?, ?)
+  `).run(id, title, description, now, now);
+  return id;
+}
+
+export function listNotebooks() {
+  if (!database) return [];
+  return database.prepare(`
+    SELECT n.*, COUNT(s.id) AS source_count
+    FROM notebooks n LEFT JOIN notebook_sources s ON s.notebook_id = n.id
+    GROUP BY n.id ORDER BY n.updated_at DESC
+  `).all().map(row => ({ ...parseNotebook(row), source_count: row.source_count }));
+}
+
+export function getNotebook(id) {
+  if (!database) return null;
+  return parseNotebook(database.prepare('SELECT * FROM notebooks WHERE id = ?').get(id));
+}
+
+export function updateNotebook(id, { title, description } = {}) {
+  if (!database) return;
+  const fields = []; const vals = [];
+  if (title !== undefined) { fields.push('title = ?'); vals.push(title); }
+  if (description !== undefined) { fields.push('description = ?'); vals.push(description); }
+  if (fields.length === 0) return;
+  fields.push('updated_at = ?'); vals.push(new Date().toISOString());
+  vals.push(id);
+  database.prepare(`UPDATE notebooks SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+// Only callable by the derived-privacy recomputation (lib/notebook.js) —
+// never directly from a route handler with client-supplied values.
+export function setNotebookPrivacy(id, { privacy, egressPolicy }) {
+  if (!database) return;
+  database.prepare('UPDATE notebooks SET privacy = ?, egress_policy = ?, updated_at = updated_at WHERE id = ?')
+    .run(privacy ? 1 : 0, egressPolicy, id);
+}
+
+export function deleteNotebook(id) {
+  if (!database) return;
+  database.prepare('DELETE FROM notebook_sources WHERE notebook_id = ?').run(id);
+  database.prepare('DELETE FROM notebook_summaries WHERE notebook_id = ?').run(id);
+  database.prepare('DELETE FROM notebooks WHERE id = ?').run(id);
+}
+
+export function addNotebookSource({ id, notebookId, sourceType = 'neuron', sourceId, title, provenance = '', privacy = false, egressPolicy = 'cloud_allowed' }) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO notebook_sources (id, notebook_id, source_type, source_id, title, provenance, privacy, egress_policy, added_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, notebookId, sourceType, sourceId, title, provenance, privacy ? 1 : 0, egressPolicy, new Date().toISOString());
+  database.prepare('UPDATE notebooks SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), notebookId);
+  invalidateNotebookSummaries(notebookId);
+  return id;
+}
+
+export function listNotebookSources(notebookId, { limit = 500, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM notebook_sources WHERE notebook_id = ? ORDER BY added_at DESC LIMIT ? OFFSET ?')
+    .all(notebookId, limit, offset)
+    .map(row => ({ ...row, privacy: !!row.privacy }));
+}
+
+export function countNotebookSources(notebookId) {
+  if (!database) return 0;
+  return database.prepare('SELECT COUNT(*) AS n FROM notebook_sources WHERE notebook_id = ?').get(notebookId)?.n ?? 0;
+}
+
+export function removeNotebookSource(notebookId, sourceRowId) {
+  if (!database) return;
+  database.prepare('DELETE FROM notebook_sources WHERE id = ? AND notebook_id = ?').run(sourceRowId, notebookId);
+  database.prepare('UPDATE notebooks SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), notebookId);
+  invalidateNotebookSummaries(notebookId);
+}
+
+// Re-indexing a single modified source never touches the rest of the
+// notebook — mission requirement ("réindexer uniquement cette source").
+export function touchNotebookSource(notebookId, sourceRowId, { title } = {}) {
+  if (!database) return;
+  if (title !== undefined) database.prepare('UPDATE notebook_sources SET title = ? WHERE id = ? AND notebook_id = ?').run(title, sourceRowId, notebookId);
+  invalidateNotebookSummaries(notebookId);
+}
+
+export function getNotebookSummary(notebookId, level, themeKey = '') {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM notebook_summaries WHERE notebook_id = ? AND level = ? AND theme_key = ?').get(notebookId, level, themeKey) ?? null;
+}
+
+export function setNotebookSummary(notebookId, level, themeKey, content, sourcesHash) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO notebook_summaries (notebook_id, level, theme_key, content, sources_hash, generated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(notebook_id, level, theme_key) DO UPDATE SET
+      content = excluded.content, sources_hash = excluded.sources_hash, generated_at = excluded.generated_at
+  `).run(notebookId, level, themeKey, content, sourcesHash, new Date().toISOString());
+}
+
+export function invalidateNotebookSummaries(notebookId) {
+  if (!database) return;
+  database.prepare('DELETE FROM notebook_summaries WHERE notebook_id = ?').run(notebookId);
 }
 
 // ── Résumé de vidéo longue — jobs durables et segments résumables ────────────

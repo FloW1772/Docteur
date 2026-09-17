@@ -1,5 +1,5 @@
 import { agentPageData } from './lib/agent-page';
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
 import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen } from 'lucide-react';
 import { usePages } from './hooks/usePages';
 import { useCortex } from './hooks/useCortex';
@@ -11,6 +11,7 @@ import { speakEasterEgg } from './lib/easterEggVoice';
 import VoiceIndicator from './components/layout/VoiceIndicator';
 import GestureOverlay from './components/layout/GestureOverlay';
 import ShutdownOverlay from './components/layout/ShutdownOverlay';
+import { UpdateBanner } from './components/layout/UpdateBanner';
 import VisionAnalyzeModal from './components/modals/VisionAnalyzeModal';
 import ConversationModal from './components/modals/ConversationModal';
 import ScreenShareOverlay from './components/layout/ScreenShareOverlay';
@@ -21,7 +22,10 @@ import CorpusModal from './components/modals/CorpusModal';
 import ActivityLogModal from './components/modals/ActivityLogModal';
 import { getCorpusShowIn3D } from './lib/corpusSettings';
 import PdfExportModal from './components/modals/PdfExportModal';
-import SettingsModal from './components/modals/SettingsModal';
+// Lazy-loaded: large (3600+ lines), only ever needed once the user opens
+// Settings — never on initial load. Batch B (audit finding F9).
+const SettingsModal = lazy(() => import('./components/modals/SettingsModal'));
+import type { Tab as SettingsTab } from './components/modals/SettingsModal';
 import DownloadModal, { type DownloadResult } from './components/modals/DownloadModal';
 import HelpModal from './components/modals/HelpModal';
 import RoadmapModal from './components/modals/RoadmapModal';
@@ -30,7 +34,10 @@ import VideoSummaryModal from './components/modals/VideoSummaryModal';
 import SkillsModal   from './components/modals/SkillsModal';
 import PromptGeneratorModal from './components/modals/PromptGeneratorModal';
 import TeacherModal from './components/modals/TeacherModal';
-import ImageGeneratorModal from './components/modals/ImageGeneratorModal';
+// Lazy-loaded: not needed on initial load, opened only from Settings/toolbar
+// actions the user may never use in a given session. Batch B (finding F9).
+const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
+const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -53,6 +60,21 @@ import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, Whi
 import { pageToContent } from './lib/cortex/pageToContent';
 import { savePage } from './lib/storage';
 import { useMobile } from './lib/useMobile';
+
+// ─── Lazy modal loading fallback ───────────────────────────────────────────
+// Shown for the brief moment (typically well under a second on a local
+// network) between opening a lazy-loaded modal and its code chunk arriving.
+// Batch B (audit finding F9) — SettingsModal/NotebookModal/ImageGeneratorModal.
+
+function LazyModalFallback() {
+  return (
+    <div className="modal-backdrop">
+      <div className="flex items-center justify-center" style={{ minHeight: 120 }}>
+        <RefreshCw size={20} className="animate-spin" style={{ color: '#5ee7ff' }} />
+      </div>
+    </div>
+  );
+}
 
 // ─── Confirm Delete Modal ─────────────────────────────────────────────────────
 
@@ -2273,6 +2295,7 @@ export default function App() {
   useModalOpenTracking(activityLogOpen);
   const [corpusShow3D, setCorpusShow3D]        = useState(getCorpusShowIn3D());
   const [settingsOpen, setSettingsOpen]        = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined);
   useModalOpenTracking(settingsOpen);
   const [captureOpen, setCaptureOpen]          = useState(false);
   useModalOpenTracking(captureOpen);
@@ -2294,6 +2317,8 @@ export default function App() {
   useModalOpenTracking(kiwixOpen);
   const [teacherOpen, setTeacherOpen]          = useState(false);
   useModalOpenTracking(teacherOpen);
+  const [notebookOpen, setNotebookOpen]        = useState(false);
+  useModalOpenTracking(notebookOpen);
   const [imageGeneratorOpen, setImageGeneratorOpen] = useState(false);
   useModalOpenTracking(imageGeneratorOpen);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
@@ -4506,6 +4531,7 @@ export default function App() {
           onPromptGeneratorOpen={() => setPromptGeneratorOpen(true)}
           onKiwixOpen={() => setKiwixOpen(true)}
           onTeacherOpen={() => setTeacherOpen(true)}
+          onNotebookOpen={() => setNotebookOpen(true)}
           onImageGeneratorOpen={() => setImageGeneratorOpen(true)}
           onTodoOpen={() => setTodoOpen(true)}
           todoPendingCount={todoPendingCount}
@@ -4763,6 +4789,7 @@ export default function App() {
       )}
 
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
+      <UpdateBanner flushSaves={flushAllSaves} />
 
       {pdfExportPage && (
         <PdfExportModal
@@ -4789,7 +4816,39 @@ export default function App() {
 
       {activityLogOpen && <ActivityLogModal onClose={() => setActivityLogOpen(false)} />}
 
-      {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {helpOpen && (
+        <HelpModal
+          onClose={() => setHelpOpen(false)}
+          onOpenFeature={(feature) => {
+            setHelpOpen(false);
+            switch (feature) {
+              case 'capture':         setCaptureOpen(true); break;
+              case 'console':         setConsoleOpen(true); break;
+              case 'notebook':        setNotebookOpen(true); break;
+              case 'teacher':         setTeacherOpen(true); break;
+              case 'agents':          setAgentsOpen(true); break;
+              case 'skills':          setSkillsOpen(true); break;
+              case 'images':          setImageGeneratorOpen(true); break;
+              case 'kiwix':           setKiwixOpen(true); break;
+              case 'todo':            setTodoOpen(true); break;
+              case 'backup':          setBackupOpen(true); break;
+              case 'corpus':          setCorpusOpen(true); break;
+              case 'prompt-generator':setPromptGeneratorOpen(true); break;
+              case 'video-summary':   setVideoSummaryOpen(true); break;
+              case 'settings-models':   setSettingsInitialTab('models'); setSettingsOpen(true); break;
+              case 'settings-memory':   setSettingsInitialTab('memory'); setSettingsOpen(true); break;
+              case 'settings-images':   setSettingsInitialTab('images'); setSettingsOpen(true); break;
+              case 'settings-privacy':  setSettingsInitialTab('privacy'); setSettingsOpen(true); break;
+              case 'settings-audio':    setSettingsInitialTab('audio'); setSettingsOpen(true); break;
+              case 'settings-files':    setSettingsInitialTab('files'); setSettingsOpen(true); break;
+              case 'settings-vocal':    setSettingsInitialTab('vocal'); setSettingsOpen(true); break;
+              case 'settings-external': setSettingsInitialTab('external'); setSettingsOpen(true); break;
+              case 'settings-connections': setSettingsInitialTab('connections'); setSettingsOpen(true); break;
+              case 'settings': default: setSettingsOpen(true); break;
+            }
+          }}
+        />
+      )}
 
       <RoadmapModal isOpen={roadmapOpen} onClose={() => setRoadmapOpen(false)} />
 
@@ -4863,12 +4922,20 @@ export default function App() {
         />
       )}
 
+      {notebookOpen && (
+        <Suspense fallback={<LazyModalFallback />}>
+          <NotebookModal onClose={() => setNotebookOpen(false)} />
+        </Suspense>
+      )}
+
       {imageGeneratorOpen && (
-        <ImageGeneratorModal
-          onClose={() => setImageGeneratorOpen(false)}
-          strictLocalMode={strictLocalMode}
-          onOpenSettings={() => { setImageGeneratorOpen(false); setSettingsOpen(true); }}
-        />
+        <Suspense fallback={<LazyModalFallback />}>
+          <ImageGeneratorModal
+            onClose={() => setImageGeneratorOpen(false)}
+            strictLocalMode={strictLocalMode}
+            onOpenSettings={() => { setImageGeneratorOpen(false); setSettingsOpen(true); }}
+          />
+        </Suspense>
       )}
 
       {kiwixOpen && (
@@ -5296,12 +5363,15 @@ export default function App() {
       })()}
 
       {settingsOpen && (
+        <Suspense fallback={<LazyModalFallback />}>
         <SettingsModal
           onClose={() => {
             setSettingsOpen(false);
+            setSettingsInitialTab(undefined);
             // Re-check Groq availability in case keys were saved/removed
             cortexClient.getCloudKeys().then(k => setGroqActive(k.groq_active)).catch(() => {});
           }}
+          initialTab={settingsInitialTab}
           corpusCount={pageCounts.byKind.corpus ?? 0}
           gestureSensitivity={gestureSensitivity}
           onGestureSensitivityChange={(v) => { setGestureSensitivityState(v); setGestureSensitivity(v); }}
@@ -5346,6 +5416,7 @@ export default function App() {
             } catch { /* non-fatal */ }
           }}
         />
+        </Suspense>
       )}
 
       {downloadUrl && (

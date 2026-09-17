@@ -9,6 +9,118 @@ export interface CapabilitySection {
   items: CapabilityItem[];
 }
 
+// ── Centre d'aide — répertoire des fonctionnalités ──────────────────────────
+// Chaque entrée correspond à une fonctionnalité réellement présente dans le
+// code (vérifié — pas une aspiration). `feature` est la clé passée à
+// onOpenFeature() dans App.tsx, qui sait ouvrir le bon modal/onglet.
+export type FeatureKey =
+  | 'capture' | 'console' | 'notebook' | 'teacher' | 'agents' | 'skills'
+  | 'images' | 'kiwix' | 'todo' | 'backup' | 'corpus' | 'prompt-generator'
+  | 'video-summary'
+  | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
+  | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
+  | 'settings-external' | 'settings-connections';
+
+export type FeatureState = 'disponible' | 'local' | 'a_configurer' | 'partiel';
+
+export interface HelpFeature {
+  name: string;
+  description: string;
+  feature: FeatureKey;
+  state: FeatureState;
+  keywords?: string[]; // pour la recherche — synonymes non présents dans name/description
+}
+
+export interface HelpCategory {
+  title: string;
+  emoji: string;
+  items: HelpFeature[];
+}
+
+export const HELP_DIRECTORY: HelpCategory[] = [
+  {
+    emoji: '🤖',
+    title: 'IA',
+    items: [
+      { name: 'Modèles et providers', description: 'Choisir le modèle local (Ollama) ou les clés cloud (Gemini, Groq, OpenRouter, Anthropic, OpenAI) — priorité Local rapide / Équilibré / Qualité max.', feature: 'settings-models', state: 'disponible', keywords: ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'ollama', 'router'] },
+      { name: 'Professeur', description: 'Parcours d\'apprentissage guidés avec plan, explications et révisions espacées — bascule locale automatique si le cloud échoue.', feature: 'teacher', state: 'disponible' },
+      { name: 'Agents', description: 'Agents de veille automatisés : création, exécution manuelle, historique.', feature: 'agents', state: 'disponible' },
+      { name: 'Compétences (Skills)', description: 'Bibliothèque de compétences/outils réutilisables par les agents et le chat.', feature: 'skills', state: 'disponible' },
+      { name: 'Générateur de prompts', description: 'Bibliothèque de modèles de prompts prêts à copier-coller.', feature: 'prompt-generator', state: 'disponible' },
+      { name: 'Free AI Finder', description: 'Découvre des providers IA gratuits disponibles en ligne, exclut ceux déjà configurés dans Docteur.', feature: 'settings-models', state: 'disponible', keywords: ['gratuit', 'catalogue', 'découverte'] },
+    ],
+  },
+  {
+    emoji: '🔍',
+    title: 'Recherche et connaissances',
+    items: [
+      { name: 'Console — Recherche et Question', description: 'Recherche sémantique dans les neurones ou question en français avec réponse sourcée (RAG).', feature: 'console', state: 'disponible' },
+      { name: 'Veille IA', description: 'Synthèse de fond ou actualité web sourcée sur un sujet donné.', feature: 'console', state: 'disponible', keywords: ['veille', 'actualité', 'recherche web'] },
+      { name: 'Notebook', description: 'Analyse plusieurs neurones/documents ensemble avec RAG local scopé et citations vérifiées.', feature: 'notebook', state: 'local' },
+      { name: 'Kiwix hors ligne', description: 'Bibliothèque de contenus .zim consultables sans connexion (Wikipédia, etc.).', feature: 'kiwix', state: 'local' },
+    ],
+  },
+  {
+    emoji: '🧠',
+    title: 'Mémoire',
+    items: [
+      { name: 'Mémoire adaptative', description: 'Docteur retient des préférences et des faits pertinents entre les sessions, avec budget de contexte et déduplication.', feature: 'settings-memory', state: 'disponible' },
+    ],
+  },
+  {
+    emoji: '📥',
+    title: 'Fichiers et capture',
+    items: [
+      { name: 'Capture', description: 'Coller un lien, un texte ou un fichier (.pdf/.xlsx/.csv/.md/.txt) → analyse et neurone créé automatiquement.', feature: 'capture', state: 'disponible' },
+      { name: 'Corpus 3D', description: 'Vue d\'ensemble du cortex — masquer sphères/particules, mode performance, isoler une sélection.', feature: 'corpus', state: 'disponible' },
+      { name: 'Sauvegarde et restauration', description: 'Export JSON complet (neurones + synapses) et import pour restaurer.', feature: 'backup', state: 'disponible' },
+      { name: 'À capturer (Todo)', description: 'Liste personnelle de liens/URLs en attente de capture.', feature: 'todo', state: 'disponible' },
+    ],
+  },
+  {
+    emoji: '🎙️',
+    title: 'Audio',
+    items: [
+      { name: 'Lecteur audio et radio', description: 'Lecture audio intégrée, streams radio configurables.', feature: 'settings-audio', state: 'disponible' },
+      { name: 'Voix et commandes vocales', description: 'Mot-clé d\'activation (Porcupine), transcription Whisper local/Groq, commandes vocales.', feature: 'settings-vocal', state: 'local', keywords: ['whisper', 'porcupine', 'transcription'] },
+      { name: 'Résumé vidéo', description: 'Transcrit et résume une vidéo (YouTube ou fichier local).', feature: 'video-summary', state: 'disponible' },
+    ],
+  },
+  {
+    emoji: '🖼️',
+    title: 'Images',
+    items: [
+      { name: 'Génération d\'images', description: 'Génération locale via ComfyUI (installation intégrée) ou providers cloud gratuits.', feature: 'images', state: 'a_configurer', keywords: ['comfyui', 'stable diffusion'] },
+    ],
+  },
+  {
+    emoji: '🔒',
+    title: 'Confidentialité',
+    items: [
+      { name: 'Mode Strict Local', description: 'Bloque tout appel cloud — force le local même si un modèle cloud est explicitement demandé.', feature: 'settings-privacy', state: 'disponible' },
+      { name: 'Journal de confidentialité', description: 'Historique des tentatives d\'appel cloud bloquées sur du contenu privé/local_only.', feature: 'settings-privacy', state: 'disponible' },
+    ],
+  },
+  {
+    emoji: '🧰',
+    title: 'Outils',
+    items: [
+      { name: 'Agents externes', description: 'Intégration Claude Code / Codex — choix abonnement CLI ou clé API.', feature: 'settings-external', state: 'a_configurer' },
+      { name: 'Connexions (YouTube, Google Drive, OneDrive)', description: 'Configurer les identifiants d\'application (Client ID/Secret) avant de lancer une vraie connexion — import toujours marqué privé/local.', feature: 'settings-connections', state: 'a_configurer', keywords: ['youtube', 'google drive', 'onedrive', 'oauth', 'connecteur'] },
+      { name: 'Fichiers et dossiers surveillés', description: 'Import automatique depuis un dossier surveillé, gestion des fichiers.', feature: 'settings-files', state: 'disponible' },
+      { name: 'Navigateur', description: 'Choix du navigateur que le serveur ouvre pour les liens externes (onglet Modèles).', feature: 'settings-models', state: 'disponible', keywords: ['browser', 'chrome', 'firefox', 'edge'] },
+      { name: 'NotebookLM (préparation)', description: 'Clé optionnelle pour une intégration future — aucun appel réel n\'est fait aujourd\'hui (onglet Modèles).', feature: 'settings-models', state: 'a_configurer' },
+    ],
+  },
+  {
+    emoji: '🕵️',
+    title: 'OSINT',
+    items: [
+      { name: 'Sherlock', description: 'Recherche de présence d\'un pseudonyme sur des sites publics — usage sur ses propres comptes uniquement (onglet Modèles).', feature: 'settings-models', state: 'a_configurer' },
+    ],
+  },
+];
+
 export const CAPABILITIES: CapabilitySection[] = [
   {
     emoji: '📥',
@@ -90,10 +202,11 @@ export const CAPABILITIES: CapabilitySection[] = [
 
 export const LIMITATIONS: string[] = [
   'Sites à paywall ou fortement protégés : capture simple du lien uniquement, sans analyse du contenu — contourne avec "info [source] [lien]" + texte collé',
-  'Pas de transcription de vidéos sans sous-titres disponibles (Whisper prévu)',
-  'Pas de mode vocal / "Hey Docteur" (prévu)',
   'HTTPS hors-ligne complet (mkcert) partiellement en place — les PWA Android peuvent nécessiter un certificat installé',
   'Ne va pas chercher sur internet tout seul : analyse uniquement ce que tu lui donnes ou ce que la veille IA rapporte',
+  'Connecteurs Google Drive / OneDrive / YouTube : interface de configuration disponible (Paramètres → Connexions), mais aucune connexion réelle n\'a encore été établie — nécessite de créer des identifiants OAuth (Google Cloud / Azure) hors de Docteur, puis de lancer la connexion',
+  'Sherlock (recherche de pseudonyme) : code présent, mais l\'outil externe pipx/sherlock n\'est pas installé sur ce poste',
+  'Notebook : résumé et questions/réponses disponibles ; FAQ, flashcards et chronologie pas encore implémentés',
 ];
 
 export const SHORTCUTS: Array<{ keys: string; desc: string }> = [

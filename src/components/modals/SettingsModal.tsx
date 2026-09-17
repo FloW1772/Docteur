@@ -1,9 +1,14 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { FreeAiFinder } from '../settings/FreeAiFinder';
+import { NotebookLmSettingsSection } from '../settings/NotebookLmSettingsSection';
+import { BrowserSettingsSection } from '../settings/BrowserSettingsSection';
+import { SherlockSettingsSection } from '../settings/SherlockSettingsSection';
 import { exportAllToServer } from '../../lib/storage';
 import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
 import { ImagesSettingsTab } from '../settings/ImagesSettingsTab';
+import { MemorySettingsTab } from '../settings/MemorySettingsTab';
+import { ConnectionsSettingsTab } from '../settings/ConnectionsSettingsTab';
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
 
@@ -39,7 +44,7 @@ function formatCooldown(ms: number): string {
 }
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images';
+export type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -87,6 +92,7 @@ interface Props {
   onGestureSensitivityChange?:  (value: number) => void;
   easterEggEnabled?:            boolean;
   onEasterEggEnabledChange?:    (v: boolean) => void;
+  initialTab?:                  Tab;
 }
 
 const LEVEL_COLORS: Record<number, string> = {
@@ -126,8 +132,9 @@ export default function SettingsModal({
   onGestureSensitivityChange,
   easterEggEnabled = true,
   onEasterEggEnabledChange,
+  initialTab,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('models');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'models');
   const [audioSettings, setAudioSettings] = useState<AudioPlayerSettings | null>(null);
   const [audioError, setAudioError]       = useState<string | null>(null);
   const [audioFolderDraft, setAudioFolderDraft] = useState('');
@@ -758,7 +765,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'stats', 'privacy', 'vocal', 'inbox', 'files', 'audio', 'external', 'images'] as const).map(t => (
+          {(['models', 'images', 'connections', 'stats', 'privacy', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -770,7 +777,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -779,6 +786,8 @@ export default function SettingsModal({
         <div style={{ maxHeight: 480, overflowY: 'auto' }}>
           {tab === 'external' && <ExternalAgentsPanel />}
           {tab === 'images' && <ImagesSettingsTab strictLocalMode={!!settings.strict_local_mode} />}
+          {tab === 'memory' && <MemorySettingsTab />}
+          {tab === 'connections' && <ConnectionsSettingsTab />}
           {loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />
@@ -1728,6 +1737,12 @@ export default function SettingsModal({
               </div>
 
               <FreeAiFinder strictLocalActive={settings.strict_local_mode === true} />
+
+              <NotebookLmSettingsSection />
+
+              <BrowserSettingsSection />
+
+              <SherlockSettingsSection />
 
               {/* Claude / OpenAI — mode selector (abonnement CLI vs clé API) */}
               <div className="flex flex-col gap-2">

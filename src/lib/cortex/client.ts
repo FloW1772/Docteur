@@ -902,6 +902,144 @@ export interface PrivacyTestResult {
   results: PrivacyTestProviderResult[];
 }
 
+// ── Connectors (YouTube / Google Drive / OneDrive) ──────────────────────────
+
+export type ConnectorId = 'youtube' | 'google_drive' | 'onedrive' | 'dropbox' | 'github' | 'notion' | 'google_calendar' | 'outlook_calendar';
+
+export interface ConnectorState {
+  provider:            ConnectorId;
+  id:                  ConnectorId;
+  label:                string;
+  category:             string;
+  status:               'active' | 'unsupported';
+  capabilities:         string[];
+  authType:             string;
+  privacyPolicy:        string;
+  clientFamily:         string | null;
+  connected:            boolean;
+  account_label:        string | null;
+  scopes:               string[];
+  auto_sync:            boolean;
+  last_sync_at:         string | null;
+  last_sync_status:     string | null;
+  last_sync_error:      string | null;
+  synced_items_count:   number;
+  client_configured:    boolean;
+}
+
+export interface ConnectorsListResult {
+  connectors: ConnectorState[];
+}
+
+export interface MemorySettings {
+  enabled:                  boolean;
+  learn_from_searches:      boolean;
+  learn_from_neurons:       boolean;
+  learn_from_corrections:   boolean;
+  budget:                   'low' | 'normal' | 'extended';
+}
+
+export interface MemoryItem {
+  id:            string;
+  text:          string;
+  tier:          'long_term' | 'episodic';
+  category:      string;
+  source:        string;
+  privacy:       boolean;
+  egress_policy: string;
+  importance:    number;
+  confidence:    number;
+  usage_count:   number;
+  last_used_at:  string | null;
+  created_at:    string;
+}
+
+export interface MemoryItemsResult {
+  long_term:       MemoryItem[];
+  episodic:        MemoryItem[];
+  episodic_total:  number;
+  budget:          { maxMemories: number; maxChunks: number };
+}
+
+export interface MemoryPreviewResult {
+  selected: Array<{ id: string; text: string; tier: 'long_term' | 'episodic'; privacy: boolean; egressPolicy: string }>;
+  budget:   { maxMemories: number; maxChunks: number };
+}
+
+export interface Notebook {
+  id:            string;
+  title:         string;
+  description:   string;
+  privacy:       boolean;
+  egress_policy: string;
+  created_at:    string;
+  updated_at:    string;
+  source_count?: number;
+}
+
+export interface NotebookSource {
+  id:            string;
+  notebook_id:   string;
+  source_type:   string;
+  source_id:     string;
+  title:         string;
+  provenance:    string;
+  privacy:       boolean;
+  egress_policy: string;
+  added_at:      string;
+}
+
+export interface NotebookCitation {
+  ref:         number;
+  chunkId:     string;
+  sourceId:    string;
+  sourceTitle: string;
+  passage:     string;
+}
+
+export interface NotebookAskResult {
+  answer:      string;
+  citations:   NotebookCitation[];
+  chunks_used: number;
+}
+
+export interface NotebookSummaryResult {
+  content:      string;
+  cached:       boolean;
+  sourceCount:  number;
+}
+
+export interface InstalledBrowser {
+  id:    string;
+  label: string;
+  path:  string | null;
+}
+
+export interface BrowserSettings {
+  selected:   string;
+  customPath: string | null;
+}
+
+export interface SherlockInstallState {
+  status:      'not_installed' | 'installed' | 'error';
+  version:     string | null;
+  installedAt: number | null;
+  lastError:   string | null;
+}
+
+export interface SherlockSearchResult {
+  site:   string;
+  url:    string;
+  status: 'found';
+}
+
+export interface SherlockJob {
+  id:        string;
+  operation: string;
+  status:    string;
+  summary:   { results?: SherlockSearchResult[]; error?: string; exitCode?: number } | null;
+}
+
 export interface VoiceSettings {
   enabled:             boolean;
   whisperMode:         'local' | 'groq';
@@ -3339,6 +3477,272 @@ export const cortexClient = {
     const res = await apiFetch('/api/privacy/test', { method: 'POST' });
     if (!res.ok) throw new Error(`Privacy test HTTP ${res.status}`);
     return res.json() as Promise<PrivacyTestResult>;
+  },
+
+  // ── Connectors (YouTube / Google Drive / OneDrive) ──────────────────────────
+  // Settings → Connexions UI only. No real OAuth is ever triggered by these
+  // calls except connectAuthUrl(), which merely builds a consent URL string —
+  // it does not open it. Nothing here reads back a stored secret value.
+
+  async listConnectors(): Promise<ConnectorsListResult> {
+    const res = await apiFetch('/api/connectors', { method: 'GET' });
+    if (!res.ok) throw new Error(`Connectors HTTP ${res.status}`);
+    return res.json() as Promise<ConnectorsListResult>;
+  },
+
+  async saveConnectorCredentials(provider: ConnectorId, clientId: string, clientSecret: string): Promise<{ ok: boolean; client_configured: boolean }> {
+    const res = await apiFetch(`/api/connectors/${encodeURIComponent(provider)}/client-credentials`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `Connector credentials HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; client_configured: boolean }>;
+  },
+
+  async deleteConnectorCredentials(provider: ConnectorId): Promise<{ ok: boolean; client_configured: boolean }> {
+    const res = await apiFetch(`/api/connectors/${encodeURIComponent(provider)}/client-credentials`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Connector credentials delete HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; client_configured: boolean }>;
+  },
+
+  async disconnectConnector(provider: ConnectorId): Promise<{ ok: boolean; disconnected: boolean; deleted_pages: number }> {
+    const res = await apiFetch(`/api/connectors/${encodeURIComponent(provider)}/disconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+    });
+    if (!res.ok) throw new Error(`Connector disconnect HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean; disconnected: boolean; deleted_pages: number }>;
+  },
+
+  // ── Adaptive memory (Phase 3) ───────────────────────────────────────────────
+
+  async getMemorySettings(): Promise<MemorySettings> {
+    const res = await apiFetch('/api/memory/settings', { method: 'GET' });
+    if (!res.ok) throw new Error(`Memory settings HTTP ${res.status}`);
+    return res.json() as Promise<MemorySettings>;
+  },
+
+  async updateMemorySettings(updates: Partial<MemorySettings>): Promise<MemorySettings> {
+    const res = await apiFetch('/api/memory/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates),
+    });
+    if (!res.ok) throw new Error(`Memory settings update HTTP ${res.status}`);
+    return res.json() as Promise<MemorySettings>;
+  },
+
+  async getMemoryItems(): Promise<MemoryItemsResult> {
+    const res = await apiFetch('/api/memory/items', { method: 'GET' });
+    if (!res.ok) throw new Error(`Memory items HTTP ${res.status}`);
+    return res.json() as Promise<MemoryItemsResult>;
+  },
+
+  async previewMemory(query?: string): Promise<MemoryPreviewResult> {
+    const qs = query ? `?${new URLSearchParams({ query })}` : '';
+    const res = await apiFetch(`/api/memory/preview${qs}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Memory preview HTTP ${res.status}`);
+    return res.json() as Promise<MemoryPreviewResult>;
+  },
+
+  async deleteMemoryItem(tier: 'long_term' | 'episodic', id: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/memory/items/${tier}/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Memory delete HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  async resetAdaptiveMemory(): Promise<{ ok: boolean }> {
+    const res = await apiFetch('/api/memory/reset', { method: 'POST' });
+    if (!res.ok) throw new Error(`Memory reset HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  // ── Local Notebook (Phase 5) ────────────────────────────────────────────────
+
+  async listNotebooks(): Promise<{ notebooks: Notebook[] }> {
+    const res = await apiFetch('/api/notebooks', { method: 'GET' });
+    if (!res.ok) throw new Error(`Notebooks HTTP ${res.status}`);
+    return res.json() as Promise<{ notebooks: Notebook[] }>;
+  },
+
+  async createNotebook(title: string, description = ''): Promise<{ id: string }> {
+    const res = await apiFetch('/api/notebooks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, description }),
+    });
+    if (!res.ok) throw new Error(`Notebook creation HTTP ${res.status}`);
+    return res.json() as Promise<{ id: string }>;
+  },
+
+  async getNotebook(id: string): Promise<{ notebook: Notebook; source_count: number }> {
+    const res = await apiFetch(`/api/notebooks/${id}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Notebook HTTP ${res.status}`);
+    return res.json() as Promise<{ notebook: Notebook; source_count: number }>;
+  },
+
+  async deleteNotebook(id: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Notebook delete HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  async listNotebookSources(notebookId: string, limit = 100, offset = 0): Promise<{ sources: NotebookSource[]; total: number }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/sources?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Notebook sources HTTP ${res.status}`);
+    return res.json() as Promise<{ sources: NotebookSource[]; total: number }>;
+  },
+
+  async addNotebookSource(notebookId: string, source: { source_id: string; title: string; kind?: string; source_type?: string; provenance?: string }): Promise<{ id: string; notebook_privacy: { privacy: boolean; egressPolicy: string } }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/sources`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(source),
+    });
+    if (!res.ok) throw new Error(`Notebook add source HTTP ${res.status}`);
+    return res.json() as Promise<{ id: string; notebook_privacy: { privacy: boolean; egressPolicy: string } }>;
+  },
+
+  async removeNotebookSource(notebookId: string, sourceRowId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/sources/${sourceRowId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Notebook remove source HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
+
+  async askNotebook(notebookId: string, question: string): Promise<NotebookAskResult> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ask`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question }),
+    }, 60_000);
+    if (!res.ok) throw new Error(`Notebook ask HTTP ${res.status}`);
+    return res.json() as Promise<NotebookAskResult>;
+  },
+
+  async getNotebookSummary(notebookId: string): Promise<NotebookSummaryResult> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/summary`, { method: 'GET' }, 60_000);
+    if (!res.ok) throw new Error(`Notebook summary HTTP ${res.status}`);
+    return res.json() as Promise<NotebookSummaryResult>;
+  },
+
+  // "Préparer pour NotebookLM" — writes a local .md file only, never
+  // contacts Google. Returns 409 with requires_confirmation:true if the
+  // notebook is local_only and confirm wasn't passed.
+  async exportNotebookForNotebookLm(notebookId: string, confirm = false): Promise<{ ok: boolean; filename: string; source_count: number; notice: string }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/export-for-notebooklm`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm }),
+    });
+    if (res.status === 409) {
+      const body = await res.json();
+      const err = new Error(body.error) as Error & { requiresConfirmation?: boolean };
+      err.requiresConfirmation = true;
+      throw err;
+    }
+    if (!res.ok) throw new Error(`Notebook export HTTP ${res.status}`);
+    return res.json();
+  },
+
+  // ── NotebookLM (Google) — future integration, NOT active (Phase 5B) ────────
+  // Saving a key here makes ZERO calls to Google/NotebookLM — see
+  // routes/notebooklm.js. Purely local storage (DPAPI) + status reporting.
+
+  async getNotebookLmStatus(): Promise<{ key_configured: boolean; notice: string }> {
+    const res = await apiFetch('/api/notebooklm/status', { method: 'GET' });
+    if (!res.ok) throw new Error(`NotebookLM status HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async saveNotebookLmKey(key: string): Promise<{ ok: boolean; key_configured: boolean }> {
+    const res = await apiFetch('/api/notebooklm/key', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }),
+    });
+    if (!res.ok) throw new Error(`NotebookLM key save HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async deleteNotebookLmKey(): Promise<{ ok: boolean; key_configured: boolean }> {
+    const res = await apiFetch('/api/notebooklm/key', { method: 'DELETE' });
+    if (!res.ok) throw new Error(`NotebookLM key delete HTTP ${res.status}`);
+    return res.json();
+  },
+
+  // ── Browser selection (Phase 6) ─────────────────────────────────────────────
+
+  async getInstalledBrowsers(): Promise<{ browsers: InstalledBrowser[] }> {
+    const res = await apiFetch('/api/browser/installed', { method: 'GET' });
+    if (!res.ok) throw new Error(`Installed browsers HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getBrowserSettings(): Promise<BrowserSettings> {
+    const res = await apiFetch('/api/browser/settings', { method: 'GET' });
+    if (!res.ok) throw new Error(`Browser settings HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async updateBrowserSettings(selected: string, customPath?: string): Promise<BrowserSettings> {
+    const res = await apiFetch('/api/browser/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selected, customPath }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Browser settings update HTTP ${res.status}`);
+    return body;
+  },
+
+  async openInBrowser(url: string): Promise<{ opened: boolean; url: string }> {
+    const res = await apiFetch('/api/browser/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Browser open HTTP ${res.status}`);
+    return body;
+  },
+
+  // ── Sherlock OSINT (Phase 7) ─────────────────────────────────────────────────
+
+  async getSherlockStatus(): Promise<SherlockInstallState> {
+    const res = await apiFetch('/api/sherlock/status', { method: 'GET' });
+    if (!res.ok) throw new Error(`Sherlock status HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async testSherlockInstall(): Promise<{ ok: boolean; installed: boolean; version?: string }> {
+    const res = await apiFetch('/api/sherlock/test', { method: 'POST' }, 15_000);
+    return res.json();
+  },
+
+  async installSherlock(): Promise<{ jobId: string }> {
+    const res = await apiFetch('/api/sherlock/install', { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Sherlock install HTTP ${res.status}`);
+    return body;
+  },
+
+  async uninstallSherlock(): Promise<{ jobId: string }> {
+    const res = await apiFetch('/api/sherlock/uninstall', { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Sherlock uninstall HTTP ${res.status}`);
+    return body;
+  },
+
+  async searchSherlock(username: string): Promise<{ jobId: string; username: string }> {
+    const res = await apiFetch('/api/sherlock/search', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Sherlock search HTTP ${res.status}`);
+    return body;
+  },
+
+  async cancelSherlockSearch(jobId: string): Promise<{ cancelled: boolean }> {
+    const res = await apiFetch(`/api/sherlock/search/${jobId}/cancel`, { method: 'POST' });
+    return res.json();
+  },
+
+  async getSherlockJob(jobId: string): Promise<SherlockJob> {
+    const res = await apiFetch(`/api/sherlock/search/${jobId}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Sherlock job HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async saveSherlockResultAsNeuron(username: string, site: string, url: string): Promise<{ id: string }> {
+    const res = await apiFetch('/api/sherlock/save-as-neuron', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, site, url }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `Sherlock save HTTP ${res.status}`);
+    return body;
   },
 
   // ── Voice ──────────────────────────────────────────────────────────────────

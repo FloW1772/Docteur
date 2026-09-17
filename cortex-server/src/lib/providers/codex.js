@@ -8,6 +8,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { BaseProvider } from './base-provider.js';
 import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
+import { guardCloudCall } from '../privacy-guard.js';
 
 const CODEX_CLI_EXECUTABLE = 'codex';
 const TIMEOUT_MS = 90_000;
@@ -375,6 +376,7 @@ export class CodexProvider extends BaseProvider {
   async generate(request) {
     assertLiveCallAllowed();
     const { messages, model: requestedModel } = request;
+    guardCloudCall({ messages, provider: 'codex', functionCalled: 'generate' });
     if (requestedModel && !/^[A-Za-z0-9_.\-/]{1,128}$/.test(requestedModel)) {
       throw this.createError(
         'Codex: nom de modèle invalide (caractères non autorisés)',

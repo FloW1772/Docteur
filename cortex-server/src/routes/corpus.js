@@ -6,6 +6,7 @@ import {
 import { createJob, updateJobProgress, addJobError, finishJob, getJob } from '../lib/corpus-jobs.js';
 import { extractContent } from '../lib/deep-capture.js';
 import { assertSafeUrl } from '../lib/url-security.js';
+import { chunkText } from '../lib/chunking.js';
 
 const ALLOWED_EXT = new Set(['.md', '.markdown', '.txt']);
 const DEFAULT_LIMIT = 500;
@@ -55,30 +56,6 @@ function titleFromContent(text, fallback) {
 
 function textToBlocks(text) {
   return [{ id: crypto.randomUUID(), type: 'paragraph', content: text }];
-}
-
-// Splits long text into chunks on paragraph boundaries, never mid-sentence
-// when avoidable. A single oversized paragraph is hard-split as a last resort.
-function chunkText(text, maxChars) {
-  if (text.length <= maxChars) return [text];
-
-  const paragraphs = text.split(/\n\n+/);
-  const chunks = [];
-  let current = '';
-
-  for (const para of paragraphs) {
-    if (current.length > 0 && current.length + para.length + 2 > maxChars) {
-      chunks.push(current);
-      current = '';
-    }
-    current = current ? `${current}\n\n${para}` : para;
-    while (current.length > maxChars) {
-      chunks.push(current.slice(0, maxChars));
-      current = current.slice(maxChars);
-    }
-  }
-  if (current) chunks.push(current);
-  return chunks.length > 0 ? chunks : [text];
 }
 
 // Parses the incoming multipart form, applies keyword/size filters, returns

@@ -66,6 +66,13 @@ export function finishJob(id, status, summary) {
   job.updatedAt = Date.now();
 }
 
+// Direct registry access for server-side callers that need a single job's
+// state without an HTTP round-trip (e.g. routes/sherlock.js polling
+// endpoint) — same registry as GET /api/jobs, just keyed lookup.
+export function getJob(id) {
+  return jobs.get(id) ?? null;
+}
+
 export function createJobsRoute() {
   const route = new Hono();
 

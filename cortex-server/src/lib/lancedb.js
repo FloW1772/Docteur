@@ -223,6 +223,63 @@ export async function searchNeurons(lancedbPath, vector, { limit = 5, threshold 
     .slice(0, limit);
 }
 
+// Vector search scoped to a specific set of neuron ids — used by the local
+// Notebook RAG (Phase 5, MASTER mission) so retrieval only ever considers a
+// notebook's own sources, never the entire neuron store. Uses LanceDB's
+// native .where() predicate pushdown (id IN (...)) rather than fetching a
+// large candidate pool and post-filtering in JS, which would not scale to
+// notebooks with many sources or a large overall neuron count.
+export async function searchNeuronsByIds(lancedbPath, vector, ids, { limit = 8, threshold = 0.0 } = {}) {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  const table = await getTable(lancedbPath);
+  if (!table) return [];
+
+  const idList = ids.map(id => `'${escapeSqlString(id)}'`).join(',');
+  const rawResults = await table.search(vector).where(`id IN (${idList})`).limit(limit).toArray();
+
+  return rawResults
+    .map((row) => {
+      const distance = typeof row._distance === 'number' ? row._distance : (typeof row.distance === 'number' ? row.distance : 1);
+      const score    = Number.isFinite(distance) ? Math.max(0, Math.min(1, 1 - distance)) : 0;
+      return {
+        id:              row.id,
+        title:           row.title ?? '',
+        kind:            row.kind ?? 'note',
+        content:         row.content ?? '',
+        content_preview: row.content_preview ?? createPreview(row.content ?? ''),
+        metadata:        (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })(),
+        score,
+      };
+    })
+    .filter((row) => row.score >= threshold)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+// Fetches full neuron rows (content included) for a specific set of ids —
+// used when the notebook needs the actual text of its sources (e.g.
+// building a hierarchical summary from all sources, not just top-k RAG
+// hits). Uses the same id-list where() pushdown as searchNeuronsByIds.
+export async function getNeuronsByIds(lancedbPath, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  const table = await getTable(lancedbPath);
+  if (!table) return [];
+
+  const idList = ids.map(id => `'${escapeSqlString(id)}'`).join(',');
+  const rows = typeof table.query === 'function'
+    ? await table.query().where(`id IN (${idList})`).toArray()
+    : (await table.search().limit(100000).toArray()).filter(row => ids.includes(row.id));
+
+  return rows.map(row => ({
+    id:              String(row.id ?? ''),
+    title:           String(row.title ?? ''),
+    kind:            String(row.kind ?? 'note'),
+    content:         String(row.content ?? ''),
+    content_preview: String(row.content_preview ?? ''),
+    metadata:        (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })(),
+  }));
+}
+
 export async function getAllNeurons(lancedbPath) {
   const table = await getTable(lancedbPath);
   if (!table) return [];

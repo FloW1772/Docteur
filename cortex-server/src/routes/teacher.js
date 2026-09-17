@@ -15,6 +15,7 @@ import {
 import { normalizeTeacherRegister, teacherRegisterInstruction, TEACHER_REGISTERS, TEACHER_REGISTER_LABELS } from '../lib/teacher-register.js';
 import { isStrictLocalMode } from '../lib/strict-local.js';
 import { ErrorCategory } from '../lib/provider-errors.js';
+import { parseIntParam } from '../lib/http-params.js';
 
 // Errors that mean "the network call went through but produced nothing
 // usable" (e.g. OpenRouter's free tier occasionally returning an empty
@@ -902,7 +903,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
 
   // ── Révision espacée — session du jour ───────────────────────────────────
   route.get('/teacher/review/due', (c) => {
-    const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 5), 1), 50);
+    const limit = Math.min(Math.max(parseIntParam(c.req.query('limit'), 5), 1), 50);
     return c.json({ items: getDueReviewItems(limit), count_due: countDueReviewItems() });
   });
 

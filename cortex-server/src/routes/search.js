@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { createPreview } from '../lib/lancedb.js';
+import { getMemorySettings, isWorthRemembering, addEpisodicMemoryDeduped } from '../lib/memory.js';
 
 export function createSearchRoute({ services }) {
   const route = new Hono();
@@ -110,6 +111,21 @@ export function createSearchRoute({ services }) {
         count: sortedResults.length,
         latency_ms: 0,
       };
+
+      // Local, rule-based "learn from searches" (Phase 3 adaptive memory) —
+      // never an AI call, never cloud. Only stores queries that already look
+      // like a stated preference/topic of interest (isWorthRemembering),
+      // deduplicated against what's already remembered. Best-effort: a
+      // failure here must never affect the search response itself.
+      try {
+        const memorySettings = getMemorySettings();
+        if (memorySettings.enabled && memorySettings.learn_from_searches && isWorthRemembering(query)) {
+          addEpisodicMemoryDeduped({
+            text: query.slice(0, 300), category: 'search_interest', source: 'search_query',
+            privacy: false, egressPolicy: 'cloud_allowed', importance: 0.4, confidence: 0.4,
+          });
+        }
+      } catch { /* best-effort */ }
 
       return c.json(result, 200);
     } catch (error) {

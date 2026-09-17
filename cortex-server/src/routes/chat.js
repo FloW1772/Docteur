@@ -5,12 +5,14 @@ import { searchNeurons } from '../lib/lancedb.js';
 import { verifyModelAvailability, chatCompletion, embedText, unloadModel } from '../lib/ollama.js';
 import { buildConversationPrompt, getPersonaSettings } from '../lib/persona.js';
 import { hasActiveJobs } from './jobs.js';
+import { isLocalOnlySource } from '../lib/source-privacy.js';
 import {
   createConversation, listConversations, getConversationById, touchConversation, deleteConversation,
   addConversationMessage, getConversationMessages,
   listPreferenceFacts, addPreferenceFact, updatePreferenceFact, deletePreferenceFact, clearPreferenceFacts,
   getRouterSettings, getPageFromStore, insertActivityLog,
 } from '../lib/sqlite.js';
+import { getMemorySettings, selectMemoriesForBudget, isWorthRemembering, addEpisodicMemoryDeduped, privacyFromSource } from '../lib/memory.js';
 
 // mistral-nemo:12b-instruct-2407-q4_K_M (~7.5 Go) — tuned for natural
 // conversation rather than structured Q&A, and quantized to fit an 8 Go card
@@ -117,8 +119,8 @@ export function createChatRoute({ ollamaClient, env, logger }) {
         const vector = await embedText(ollamaClient, env.EMBEDDING_MODEL, message);
         const hits   = await searchNeurons(env.LANCEDB_PATH, vector, { limit: 3, threshold: 0.4 });
         sources = hits.map(hit => {
-          const isPriv = hit.kind === 'cv' || hit.kind === 'candidature' ||
-            (() => { try { return getPageFromStore(hit.id)?.private === true; } catch { return false; } })();
+          const isPriv = isLocalOnlySource(hit) ||
+            (() => { try { return isLocalOnlySource(getPageFromStore(hit.id)); } catch { return false; } })();
           return { ...hit, private: isPriv };
         });
       } catch { /* embedding/search failure must never block the conversation */ }
@@ -126,7 +128,14 @@ export function createChatRoute({ ollamaClient, env, logger }) {
       const history = getConversationMessages(conversationId, HISTORY_MESSAGES)
         .map(m => ({ role: m.role, content: m.content }));
 
-      const facts = listPreferenceFacts().map(f => f.fact);
+      // Budget-aware selection (Phase 3 adaptive memory) — never injects the
+      // whole preference_facts/episodic_memories store, only the top-N
+      // relevant to THIS message. Falls back to the pre-Phase-3 behavior
+      // (all long-term facts, memory disabled) when the master switch is off.
+      const memorySettings = getMemorySettings();
+      const facts = memorySettings.enabled
+        ? selectMemoriesForBudget({ query: message, budget: memorySettings.budget }).map(m => m.text)
+        : listPreferenceFacts().map(f => f.fact);
       const systemPrompt = buildConversationPrompt(getPersonaSettings(), facts);
 
       const messages = [{ role: 'system', content: systemPrompt }];
@@ -154,6 +163,19 @@ export function createChatRoute({ ollamaClient, env, logger }) {
 
       addConversationMessage(conversationId, 'user', message);
       addConversationMessage(conversationId, 'assistant', cleanText);
+
+      // Local, rule-based correction learning (Phase 3) — deterministic
+      // pattern match only, no AI call, never cloud. Deduplicated against
+      // existing episodic memories so a repeated correction doesn't grow
+      // the table unbounded.
+      if (memorySettings.enabled && memorySettings.learn_from_corrections && isWorthRemembering(message, { kind: 'correction' })) {
+        try {
+          addEpisodicMemoryDeduped({
+            text: message.slice(0, 300), category: 'correction', source: 'chat_correction', sourceRef: conversationId,
+            ...privacyFromSource({}), importance: 0.6, confidence: 0.5,
+          });
+        } catch { /* best-effort — must never break the chat response */ }
+      }
       const conv = getConversationById(conversationId);
       if (!conv.title) touchConversation(conversationId, message.slice(0, 60));
       else touchConversation(conversationId);

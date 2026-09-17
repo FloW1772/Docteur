@@ -41,6 +41,38 @@ body {
   cursor: crosshair;
 }
 
+/* ── Native <select> dropdowns — theme the popup, not just the closed box ──
+   `background`/`color` on <select> only styles the closed control on most
+   browsers; the open <option> list is otherwise drawn with the OS/browser's
+   own white popup regardless of parent CSS. Setting background/color
+   directly on <option>/<optgroup> is the one part of this browsers do
+   respect. This is a base-element rule so every existing <select> in the
+   app is covered without touching each component's JSX/logic. */
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background: var(--bg);
+  color: var(--text-main);
+}
+
+select option:disabled {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+select:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 1px;
+}
+
 .docteur-shell {
   position: relative;
   width: 100vw;
@@ -695,6 +727,65 @@ body {
   cursor: pointer;
   letter-spacing: 0.04em;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.update-banner {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: rgba(12, 9, 22, 0.94);
+  border: 1px solid rgba(61, 255, 170, 0.24);
+  color: #e4e0f5;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  padding: 12px 18px;
+  border-radius: 8px;
+  z-index: 300;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: modal-fade-in 0.18s ease-out;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.update-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-banner button {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid rgba(61, 255, 170, 0.4);
+  background: rgba(61, 255, 170, 0.12);
+  color: #3dffaa;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+
+.update-banner button:hover:not(:disabled) {
+  background: rgba(61, 255, 170, 0.2);
+}
+
+.update-banner button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.update-banner button.update-banner-later {
+  border-color: rgba(160, 154, 204, 0.3);
+  background: transparent;
+  color: #a09acc;
+}
+
+.update-banner button.update-banner-later:hover:not(:disabled) {
+  background: rgba(160, 154, 204, 0.1);
 }
 
 

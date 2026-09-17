@@ -5,6 +5,7 @@ import {
   insertSkillRun, updateSkillRun, getSkillRuns, bumpSkillRunCount,
 } from '../lib/sqlite.js';
 import { getRouterSettings } from '../lib/sqlite.js';
+import { parseIntParam } from '../lib/http-params.js';
 
 const MAX_SKILLS         = 30;
 const MAX_INPUT_CHARS    = 12_000;
@@ -251,7 +252,7 @@ export function createSkillsRoute({ services, logger }) {
   route.get('/skills/:id/runs', (c) => {
     const id = c.req.param('id');
     if (!getSkillById(id)) return c.json({ error: 'Compétence introuvable' }, 404);
-    const limit = Math.min(Number(c.req.query('limit') ?? 30), 100);
+    const limit = Math.min(parseIntParam(c.req.query('limit'), 30), 100);
     return c.json({ runs: getSkillRuns(id, limit) });
   });
 

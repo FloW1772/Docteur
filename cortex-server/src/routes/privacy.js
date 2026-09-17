@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { PRIVATE_SENTINEL, markPrivate, guardCloudCall, getViolations } from '../lib/privacy-guard.js';
 import { getPrivacyViolations } from '../lib/sqlite.js';
+import { parseIntParam } from '../lib/http-params.js';
 
 export function createPrivacyRoute({ logger }) {
   const app = new Hono();
 
   // GET /api/privacy/violations — journal des tentatives bloquées (sans contenu)
   app.get('/privacy/violations', (c) => {
-    const limit = Math.min(Number(c.req.query('limit') ?? 100), 500);
+    const limit = Math.min(parseIntParam(c.req.query('limit'), 100), 500);
     const rows = getPrivacyViolations(limit);
     return c.json({ violations: rows });
   });
@@ -25,7 +26,7 @@ export function createPrivacyRoute({ logger }) {
       { role: 'user', content: 'Question anodine sans données privées' },
     ];
 
-    const providers = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai'];
+    const providers = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'freellmapi', 'claude-oauth', 'codex'];
 
     for (const provider of providers) {
       // Test 1: private content → must be BLOCKED.

@@ -44,7 +44,12 @@ export default defineConfig({
     react(),
     ...(localNetwork ? [] : [loopbackOnlyPlugin()]),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt' (not 'autoUpdate'): an update must never force a silent
+      // window.location.reload() while the user has an operation in flight
+      // (typing, a generation running, unsaved edits). main.tsx wires
+      // onNeedRefresh to show a dismissible banner instead — the user (or
+      // UpdateBanner, after flushing pending saves) decides when to reload.
+      registerType: 'prompt',
       // Disable the SW entirely in dev mode — it must never intercept Vite's
       // HMR/client requests (@vite/client, @react-refresh, etc.).
       devOptions: { enabled: false },

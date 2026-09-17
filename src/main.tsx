@@ -19,8 +19,17 @@ initMobilePerformanceMode();
 
 // Register the SW only in production builds (never in dev).
 if (import.meta.env.PROD) {
-  registerSW({
+  const updateSW = registerSW({
     immediate: true,
+    // registerType: 'prompt' (vite.config.ts) — a new SW never reloads the
+    // page on its own. It only notifies the app via this event; App-level
+    // UI (UpdateBanner) decides when it's safe to call updateSW() (a reload).
+    onNeedRefresh() {
+      window.dispatchEvent(new CustomEvent('docteur-sw-update-available'));
+    },
+    onOfflineReady() {
+      console.log('[SW] Docteur est disponible hors ligne.');
+    },
     onRegistered(r) {
       console.log('[SW] Enregistre :', r?.scope ?? 'inconnu');
     },
@@ -28,6 +37,9 @@ if (import.meta.env.PROD) {
       console.error('[SW] Echec enregistrement :', error);
     },
   });
+  // UpdateBanner calls this (window.docteurApplySWUpdate()) once it has
+  // flushed pending saves and the user confirmed — it reloads the page.
+  (window as unknown as { docteurApplySWUpdate?: () => void }).docteurApplySWUpdate = () => { void updateSW(true); };
 }
 
 function patchThreeTexture3DUploadDefaults(): void {

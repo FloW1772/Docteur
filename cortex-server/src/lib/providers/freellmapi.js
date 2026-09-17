@@ -2,6 +2,7 @@
 // Capabilities are accepted only when the gateway advertises them in /v1/models.
 
 import { ErrorCategory, classifiedError, classifyHttpError, classifyNetworkError, parseRetryAfterMs } from '../provider-errors.js';
+import { guardCloudCall } from '../privacy-guard.js';
 
 export const PROVIDER_ID = 'freellmapi';
 export const DEFAULT_MODEL = 'auto';
@@ -114,6 +115,7 @@ function statusFromError(error) {
 }
 
 export async function complete({ config, model = DEFAULT_MODEL, messages, maxTokens = 4096, temperature, responseFormat }) {
+  guardCloudCall({ messages, provider: 'freellmapi', functionCalled: 'complete' });
   if (config?.allowText === false) throw classifiedError('FreeLLMAPI: texte désactivé', ErrorCategory.MODEL_UNAVAILABLE);
   const body = { messages, ...(model && model !== 'auto' ? { model } : {}), max_tokens: maxTokens };
   if (temperature !== undefined) body.temperature = temperature;

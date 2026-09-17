@@ -109,8 +109,10 @@ export function setSecret(provider, plaintext) {
   decryptedCache.set(provider, plaintext);
 }
 
-export function getSecret(provider) {
-  migrateLegacyPlaintextKeys();
+export function getSecret(provider, { migrateLegacy = true } = {}) {
+  // Connector reads opt out: a Google/Microsoft operation must never
+  // rewrite the independent legacy AI credential record as a side effect.
+  if (migrateLegacy) migrateLegacyPlaintextKeys();
   if (decryptedCache.has(provider)) return decryptedCache.get(provider);
 
   const entry = getMeta(`${SECRET_META_PREFIX}${provider}`, null);
@@ -148,8 +150,8 @@ export function getSecretStatus(provider) {
   return decryptFailed.has(provider) ? 'invalid' : 'valid';
 }
 
-export function hasSecret(provider) {
-  migrateLegacyPlaintextKeys();
+export function hasSecret(provider, { migrateLegacy = true } = {}) {
+  if (migrateLegacy) migrateLegacyPlaintextKeys();
   return !!getMeta(`${SECRET_META_PREFIX}${provider}`, null)?.ciphertext;
 }
 
