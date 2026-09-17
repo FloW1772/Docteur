@@ -47,6 +47,7 @@ import { createAgentsRoute }      from './routes/agents.js';
 import { createExternalAgentsRoute } from './routes/external-agents.js';
 import { ExternalAgents } from './lib/external-agents.js';
 import { createVideoSummaryRoute } from './routes/video-summary.js';
+import { createOpenMontageRoute } from './routes/openmontage.js';
 import { startAgentScheduler }    from './lib/agent-runner.js';
 import { createInboxRoute }       from './routes/inbox.js';
 import { startInboxWatcher }      from './lib/inbox-watcher.js';
@@ -1678,6 +1679,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void externalAgents.shutdown().finally(() => process.exit(0));
 });
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
+app.route('/api', createOpenMontageRoute());
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));

@@ -9,6 +9,7 @@ import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
 import { ImagesSettingsTab } from '../settings/ImagesSettingsTab';
 import { MemorySettingsTab } from '../settings/MemorySettingsTab';
 import { ConnectionsSettingsTab } from '../settings/ConnectionsSettingsTab';
+import { OpenMontageSettingsTab } from '../settings/OpenMontageSettingsTab';
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
 
@@ -44,7 +45,7 @@ function formatCooldown(ms: number): string {
 }
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-export type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections';
+export type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections' | 'video';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -765,7 +766,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'images', 'connections', 'stats', 'privacy', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
+          {(['models', 'images', 'video', 'connections', 'stats', 'privacy', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -777,7 +778,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -788,6 +789,7 @@ export default function SettingsModal({
           {tab === 'images' && <ImagesSettingsTab strictLocalMode={!!settings.strict_local_mode} />}
           {tab === 'memory' && <MemorySettingsTab />}
           {tab === 'connections' && <ConnectionsSettingsTab />}
+          {tab === 'video' && <OpenMontageSettingsTab />}
           {loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />

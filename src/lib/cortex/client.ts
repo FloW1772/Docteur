@@ -863,6 +863,45 @@ export interface VideoJobDetail {
   segments: VideoJobSegment[];
 }
 
+export type OpenMontageStatus = 'NOT_INSTALLED' | 'PARTIAL' | 'READY_LOCAL' | 'BUSY' | 'ERROR';
+
+export interface OpenMontageCapabilities {
+  status:     OpenMontageStatus;
+  python:     { available: boolean; version?: string | null };
+  ffmpeg:     { available: boolean };
+  remotion:   { available: boolean; version?: string | null; cwdVerified?: string | false };
+  registry:   { available: boolean; toolCount: number };
+  hyperframes: 'unavailable';
+  piper:       'unavailable';
+  gpuStack:    'unavailable';
+}
+
+export type OpenMontageResolution = '1920x1080' | '1080x1920' | '1080x1080';
+
+export interface OpenMontageRenderRequest {
+  title?:           string;
+  subtitle?:        string;
+  resolution:       OpenMontageResolution;
+  fps:              24 | 25 | 30;
+  durationSeconds:  number;
+}
+
+export interface OpenMontageJob {
+  jobId:            string;
+  status:           'running' | 'done' | 'failed' | 'cancelled';
+  startedAt:        number;
+  finishedAt:       number | null;
+  elapsedMs:        number;
+  error:            string | null;
+  cancelled:        boolean;
+  width:            number;
+  height:           number;
+  fps:              number;
+  durationSeconds:  number;
+  hasArtifact:      boolean;
+  pid:              number | null;
+}
+
 export interface VideoSummaryCreate {
   url:                string;
   resumeType?:        string;
@@ -2927,6 +2966,48 @@ export const cortexClient = {
   async deleteVideoSummaryJob(id: string): Promise<void> {
     const res = await apiFetch(`/api/video-summary/jobs/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`Delete HTTP ${res.status}`);
+  },
+
+  async getOpenMontageStatus(): Promise<{ status: OpenMontageStatus }> {
+    const res = await apiFetch('/api/openmontage/status', { method: 'GET' });
+    if (!res.ok) throw new Error(`OpenMontage status HTTP ${res.status}`);
+    return res.json() as Promise<{ status: OpenMontageStatus }>;
+  },
+
+  async getOpenMontageCapabilities(): Promise<OpenMontageCapabilities> {
+    const res = await apiFetch('/api/openmontage/capabilities', { method: 'GET' });
+    if (!res.ok) throw new Error(`OpenMontage capabilities HTTP ${res.status}`);
+    return res.json() as Promise<OpenMontageCapabilities>;
+  },
+
+  async startOpenMontageRender(data: OpenMontageRenderRequest): Promise<{ jobId: string }> {
+    const res = await apiFetch('/api/openmontage/render', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(data),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `OpenMontage render HTTP ${res.status}`);
+    return body as { jobId: string };
+  },
+
+  async getOpenMontageJob(id: string): Promise<OpenMontageJob> {
+    const res = await apiFetch(`/api/openmontage/job/${id}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`OpenMontage job HTTP ${res.status}`);
+    return res.json() as Promise<OpenMontageJob>;
+  },
+
+  async cancelOpenMontageJob(id: string): Promise<void> {
+    const res = await apiFetch(`/api/openmontage/job/${id}/cancel`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    '{}',
+    });
+    if (!res.ok) throw new Error(`OpenMontage cancel HTTP ${res.status}`);
+  },
+
+  getOpenMontageArtifactUrl(id: string): string {
+    return `${BASE}/api/openmontage/job/${id}/artifact`;
   },
 
   // ── Persona ───────────────────────────────────────────────────────────────────
