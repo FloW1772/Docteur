@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { captureStudio } from './studio-browser-checks.mjs';
 const real = process.env.MG6_REAL_SMOKE === '1';
 let browser, server, mission, approved = 0, applied = 0, cancelled = 0, assertions = 0;
 const check = value => { assert.ok(value); assertions++; };
@@ -30,7 +31,7 @@ try {
       const suffix = pathname.split('/missions')[1];
       if (!suffix && req.method() === 'GET') data = { ok: true, missions: mission ? [mission] : [] };
       else if (!suffix) { const body = req.postDataJSON(); mission = { id: 'fixture', title: body.title, mode: body.mode, current_state: 'CREATED', approved: false, diff_sha256: null, metadata: {}, events: [] }; data = { ok: true, id: mission.id }; }
-      else if (suffix.endsWith('/artifacts')) data = { ok: true, planning: { prd: 'PRD fixture document', design: 'Design fixture document', tasks: 'Tasks fixture document' }, codegen: mission.current_state === 'CREATED' ? [] : [{ path: 'sample.js', content: 'export const sample = 1;' }] };
+      else if (suffix.endsWith('/artifacts')) data = { ok: true, planning: { prd: 'PRD fixture document', design: 'Design fixture document', tasks: 'Tasks fixture document' }, codegen: mission.current_state === 'CREATED' ? [] : [{ path: 'sample.js', content: 'export const sample = 1;' }, { path: 'notes.js', content: 'export const note = "fixture";' }] };
       else if (suffix.endsWith('/plan')) { mission.current_state = 'PLANNING'; await new Promise(resolve => setTimeout(resolve, 1600)); mission.current_state = 'TASKS_READY'; data = { ok: true }; }
       else if (suffix.endsWith('/generate')) { mission.current_state = 'CODE_READY'; data = { ok: true }; }
       else if (suffix.endsWith('/prepare-apply')) { mission.current_state = 'AWAITING_APPROVAL'; mission.diff_sha256 = diff.diff_sha256; mission.metadata.prepare_apply = diff; data = { ok: true }; }
@@ -62,12 +63,19 @@ try {
   await page.getByText('État : CODE_READY', { exact: true }).waitFor();
   await page.getByRole('tab', { name: 'CODE', exact: true }).click();
   await page.getByText('Code — sample.js', { exact: true }).waitFor(); assertions++;
+  if (!real) {
+    await page.getByRole('button', { name: 'Fichier suivant', exact: true }).click();
+    await page.getByText('Code — notes.js', { exact: true }).waitFor(); assertions++;
+    await page.getByRole('button', { name: 'Fichier précédent', exact: true }).click();
+    check(await page.getByLabel('Fichier généré', { exact: true }).inputValue() === 'sample.js');
+  }
   await page.getByRole('button', { name: 'Préparer le diff', exact: true }).click();
   await page.getByText('État : AWAITING_APPROVAL', { exact: true }).waitFor();
   await page.getByRole('tab', { name: 'DIFF', exact: true }).click();
   await page.getByText('Diff complet', { exact: true }).waitFor(); assertions++;
   check(await page.getByRole('button', { name: 'Appliquer', exact: true }).isDisabled());
   check(await page.getByRole('button', { name: 'Approuver CE diff', exact: true }).isEnabled());
+  if (!real) await captureStudio(page, 'metagpt-approval');
   if (!real) {
     await page.getByRole('button', { name: 'Approuver CE diff', exact: true }).click();
     await page.getByText('Ce diff a été approuvé.', { exact: false }).waitFor();

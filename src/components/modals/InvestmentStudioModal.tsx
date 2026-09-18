@@ -13,7 +13,14 @@ import StudioEmptyState from '../studio/StudioEmptyState';
 import StudioTimeline from '../studio/StudioTimeline';
 import StudioSourceBadge from '../studio/StudioSourceBadge';
 
-const SECTIONS = ['OVERVIEW', 'FUNDAMENTALS', 'VALUATION', 'SCORING', 'RISKS', 'TIMELINE', 'PAPER PORTFOLIO'] as const;
+const SECTIONS = ['OVERVIEW', 'FUNDAMENTALS', 'VALUATION', 'SCORING', 'RISKS', 'TIMELINE', 'RESEARCH', 'PAPER PORTFOLIO'] as const;
+const MULTIPLE_INPUTS = [
+  ['earningsPerShare', 'Bénéfice par action'], ['forwardEarningsPerShare', 'Bénéfice prévisionnel par action'],
+  ['enterpriseValue', "Valeur d’entreprise"], ['revenue', 'Revenus'], ['ebitda', 'EBITDA'],
+  ['marketCap', 'Capitalisation'], ['freeCashFlow', 'Free cash flow'], ['pe', 'P/E pour le PEG'],
+  ['earningsGrowthRatePercent', 'Croissance du bénéfice (%)'],
+] as const;
+const numericInput = (value: string) => value.trim() && Number.isFinite(Number(value)) ? Number(value) : undefined;
 type Section = typeof SECTIONS[number];
 const SCORE_COLOR = (score: number | null) => score === null ? 'var(--text-dim)' : score >= 70 ? 'var(--emerald)' : score >= 40 ? 'var(--amber)' : '#ff4d58';
 
@@ -42,7 +49,7 @@ function ScoreCard({ category, expanded = false }: { category: ScoreCategory; ex
         <ul style={{ marginTop: 8, fontSize: 11, paddingLeft: 16 }}>
           {category.factors.map(f => (
             <li key={f.id} style={{ color: f.status === 'positive' ? 'var(--emerald)' : f.status === 'negative' ? '#ff4d58' : 'var(--text-dim)', marginBottom: 4 }}>
-              {f.label} — {f.status === 'insufficient_data' ? 'donnée manquante' : String(f.value)}
+              {f.label} — {f.status === 'insufficient_data' ? 'donnée manquante' : `${f.status === 'positive' ? 'positif' : 'négatif'} : ${String(f.value)}`}
               {f.note && ` (${f.note})`}
             </li>
           ))}
@@ -80,17 +87,22 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
   const [totalDebt, setTotalDebt] = useState('');
   const [cashAndEquivalents, setCashAndEquivalents] = useState('');
   const [shareholdersEquity, setShareholdersEquity] = useState('');
+  const [currency, setCurrency] = useState('USD');
+  const [financialSourceId, setFinancialSourceId] = useState('');
 
   // ── Valuation ──
   const [multiplesPrice, setMultiplesPrice] = useState('');
+  const [multipleInputs, setMultipleInputs] = useState<Record<string, string>>({});
+  const [multiplesAssumptions, setMultiplesAssumptions] = useState<Record<string, number>>({});
   const [multiplesResult, setMultiplesResult] = useState<MultiplesResult | null>(null);
   const [dcfResult, setDcfResult] = useState<DcfResult | null>(null);
   const [reverseDcfResult, setReverseDcfResult] = useState<ReverseDcfResult | null>(null);
-  const [dcfBaseFcf, setDcfBaseFcf] = useState('1000000');
-  const [dcfGrowthRate, setDcfGrowthRate] = useState('0.08');
-  const [dcfDiscountRate, setDcfDiscountRate] = useState('0.10');
-  const [dcfTerminalGrowth, setDcfTerminalGrowth] = useState('0.02');
-  const [dcfYears, setDcfYears] = useState('5');
+  const [dcfBaseFcf, setDcfBaseFcf] = useState('');
+  const [dcfGrowthRate, setDcfGrowthRate] = useState('');
+  const [dcfDiscountRate, setDcfDiscountRate] = useState('');
+  const [dcfTerminalGrowth, setDcfTerminalGrowth] = useState('');
+  const [dcfYears, setDcfYears] = useState('');
+  const [targetEv, setTargetEv] = useState('');
 
   // ── Timeline event creation ──
   const [eventSourceId, setEventSourceId] = useState('');
@@ -157,17 +169,18 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
     setBusy(true); setError('');
     try {
       await investmentRequest('/financial-period', {
-        symbol: symbol.trim(), periodLabel: periodLabel.trim(), periodType,
+        symbol: symbol.trim(), periodLabel: periodLabel.trim(), periodType, currency,
+        ...(financialSourceId ? { sourceId: financialSourceId } : {}),
         data: {
-          revenue: Number(revenue) || undefined,
-          costOfGoodsSold: Number(costOfGoodsSold) || undefined,
-          operatingIncome: Number(operatingIncome) || undefined,
-          netIncome: Number(netIncome) || undefined,
-          operatingCashFlow: Number(operatingCashFlow) || undefined,
-          capex: Number(capex) || undefined,
-          totalDebt: Number(totalDebt) || undefined,
-          cashAndEquivalents: Number(cashAndEquivalents) || undefined,
-          shareholdersEquity: Number(shareholdersEquity) || undefined,
+          revenue: numericInput(revenue),
+          costOfGoodsSold: numericInput(costOfGoodsSold),
+          operatingIncome: numericInput(operatingIncome),
+          netIncome: numericInput(netIncome),
+          operatingCashFlow: numericInput(operatingCashFlow),
+          capex: numericInput(capex),
+          totalDebt: numericInput(totalDebt),
+          cashAndEquivalents: numericInput(cashAndEquivalents),
+          shareholdersEquity: numericInput(shareholdersEquity),
         },
       }, 'POST');
       setPeriodLabel('');
@@ -213,12 +226,15 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
   async function runMultiples() {
     setBusy(true); setError('');
     try {
-      const result = await investmentRequest<{ results: MultiplesResult }>('/valuation', {
+      const inputs = Object.fromEntries(Object.entries({ ...multipleInputs, price: multiplesPrice })
+        .flatMap(([key, value]) => numericInput(value) === undefined ? [] : [[key, Number(value)]]));
+      const result = await investmentRequest<{ results: MultiplesResult; inputs: Record<string, number> }>('/valuation', {
         method: 'multiples',
-        inputs: { price: Number(multiplesPrice) || undefined },
+        inputs,
       }, 'POST');
       setMultiplesResult(result.results);
-    } catch (e) { setError((e as Error).message); }
+      setMultiplesAssumptions(result.inputs);
+    } catch (e) { setError((e as Error).message); setMultiplesResult(null); }
     finally { setBusy(false); }
   }
 
@@ -243,7 +259,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
       const result = await investmentRequest<ReverseDcfResult & { ok: true }>('/valuation', {
         method: 'reverse_dcf',
         inputs: {
-          targetEnterpriseValue: Number(dcfBaseFcf) * 15, baseFcf: Number(dcfBaseFcf),
+          targetEnterpriseValue: Number(targetEv), baseFcf: Number(dcfBaseFcf),
           discountRate: Number(dcfDiscountRate), terminalGrowthRate: Number(dcfTerminalGrowth), years: Number(dcfYears),
         },
       }, 'POST');
@@ -277,6 +293,11 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
   }
 
   const activePortfolio = portfolios.find(p => p.id === activePortfolioId);
+  const dcfReady = [dcfBaseFcf, dcfGrowthRate, dcfDiscountRate, dcfTerminalGrowth, dcfYears].every(value => numericInput(value) !== undefined);
+  function changeSymbol(value: string) {
+    setSymbol(value); setSources([]); setFundamentals(null); setRevenueCagr(null); setScoring(null); setTimeline(null);
+    setEventSourceId(''); setFinancialSourceId(''); setMultiplesResult(null); setDcfResult(null); setReverseDcfResult(null); setError('');
+  }
 
   return (
     <StudioShell
@@ -286,20 +307,29 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
       subtitle="Analyse, recherche et simulation uniquement — aucun broker réel, aucun ordre réel, aucune transaction réelle."
     >
       {error && <StudioErrorState message={error} />}
+      {busy && <p role="status">Chargement ou calcul en cours…</p>}
+      {section !== 'PAPER PORTFOLIO' && <label>Symbole
+        <input className="studio-field" value={symbol} disabled={busy} onChange={e => changeSymbol(e.target.value)} placeholder="AAPL" />
+      </label>}
+      <p style={{ fontSize: 12, color: 'var(--text-dim)' }}>Données historiques ou saisies manuellement · aucun cours en direct. {fundamentals?.length ? `Périodes : ${fundamentals.map(p => `${p.periodLabel} (${p.currency})`).join(', ')}` : 'Période et devise des données non chargées.'}</p>
 
-      <StudioTabs tabs={SECTIONS} active={section} onChange={setSection} />
+      <StudioTabs tabs={SECTIONS} active={section} onChange={setSection}>
 
-      {section === 'OVERVIEW' && (
+      {(section === 'OVERVIEW' || section === 'RESEARCH') && (
         <div>
-          <label>Symbole
-            <input className="studio-field" value={symbol} onChange={e => setSymbol(e.target.value)} placeholder="AAPL" />
-          </label>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="studio-button studio-button--primary" disabled={busy || !symbol.trim()} onClick={() => void runResearch()}>Rechercher (web)</button>
             <button type="button" className="studio-button" disabled={busy || !symbol.trim()} onClick={() => void loadFundamentals()}>Charger fondamentaux</button>
             <button type="button" className="studio-button" disabled={busy || !symbol.trim()} onClick={() => void loadScoring()}>Calculer le scoring</button>
             <button type="button" className="studio-button" disabled={busy || !symbol.trim()} onClick={() => void loadTimeline()}>Charger la timeline</button>
           </div>
+          {section === 'OVERVIEW' && scoring && <div>
+            <p>Scoring calculé le {new Date(scoring.generatedAt).toLocaleString()}.</p>
+            <h3>Points positifs</h3>
+            <ul>{Object.values(scoring.categories).flatMap(c => c.positiveFactors).map((f, i) => <li key={i}>{f.label}</li>)}</ul>
+            <h3>Risques et données manquantes</h3>
+            <ul>{Object.values(scoring.categories).flatMap(c => [...c.negativeFactors.map(f => f.label), ...c.missingData]).map((label, i) => <li key={i}>{label}</li>)}</ul>
+          </div>}
           {sources.length > 0 ? (
             <div style={{ marginTop: 16 }}>
               <h3>Sources (provenance)</h3>
@@ -345,6 +375,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               </table>
               <p style={{ color: 'var(--text-dim)', fontSize: 11, marginTop: 8 }}>
                 Données saisies manuellement ou issues de recherche web — jamais un flux de marché en temps réel.
+                {' '}Source et date de collecte par métrique non fournies par cette API.
               </p>
             </>
           )}
@@ -355,6 +386,11 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
             <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Saisir une période financière</summary>
             <div style={{ marginTop: 10 }}>
               <label>Libellé de période<input className="studio-field" value={periodLabel} onChange={e => setPeriodLabel(e.target.value)} placeholder="FY2025" /></label>
+              <label>Devise<input className="studio-field" value={currency} maxLength={3} onChange={e => setCurrency(e.target.value.toUpperCase())} /></label>
+              <label>Source de la période<select className="studio-field" value={financialSourceId} onChange={e => setFinancialSourceId(e.target.value)}>
+                <option value="">Saisie manuelle sans source liée</option>
+                {sources.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
+              </select></label>
               <label>Type
                 <select className="studio-field" value={periodType} onChange={e => setPeriodType(e.target.value as 'annual' | 'quarterly')}>
                   <option value="annual">Annuelle</option>
@@ -383,15 +419,20 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
       {section === 'VALUATION' && (
         <div>
           <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-            Calculs déterministes côté serveur — le frontend n'invente ni ne recalcule aucune métrique critique.
-            Chaque résultat affiche ses hypothèses complètes.
+            Hypothèses saisies manuellement, sans cotation automatique. Utilisez une même devise et une même unité pour les montants. Les taux DCF sont décimaux (0,08 = 8 %).
           </p>
 
           <details open style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
             <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Multiples</summary>
             <label>Prix<input className="studio-field" type="number" placeholder="150" value={multiplesPrice} onChange={e => setMultiplesPrice(e.target.value)} /></label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
+              {MULTIPLE_INPUTS.map(([key, label]) => <label key={key}>{label}<input className="studio-field" type="number" value={multipleInputs[key] ?? ''} onChange={e => setMultipleInputs(previous => ({ ...previous, [key]: e.target.value }))} /></label>)}
+            </div>
+            <p>Source : saisie utilisateur · période non renseignée. « — » signifie données insuffisantes.</p>
             <button type="button" className="studio-button studio-button--primary" disabled={busy} onClick={() => void runMultiples()}>Calculer les multiples</button>
             {multiplesResult && (
+              <>
+              <p>Entrées du calcul : {Object.entries(multiplesAssumptions).map(([key, value]) => `${key} : ${value}`).join(' · ') || 'aucune'}</p>
               <table style={{ width: '100%', fontSize: 13, marginTop: 10 }}>
                 <tbody>
                   <tr><td>P/E</td><td>{num(multiplesResult.pe)}</td></tr>
@@ -402,6 +443,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
                   <tr><td>PEG</td><td>{num(multiplesResult.peg)}</td></tr>
                 </tbody>
               </table>
+              </>
             )}
           </details>
 
@@ -414,12 +456,14 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               <label>Croissance terminale<input className="studio-field" type="number" step="0.01" value={dcfTerminalGrowth} onChange={e => setDcfTerminalGrowth(e.target.value)} /></label>
               <label>Années<input className="studio-field" type="number" value={dcfYears} onChange={e => setDcfYears(e.target.value)} /></label>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button type="button" className="studio-button studio-button--primary" disabled={busy} onClick={() => void runDcf()}>Calculer le DCF</button>
-              <button type="button" className="studio-button" disabled={busy} onClick={() => void runReverseDcf()}>Reverse DCF (EV cible = 15× FCF)</button>
+            <label>Valeur d’entreprise cible (Reverse DCF)<input className="studio-field" type="number" value={targetEv} onChange={e => setTargetEv(e.target.value)} /></label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="studio-button studio-button--primary" disabled={busy || !dcfReady} onClick={() => void runDcf()}>Calculer le DCF</button>
+              <button type="button" className="studio-button" disabled={busy || !dcfReady || numericInput(targetEv) === undefined} onClick={() => void runReverseDcf()}>Calculer le Reverse DCF</button>
             </div>
             {dcfResult && (
               <div style={{ marginTop: 10, fontSize: 13 }}>
+                <p>Hypothèses du résultat : FCF {dcfResult.assumptions.baseFcf} · croissance {pct(dcfResult.assumptions.growthRate)} · actualisation {pct(dcfResult.assumptions.discountRate)} · croissance terminale {pct(dcfResult.assumptions.terminalGrowthRate)} · {dcfResult.assumptions.years} ans</p>
                 <p>Valeur d'entreprise estimée : <strong>{num(dcfResult.enterpriseValueEstimate, 0)}</strong></p>
                 <p>Somme des flux actualisés : {num(dcfResult.sumOfDiscountedCashFlows, 0)} — Valeur terminale actualisée : {num(dcfResult.presentValueOfTerminalValue, 0)}</p>
                 <table style={{ width: '100%', fontSize: 12, marginTop: 6 }}>
@@ -434,6 +478,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
             )}
             {reverseDcfResult && (
               <p style={{ fontSize: 13, marginTop: 10 }}>
+                Cible {reverseDcfResult.assumptions.targetEnterpriseValue} · FCF {reverseDcfResult.assumptions.baseFcf} · actualisation {pct(reverseDcfResult.assumptions.discountRate)} · croissance terminale {pct(reverseDcfResult.assumptions.terminalGrowthRate)} · {reverseDcfResult.assumptions.years} ans.{' '}
                 Taux de croissance implicite : <strong>{pct(reverseDcfResult.impliedGrowthRate)}</strong> ({reverseDcfResult.iterations} itérations)
               </p>
             )}
@@ -481,7 +526,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               <StudioTimeline
                 entries={timeline.dated.map((evt: TimelineEvent) => ({
                   id: evt.id, kind: evt.type, when: evt.date,
-                  title: evt.title,
+                  title: <>{evt.title}{evt.summary && <p>{evt.summary}</p>}</>,
                   source: evt.source ? <a href={evt.source.url} target="_blank" rel="noreferrer" style={{ color: 'var(--cyan)' }}>source</a> : undefined,
                   interpretation: evt.marketInterpretation ? `Interprétation de marché (spéculative) : ${evt.marketInterpretation.statement} — base : ${evt.marketInterpretation.basis}` : undefined,
                 }))}
@@ -494,7 +539,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               <StudioTimeline
                 entries={timeline.undated.map((evt: TimelineEvent) => ({
                   id: evt.id, kind: evt.type, when: null,
-                  title: evt.title,
+                  title: <>{evt.title}{evt.summary && <p>{evt.summary}</p>}</>,
                   source: evt.source ? <a href={evt.source.url} target="_blank" rel="noreferrer" style={{ color: 'var(--cyan)' }}>source</a> : undefined,
                   interpretation: evt.marketInterpretation ? `Interprétation de marché (spéculative) : ${evt.marketInterpretation.statement} — base : ${evt.marketInterpretation.basis}` : undefined,
                 }))}
@@ -551,7 +596,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               {portfolioMetrics && (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, margin: '10px 0' }}>
                   <div><span style={{ color: 'var(--text-dim)', fontSize: 11 }}>Valeur totale du compte</span><p style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{num(portfolioMetrics.totalAccountValue, 2)}</p></div>
-                  <div><span style={{ color: 'var(--text-dim)', fontSize: 11 }}>Valeur de marché</span><p style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{num(portfolioMetrics.totalMarketValue, 2)}</p></div>
+                  <div><span style={{ color: 'var(--text-dim)', fontSize: 11 }}>Valeur au coût moyen (PAPER)</span><p style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{num(portfolioMetrics.totalMarketValue, 2)}</p></div>
                   <div>
                     <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>P&amp;L latent</span>
                     <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: portfolioMetrics.totalUnrealizedPnl >= 0 ? 'var(--emerald)' : '#ff4d58' }}>
@@ -579,7 +624,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
               <h3>Positions</h3>
               {positions.length === 0 ? <StudioEmptyState message="Aucune position." /> : (
                 <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-                  <thead><tr><th>Symbole</th><th>Quantité</th><th>Coût moyen</th><th>Valeur marché</th><th>P&amp;L latent</th></tr></thead>
+                  <thead><tr><th>Symbole</th><th>Quantité</th><th>Coût moyen</th><th>Valeur au coût moyen</th><th>P&amp;L latent PAPER</th><th>Allocation</th></tr></thead>
                   <tbody>
                     {positions.map(p => {
                       const m = portfolioMetrics?.positions.find(pm => pm.symbol === p.symbol);
@@ -590,6 +635,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
                           <td>{p.avg_cost_basis.toFixed(2)}</td>
                           <td>{m ? num(m.marketValue) : '—'}</td>
                           <td style={{ color: m && m.unrealizedPnl >= 0 ? 'var(--emerald)' : '#ff4d58' }}>{m ? num(m.unrealizedPnl) : '—'}</td>
+                          <td>{pct(portfolioMetrics?.allocation.find(a => a.symbol === p.symbol)?.weightPercent)}</td>
                         </tr>
                       );
                     })}
@@ -607,6 +653,7 @@ export default function InvestmentStudioModal({ onClose }: { onClose: () => void
           )}
         </div>
       )}
+      </StudioTabs>
     </StudioShell>
   );
 }

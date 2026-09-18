@@ -100,6 +100,132 @@
       "skipped": 0
     },
     {
+      "file": "test-cyber-audit-crawler.mjs",
+      "code": 0,
+      "tests": 37,
+      "pass": 37,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-detect-cookies.mjs",
+      "code": 0,
+      "tests": 11,
+      "pass": 11,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-detect-cors.mjs",
+      "code": 0,
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-detect-headers.mjs",
+      "code": 0,
+      "tests": 12,
+      "pass": 12,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-detect-info-disclosure.mjs",
+      "code": 0,
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-detect-tls.mjs",
+      "code": 0,
+      "tests": 13,
+      "pass": 13,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-evidence.mjs",
+      "code": 0,
+      "tests": 25,
+      "pass": 25,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-finding.mjs",
+      "code": 0,
+      "tests": 14,
+      "pass": 14,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-fixture.mjs",
+      "code": 0,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-orchestrator.mjs",
+      "code": 0,
+      "tests": 23,
+      "pass": 23,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-policy.mjs",
+      "code": 0,
+      "tests": 39,
+      "pass": 39,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-rate-limit.mjs",
+      "code": 0,
+      "tests": 19,
+      "pass": 19,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-report.mjs",
+      "code": 0,
+      "tests": 28,
+      "pass": 28,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "file": "test-cyber-audit-routes.mjs",
+      "code": 0,
+      "tests": 32,
+      "pass": 32,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
       "file": "test-external-agents.mjs",
       "code": 0,
       "tests": 29,
@@ -407,8 +533,8 @@
     }
   ],
   "total": {
-    "tests": 789,
-    "pass": 789,
+    "tests": 1061,
+    "pass": 1061,
     "fail": 0,
     "cancelled": 0,
     "skipped": 0

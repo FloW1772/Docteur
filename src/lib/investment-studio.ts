@@ -1,3 +1,5 @@
+import { studioRequestError } from './studio-errors';
+
 const base = `${window.location.protocol}//${window.location.hostname}:3001/api/investment`;
 
 export interface ResearchSource {
@@ -46,7 +48,7 @@ export async function investmentRequest<T>(path: string, body?: unknown, method 
     method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   });
   const data = await response.json();
-  if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok || data.ok === false) throw new Error(studioRequestError(data.error));
   return data as T;
 }
 

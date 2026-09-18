@@ -1,3 +1,5 @@
+import { studioRequestError } from './studio-errors';
+
 export interface DiffPackage {
   ok: boolean;
   job_id: string;
@@ -47,7 +49,7 @@ export async function metagptRequest<T>(suffix = '', body?: unknown, method = 'G
     method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   });
   const data = await response.json();
-  if (!response.ok || data.ok === false) throw new Error(data.error || data.state || `HTTP ${response.status}`);
+  if (!response.ok || data.ok === false) throw new Error(studioRequestError(data.error || data.state));
   return data as T;
 }
 export function canApprove(mission: Mission | null, diff: DiffPackage | undefined): boolean {

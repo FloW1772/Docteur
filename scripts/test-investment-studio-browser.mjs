@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { captureStudio } from './studio-browser-checks.mjs';
 
 let browser, server, assertions = 0;
 const check = value => { assert.ok(value); assertions++; };
@@ -11,6 +12,7 @@ const watchdog = setTimeout(() => { console.error('Investment Studio browser dea
 try {
   server = await createServer({
     configFile: false,
+    cacheDir: '.tmp/vite-investment-studio',
     plugins: [react(), { name: 'investment-harness', configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url?.split('?')[0] !== '/__investment_test') return next(); res.setHeader('Content-Type', 'text/html'); res.end(harnessHtml); }); } }],
     optimizeDeps: { entries: ['scripts/investment-studio-harness.jsx'] },
     server: { watch: null, host: '127.0.0.1', port: 5200, strictPort: true, hmr: false },
@@ -28,6 +30,8 @@ try {
   let positions = [];
   let transactions = [];
   let deniedAttempts = 0;
+  let valuationBody = null;
+  let financialBody = null;
 
   await page.route('**/api/investment/**', async route => {
     const req = route.request();
@@ -60,6 +64,7 @@ try {
       };
     } else if (pathname === '/api/investment/valuation' && req.method() === 'POST') {
       const body = req.postDataJSON();
+      valuationBody = body;
       if (body.method === 'multiples') {
         data = { ok: true, method: 'multiples', inputs: body.inputs, results: { pe: 15, forwardPe: 13, evToSales: 4, evToEbitda: 10, pFcf: 18, peg: 1.2 } };
       } else if (body.method === 'dcf') {
@@ -85,6 +90,9 @@ try {
         data = { error: 'valuation_method_denied' };
         status = 400;
       }
+    } else if (pathname === '/api/investment/financial-period') {
+      financialBody = req.postDataJSON();
+      data = { ok: true };
     } else if (pathname === '/api/investment/portfolios' && req.method() === 'GET') {
       data = { ok: true, portfolios };
     } else if (pathname === '/api/investment/portfolios' && req.method() === 'POST') {
@@ -147,8 +155,14 @@ try {
   // Fundamentals section
   await page.getByRole('button', { name: 'Charger fondamentaux', exact: true }).click();
   await page.getByRole('tab', { name: 'FUNDAMENTALS', exact: true }).click();
-  await page.getByText('FY2025', { exact: false }).waitFor();
+  await page.getByRole('cell', { name: 'FY2025', exact: true }).waitFor();
   assertions++;
+  await page.getByText('Saisir une période financière', { exact: true }).click();
+  await page.getByLabel('Libellé de période', { exact: true }).fill('FY2026');
+  await page.getByLabel('Dette totale', { exact: true }).fill('0');
+  await page.getByRole('button', { name: /Enregistrer la période/ }).click();
+  await page.waitForFunction(() => !document.body.innerText.includes('Chargement ou calcul en cours…'));
+  check(financialBody?.data.totalDebt === 0 && !('revenue' in financialBody.data));
 
   // Scoring section: 5 categories displayed, no BUY/SELL recommendation text anywhere
   await page.getByRole('tab', { name: 'OVERVIEW', exact: true }).click();
@@ -191,10 +205,24 @@ try {
 
   // Valuation: DCF surfaces full assumptions (never a bare number)
   await page.getByRole('tab', { name: 'VALUATION', exact: true }).click();
+  check(await page.getByRole('button', { name: 'Calculer le DCF', exact: true }).isDisabled());
+  for (const [label, value] of [['FCF de base', '1000000'], ['Taux de croissance', '0.08'], ["Taux d'actualisation", '0.10'], ['Croissance terminale', '0.02'], ['Années', '5']]) {
+    await page.getByLabel(label, { exact: true }).fill(value);
+  }
   await page.getByRole('button', { name: 'Calculer le DCF', exact: true }).click();
   await page.getByText("Valeur d'entreprise estimée", { exact: false }).waitFor();
   await page.getByText('Somme des flux actualisés', { exact: false }).waitFor();
   assertions++;
+  await page.getByLabel('Valeur d’entreprise cible (Reverse DCF)', { exact: true }).fill('12000000');
+  await page.getByRole('button', { name: 'Calculer le Reverse DCF', exact: true }).click();
+  await page.getByText('Taux de croissance implicite', { exact: false }).waitFor();
+  check(valuationBody.inputs.targetEnterpriseValue === 12000000);
+  await page.getByLabel('Prix', { exact: true }).fill('150');
+  await page.getByLabel('Bénéfice par action', { exact: true }).fill('10');
+  await page.getByRole('button', { name: 'Calculer les multiples', exact: true }).click();
+  await page.getByText('Entrées du calcul', { exact: false }).waitFor();
+  check(valuationBody.inputs.price === 150 && valuationBody.inputs.earningsPerShare === 10);
+  await captureStudio(page, 'investment-valuation');
 
   // Paper Portfolio: create, buy, verify PAPER marking
   await page.getByRole('tab', { name: 'PAPER PORTFOLIO', exact: true }).click();
@@ -219,6 +247,8 @@ try {
   const optionValues = await page.getByLabel("Type d'ordre simulé").locator('option').allTextContents();
   check(optionValues.every(v => v.startsWith('PAPER_')));
   check(!optionValues.some(v => v.includes('REAL') || v.includes('LIVE')));
+  check(deniedAttempts === 0);
+  await captureStudio(page, 'investment-paper');
 
   check(errors.length === 0);
   console.log(`INVESTMENT STUDIO FRONTEND PASS ${assertions}/${assertions}`);

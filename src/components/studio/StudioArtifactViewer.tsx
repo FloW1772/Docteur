@@ -4,7 +4,7 @@
 // button. Uses native <details>/<summary> (not a custom toggle) so it stays
 // compatible with existing Playwright assertions that locate artifacts by
 // their <summary> text. Never executes or evaluates the content — display only.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 
 interface Props {
@@ -17,16 +17,21 @@ interface Props {
 
 export default function StudioArtifactViewer({ title, content, defaultOpen = true, meta }: Props) {
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(timer.current), []);
 
-  if (!content) return null;
+  if (content == null) return null;
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(content ?? '');
+      setCopyError(false);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard access can be denied by the browser — non-fatal, no UI needed.
+      setCopyError(true);
     }
   }
 
@@ -45,6 +50,7 @@ export default function StudioArtifactViewer({ title, content, defaultOpen = tru
         </button>
       </summary>
       <pre className="studio-artifact-body">{content}</pre>
+      {copyError && <p role="status">Copie indisponible. Sélectionnez le texte pour le copier manuellement.</p>}
     </details>
   );
 }

@@ -11,6 +11,8 @@ import StudioErrorState from '../studio/StudioErrorState';
 import StudioArtifactViewer from '../studio/StudioArtifactViewer';
 import StudioTimeline from '../studio/StudioTimeline';
 import StudioSplitPane from '../studio/StudioSplitPane';
+import StudioCodeFiles from '../studio/StudioCodeFiles';
+import { studioRequestError } from '../../lib/studio-errors';
 
 const RUNNING = new Set(['PLANNING', 'GENERATING', 'PREPARING_DIFF', 'APPLYING']);
 const FINISHED = new Set(['APPLIED', 'FAILED', 'CANCELLED', 'BLOCKED_BY_POLICY', 'APPROVAL_INVALIDATED']);
@@ -212,7 +214,7 @@ export default function MetaGptStudioModal({ onClose }: { onClose: () => void })
           </ol>
 
           {mission.error_message && (
-            <StudioErrorState message={mission.error_message} />
+            <StudioErrorState message={studioRequestError(mission.error_message)} />
           )}
 
           <StudioToolbar
@@ -241,7 +243,7 @@ export default function MetaGptStudioModal({ onClose }: { onClose: () => void })
             </div>
           )}
 
-          <StudioTabs tabs={TABS} active={tab} onChange={setTab} />
+          <StudioTabs tabs={TABS} active={tab} onChange={setTab}>
 
           {tab === 'OVERVIEW' && (
             <StudioSplitPane
@@ -279,12 +281,14 @@ export default function MetaGptStudioModal({ onClose }: { onClose: () => void })
 
           {tab === 'CODE' && (
             (artifacts?.codegen?.length ?? 0) > 0
-              ? <>{artifacts!.codegen.map(f => <StudioArtifactViewer key={f.path} title={`Code — ${f.path}`} content={f.content} />)}</>
+              ? <StudioCodeFiles key={mission.id} files={artifacts!.codegen} />
               : <StudioEmptyState message="Aucun fichier généré pour l'instant." />
           )}
 
           {tab === 'DIFF' && (diff ? (
             <div>
+              <p>Mission : <code>{mission.id}</code> · {diff.files.length} fichier(s) · {diff.security_findings.length} signalement(s) · {diff.blocked_findings} bloquant(s)</p>
+              <p>Approbation : {mission.approved ? (canApply(mission, diff) ? 'valide pour ce diff' : 'à revérifier') : 'non accordée'}</p>
               <p style={{ overflowWrap: 'anywhere', fontSize: 12 }}>DIFF_SHA256 : <code>{diff.diff_sha256}</code></p>
               {diff.apply_simulation && <p style={{ fontSize: 12 }}>Simulation d'application : <strong>{diff.apply_simulation}</strong></p>}
               <ul style={{ fontSize: 13 }}>
@@ -330,11 +334,12 @@ export default function MetaGptStudioModal({ onClose }: { onClose: () => void })
                   id: e.id,
                   kind: e.from_state ? `${e.from_state} → ${e.to_state}` : e.to_state,
                   when: e.created_at ? new Date(e.created_at).toLocaleString() : null,
-                  title: Object.keys(e.detail || {}).length > 0 ? <code style={{ fontSize: 11 }}>{JSON.stringify(e.detail)}</code> : null,
+                  title: null,
                 }))}
               />
             ) : <StudioEmptyState message="Aucun événement enregistré." />
           )}
+          </StudioTabs>
         </>
       ) : (
         <p role="status">Chargement de la mission…</p>

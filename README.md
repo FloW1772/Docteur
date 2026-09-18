@@ -58,7 +58,7 @@ Détails complets dans la section [Installation](#-installation-détaillée) plu
 - [Qu'est-ce que Docteur ?](#-quest-ce-que-docteur-)
 - [Fonctionnalités principales](#-fonctionnalités-principales)
 - [Cortex Command Center](#-cortex-command-center)
-- [Studios (MetaGPT, Sherlock, Investment, Vidéo)](#-studios-metagpt-sherlock-investment-vidéo)
+- [Studios (MetaGPT, Sherlock, Investment, Vidéo, Cyber Audit)](#-studios-metagpt-sherlock-investment-vidéo-cyber-audit)
 - [Architecture](#-architecture)
 - [Providers IA](#-providers-ia)
 - [Routage IA](#-routage-ia)
@@ -124,7 +124,8 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Prompt Generator : aide à la rédaction de prompts avec sélection de provider/modèle.
 - Import/analyse de CV (PDF) et génération de contenu pour candidature.
 - **Navigateur configurable** : choix du navigateur utilisé pour ouvrir les liens externes depuis Docteur (détection des navigateurs réellement installés, ou chemin personnalisé), indépendant du navigateur affichant Docteur lui-même.
-- **Sherlock OSINT** — 🧪 optionnel, non installé par défaut. Intégration de l'outil officiel [sherlock-project](https://github.com/sherlock-project/sherlock) (MIT) pour rechercher l'existence d'un nom d'utilisateur public sur des sites tiers — jamais de mot de passe, cookie, compte privé, force brute ni contournement d'authentification. Installation déclenchée uniquement par toi depuis le Studio Sherlock dédié ; les résultats sauvegardés en neurone sont privés/locaux par défaut. Voir [Studios](#-studios-metagpt-sherlock-investment-vidéo).
+- **Sherlock OSINT** — 🧪 optionnel, non installé par défaut. Intégration de l'outil officiel [sherlock-project](https://github.com/sherlock-project/sherlock) (MIT) pour rechercher l'existence d'un nom d'utilisateur public sur des sites tiers — jamais de mot de passe, cookie, compte privé, force brute ni contournement d'authentification. Installation déclenchée uniquement par toi depuis le Studio Sherlock dédié ; les résultats sauvegardés en neurone sont privés/locaux par défaut. Voir [Studios](#-studios-metagpt-sherlock-investment-vidéo-cyber-audit).
+- **Cyber Audit / SENTINEL** : audit de sécurité web externe, autorisé et non destructif (TLS, en-têtes, cookies, CORS, divulgation d'information), périmètre strict confirmé par toi, débit de requêtes réellement limité. Jamais d'exploitation, de brute force ni de scan de ports. Voir [Cyber Audit Studio](#cyber-audit-studio--sentinel).
 
 ### 🎥 Multimédia
 
@@ -137,14 +138,14 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 L'interface principale s'organise autour d'un noyau central (« Cortex », rendu en 3D/Three.js) qui reflète l'état courant du système (repos, écoute, réflexion, recherche, génération, erreur — toujours accompagné d'un texte, jamais uniquement d'une couleur).
 
 - **Mode Focus** : le Cortex et la barre de commande occupent l'essentiel de l'écran, pour une utilisation concentrée.
-- **Mode Dashboard** : les widgets des quatre Studios (MetaGPT, Sherlock, Investment, Vidéo) et des connecteurs s'affichent autour du Cortex, avec un rail d'actions rapides et d'activité récente.
+- **Mode Dashboard** : les widgets des Studios (MetaGPT, Sherlock, Investment, Vidéo) et des connecteurs s'affichent autour du Cortex, avec un rail d'actions rapides, d'activité récente et le widget Cyber Audit (dernière mission, statut, nombre de constats).
 - **Command Bar** : zone de saisie unique en bas d'écran pour interroger Docteur, avec retour vocal optionnel.
 
 Détails techniques : `reports/CORTEX_COMMAND_CENTER_V2_2026-09.md`.
 
-## 🧰 Studios (MetaGPT, Sherlock, Investment, Vidéo)
+## 🧰 Studios (MetaGPT, Sherlock, Investment, Vidéo, Cyber Audit)
 
-Quatre espaces de travail dédiés, accessibles depuis le Dashboard ou le Centre d'aide (`F1`).
+Cinq espaces de travail dédiés, accessibles depuis le Dashboard ou le Centre d'aide (`F1`).
 
 ### MetaGPT Studio
 
@@ -178,7 +179,16 @@ Deux capacités distinctes, réunies dans un seul Studio à onglets :
 
 Il n'existe pas aujourd'hui de montage multi-clips ni de ligne de temps éditable dans Docteur (le moteur de rendu local ne pilote qu'un modèle de clip fixe) ; cette page ne présente donc pas de fonctionnalité de « timeline » qui n'existerait pas réellement.
 
-Détails techniques et matrice de capacités des 4 Studios : `reports/STUDIOS_UX_V2_2026-09.md`.
+### Cyber Audit Studio — SENTINEL
+
+Audit de sécurité web **externe, autorisé et non destructif** : TLS, en-têtes de sécurité, cookies, CORS, signaux de divulgation d'information, sur un périmètre (hôtes/ports/protocoles/chemins) explicitement déclaré et confirmé. Découverte de pages bornée au périmètre (liens réels trouvés dans les pages déjà autorisées, robots.txt et sitemap.xml quand ils sont autorisés — jamais de génération de chemins ni de brute force). Débit de requêtes **réellement limité** (rate limiting appliqué au trafic sortant, pas seulement une valeur affichée). Preuves et constats persistés (avec redaction systématique des secrets), rapport HTML exportable.
+
+> [!IMPORTANT]
+> Aucune exploitation, aucun brute force, aucun contournement d'authentification, aucun scan de ports, aucun déni de service, aucun shell, aucun outil offensif tiers (Nmap/Nuclei/SQLMap/Metasploit). Pas d'audit authentifié, pas de pentest complet. Re-scan/comparaison entre missions : non implémenté en V1. Export PDF : non implémenté (aucune dépendance lourde ajoutée pour cela).
+
+Détails techniques complets : `reports/CYBER_AUDIT_AGENT_V1_2026-09.md`.
+
+Détails techniques et matrice de capacités des 4 autres Studios : `reports/STUDIOS_UX_V2_2026-09.md`.
 
 ## 🏗️ Architecture
 
@@ -534,6 +544,7 @@ Ce message signifie qu'aucun endpoint valide n'a été renseigné dans les régl
 | Investment Studio (fondamentaux, valorisation, scoring, paper trading) | ✅ analyse/simulation uniquement |
 | Studio Vidéo — transcription | ✅ |
 | Studio Vidéo — rendu MP4 local | ✅ un seul modèle de clip, pas de montage multi-clips |
+| Cyber Audit Studio / SENTINEL (audit externe non destructif) | ✅ pas de re-scan/comparaison, pas d'export PDF |
 | Entraînement local (LoRA/QLoRA) | 📋 étudié, non implémenté (voir `reports/`) |
 | Gestes caméra | 🧪 |
 | FreeLLMAPI | ⚙️ nécessite configuration |
@@ -552,6 +563,7 @@ Docteur est un projet personnel activement développé — il n'est pas présent
 - Certaines suites de tests end-to-end nécessitent un environnement de développement complet et ne sont pas exécutées automatiquement.
 - **Connecteurs YouTube et OneDrive** : le backend (OAuth, synchronisation, déduplication, stockage sécurisé) est implémenté et testé, mais **aucune interface de connexion n'est encore disponible dans les Paramètres**, et aucun compte réel n'a été testé (nécessite des identifiants d'application Google Cloud / Azure fournis par l'utilisateur). L'API officielle YouTube ne permet pas d'accéder à l'historique de visionnage complet (limitation de Google, pas de contournement prévu). OneDrive : formats réellement importables limités à `.md`, `.txt`, `.pdf`, `.xlsx` (pas `.docx`, aucune dépendance de lecture pour ce format actuellement).
 - **NotebookLM (Google)** : uniquement une préparation d'architecture. Une clé API peut être enregistrée, mais aucun appel réel n'est jamais déclenché — c'est un espace réservé pour une intégration future, pas une fonctionnalité active.
+- **Cyber Audit Studio / SENTINEL** : pas de pentest complet, pas d'exploitation, pas d'audit authentifié, pas de scan de ports, pas d'outils offensifs automatiques. Re-scan/comparaison entre missions non implémenté. Export PDF non implémenté (aucune dépendance lourde ajoutée pour cela). L'absence de constat détecté ne signifie pas absence de vulnérabilité.
 - **Notebook local** : seuls le résumé global et les questions/réponses avec citations sont disponibles. Points clés, FAQ, fiche d'étude, flashcards, chronologie, glossaire et comparaison de sources ne sont pas implémentés.
 - **Sherlock OSINT** : outil tiers optionnel (non développé par Docteur), à installer explicitement depuis le Studio Sherlock dédié — recherche par nom d'utilisateur public uniquement, aucun historique de recherches persistant (les jobs vivent en mémoire le temps de la session serveur).
 - **Entraînement local (LoRA/QLoRA)** : étudié (voir `reports/MASTER_PHASE_8_TRAINING_FEASIBILITY.md`) mais non implémenté — le RAG et la mémoire adaptative existants couvrent mieux les besoins identifiés que ne le ferait un fine-tuning sur le matériel typique visé par Docteur.

@@ -44,6 +44,7 @@ export default function SherlockStudioModal({ onClose, onJobUpdate }: Props) {
   const [job, setJob] = useState<SherlockJob | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const [filter, setFilter] = useState('all');
   const stop = useRef<(() => void) | null>(null);
   const mounted = useRef(true);
 
@@ -70,7 +71,7 @@ export default function SherlockStudioModal({ onClose, onJobUpdate }: Props) {
       setError('Pseudonyme : 1 à 64 lettres, chiffres, tirets, points ou underscores ; sans espace ni deux points successifs.');
       return;
     }
-    setPending(true); setError(''); setJob(null);
+    setPending(true); setError(''); setJob(null); setFilter('all');
     try {
       const result = await cortexClient.searchSherlock(username, { timeoutMs: timeoutSeconds * 1000 });
       if (!mounted.current) return;
@@ -101,6 +102,7 @@ export default function SherlockStudioModal({ onClose, onJobUpdate }: Props) {
   }
 
   const results = job?.summary?.results ?? [];
+  const filteredResults = results.filter(r => filter === 'all' || (filter === 'errors' ? r.status === 'error' || r.status === 'invalid' : r.status === filter));
   const found = job?.summary?.found ?? results.filter(r => r.status === 'found').length;
   const absent = job?.summary?.absent ?? results.filter(r => r.status === 'absent').length;
   const errors = job?.summary?.errors ?? results.filter(r => r.status === 'error' || r.status === 'invalid').length;
@@ -134,9 +136,9 @@ export default function SherlockStudioModal({ onClose, onJobUpdate }: Props) {
         />
       </label>
 
-      <label>Délai maximum par site (secondes)
+      <label>Délai maximum de la recherche (secondes)
         <input
-          aria-label="Délai maximum par site"
+          aria-label="Délai maximum de la recherche"
           type="number"
           min={1}
           max={120}
@@ -185,11 +187,18 @@ export default function SherlockStudioModal({ onClose, onJobUpdate }: Props) {
           )}
 
           {/* RESULTS */}
+          {results.length > 0 && <div className="studio-filter-row" role="group" aria-label="Filtrer les résultats">
+            {([['all', 'Tous'], ['found', 'Trouvés'], ['absent', 'Absents'], ['errors', 'Erreurs']] as const).map(([value, label]) => (
+              <button type="button" key={value} aria-pressed={filter === value} className={`studio-button${filter === value ? ' studio-button--primary' : ''}`} onClick={() => setFilter(value)}>{label}</button>
+            ))}
+          </div>}
           {results.length > 0 ? (
-            <ul style={{ listStyle: 'none', margin: '10px 0', padding: 0 }}>
-              {results.map(result => (
-                <li key={result.site} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.06)', fontSize: 13 }}>
+            <ul aria-label="Résultats de recherche" style={{ listStyle: 'none', margin: '10px 0', padding: 0 }}>
+              {filteredResults.length === 0 && <li>Aucun résultat pour ce filtre.</li>}
+              {filteredResults.map(result => (
+                <li key={result.site} className="studio-result-row">
                   <StudioStatus compact label={result.site} tone={RESULT_TONE[result.status] ?? 'neutral'} />
+                  <span>{result.username}</span>
                   <span style={{ color: 'var(--text-dim)' }}>{RESULT_LABEL[result.status]}</span>
                   {result.responseTime != null && <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>{result.responseTime} ms</span>}
                   {result.status === 'found' && /^https?:\/\//.test(result.profileUrl) && (

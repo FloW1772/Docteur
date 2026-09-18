@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import '../src/styles/globals.css';
 import HelpModal from '../src/components/modals/HelpModal';
 const Studio = lazy(() => import('../src/components/modals/SherlockStudioModal'));
 function Harness() {

@@ -2779,3 +2779,24 @@ select:focus-visible {
   border-color: #ff4d58;
   background: rgba(255, 77, 88, 0.16);
 }
+
+.studio-render-format { display: grid; grid-template-columns: minmax(0, 1fr) 80px; gap: 0 12px; }
+.studio-render-format p { grid-column: 1 / -1; margin: 0 0 12px; font-size: 12px; color: var(--text-dim); }
+.studio-render-output { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.studio-render-output video { width: 100%; max-height: 380px; border-radius: 8px; background: #000; }
+.studio-render-output p { color: var(--text-dim); }
+.studio-shell, .studio-video-panel { overflow-wrap: anywhere; }
+.studio-shell-body { min-width: 0; }
+.studio-shell-body select { min-width: 0; max-width: 100%; }
+.studio-shell :is(button, a, summary, input, select, textarea, [tabindex]):focus-visible,
+.studio-video-panel :is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--cyan); outline-offset: 3px;
+}
+.studio-shell table { display: block; overflow-x: auto; text-align: left; }
+.studio-shell :is(th, td) { padding: 8px; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.studio-result-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.studio-result-row a { color: var(--cyan); }
+.studio-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+@media (prefers-reduced-motion: reduce) {
+  .studio-shell *, .studio-video-panel * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

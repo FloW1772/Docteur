@@ -17,6 +17,7 @@ import HudPanel from './HudPanel';
 import CortexLinks from './CortexLinks';
 import {
   useMetaGptSummary, useSherlockSummary, useInvestmentSummary, useOpenMontageSummary, useConnectorsSummary,
+  useCyberAuditSummary,
 } from '../../hooks/useModuleSummaries';
 
 interface Props {
@@ -26,6 +27,7 @@ interface Props {
   onOpenSherlock: () => void;
   onOpenInvestment: () => void;
   onOpenVideoSummary: () => void;
+  onOpenCyberAudit: () => void;
   onOpenSettings: () => void;
   onQuickMetaGptMission: () => void;
   onQuickSherlockSearch: () => void;
@@ -35,7 +37,7 @@ interface Props {
 
 export default function Dashboard({
   lastSherlockJobId, activityEvents,
-  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenSettings,
+  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenCyberAudit, onOpenSettings,
   onQuickMetaGptMission, onQuickSherlockSearch, onQuickInvestmentAnalysis, onQuickVideoRender,
 }: Props) {
   const metagpt = useMetaGptSummary();
@@ -43,6 +45,7 @@ export default function Dashboard({
   const investment = useInvestmentSummary();
   const openMontage = useOpenMontageSummary();
   const connectors = useConnectorsSummary();
+  const cyberAudit = useCyberAuditSummary();
 
   const modules = [
     { key: 'metagpt', active: metagpt.status !== 'unavailable' && metagpt.status !== 'idle' },
@@ -88,6 +91,11 @@ export default function Dashboard({
         <ModuleWidget
           name="Connecteurs" status={connectors.status} metric={connectors.metric} detail={connectors.detail}
           loading={connectors.loading} error={connectors.error ?? undefined} onOpen={onOpenSettings} openLabel="Gérer"
+        />
+
+        <ModuleWidget
+          name="Cyber Audit" status={cyberAudit.status} metric={cyberAudit.metric} detail={cyberAudit.detail}
+          loading={cyberAudit.loading} error={cyberAudit.error ?? undefined} onOpen={onOpenCyberAudit} openLabel="Ouvrir Cyber Studio"
         />
 
         <HudPanel title="Actions rapides" compact>

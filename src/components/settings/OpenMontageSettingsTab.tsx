@@ -2,7 +2,10 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { RefreshCw, Play, Square, Film, Lock } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import { startJobPolling } from '../../lib/video-job-polling';
-import type { OpenMontageCapabilities, OpenMontageJob, OpenMontageResolution } from '../../lib/cortex/client';
+import type { OpenMontageCapabilities, OpenMontageJob } from '../../lib/cortex/client';
+import OpenMontageFormat, { OPENMONTAGE_FORMAT } from '../studio/OpenMontageFormat';
+import OpenMontageOutput from '../studio/OpenMontageOutput';
+import { studioRequestError } from '../../lib/studio-errors';
 
 const cardStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
@@ -33,12 +36,6 @@ const STATUS_LABELS: Record<string, string> = {
   ERROR: 'Erreur',
 };
 
-const RESOLUTIONS: { value: OpenMontageResolution; label: string }[] = [
-  { value: '1920x1080', label: '1920×1080 (16:9)' },
-  { value: '1080x1920', label: '1080×1920 (9:16)' },
-  { value: '1080x1080', label: '1080×1080 (1:1)' },
-];
-
 export function OpenMontageSettingsTab() {
   const [capabilities, setCapabilities] = useState<OpenMontageCapabilities | null>(null);
   const [loading, setLoading] = useState(true);
@@ -46,12 +43,12 @@ export function OpenMontageSettingsTab() {
 
   const [title, setTitle] = useState('DOCTEUR');
   const [subtitle, setSubtitle] = useState('Local Video Pipeline');
-  const [resolution, setResolution] = useState<OpenMontageResolution>('1920x1080');
-  const [fps, setFps] = useState<24 | 25 | 30>(30);
   const [durationSeconds, setDurationSeconds] = useState(6);
 
   const [job, setJob] = useState<OpenMontageJob | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const stopPollingRef = useRef<(() => void) | null>(null);
 
   const reload = useCallback(async () => {
@@ -60,7 +57,7 @@ export function OpenMontageSettingsTab() {
       setCapabilities(caps);
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      setError(studioRequestError(e));
     } finally {
       setLoading(false);
     }
@@ -70,9 +67,11 @@ export function OpenMontageSettingsTab() {
   useEffect(() => () => { stopPollingRef.current?.(); }, []);
 
   const startRender = useCallback(async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true; setSubmitting(true);
     setRenderError(null);
     try {
-      const { jobId } = await cortexClient.startOpenMontageRender({ title, subtitle, resolution, fps, durationSeconds });
+      const { jobId } = await cortexClient.startOpenMontageRender({ title, subtitle, ...OPENMONTAGE_FORMAT, durationSeconds });
       stopPollingRef.current?.();
       stopPollingRef.current = startJobPolling(
         () => cortexClient.getOpenMontageJob(jobId),
@@ -81,13 +80,15 @@ export function OpenMontageSettingsTab() {
         () => { void reload(); },
       );
     } catch (e) {
-      setRenderError((e as Error).message);
+      setRenderError(studioRequestError(e));
+    } finally {
+      submittingRef.current = false; setSubmitting(false);
     }
-  }, [title, subtitle, resolution, fps, durationSeconds, reload]);
+  }, [title, subtitle, durationSeconds, reload]);
 
   const cancel = useCallback(async () => {
     if (!job) return;
-    try { await cortexClient.cancelOpenMontageJob(job.jobId); } catch { /* best-effort */ }
+    try { await cortexClient.cancelOpenMontageJob(job.jobId); } catch { setRenderError('Annulation non confirmée. Réessayez.'); }
   }, [job]);
 
   const reset = useCallback(() => {
@@ -143,31 +144,18 @@ export function OpenMontageSettingsTab() {
         <div style={cardStyle}>
           <div>
             <div style={labelStyle}>Titre</div>
-            <input style={inputStyle} value={title} onChange={e => setTitle(e.target.value)} maxLength={120} disabled={isRunning} />
+            <input aria-label="Titre du rendu" style={inputStyle} value={title} onChange={e => setTitle(e.target.value)} maxLength={120} disabled={isRunning || submitting} />
           </div>
           <div>
             <div style={labelStyle}>Sous-titre</div>
-            <input style={inputStyle} value={subtitle} onChange={e => setSubtitle(e.target.value)} maxLength={120} disabled={isRunning} />
+            <input aria-label="Sous-titre du rendu" style={inputStyle} value={subtitle} onChange={e => setSubtitle(e.target.value)} maxLength={120} disabled={isRunning || submitting} />
           </div>
+          <OpenMontageFormat />
           <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={labelStyle}>Format</div>
-              <select style={inputStyle} value={resolution} onChange={e => setResolution(e.target.value as OpenMontageResolution)} disabled={isRunning}>
-                {RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-              </select>
-            </div>
-            <div style={{ width: 90 }}>
-              <div style={labelStyle}>FPS</div>
-              <select style={inputStyle} value={fps} onChange={e => setFps(Number(e.target.value) as 24 | 25 | 30)} disabled={isRunning}>
-                <option value={24}>24</option>
-                <option value={25}>25</option>
-                <option value={30}>30</option>
-              </select>
-            </div>
             <div style={{ width: 110 }}>
               <div style={labelStyle}>Durée (s)</div>
               <input
-                type="number" min={3} max={10} style={inputStyle}
+                aria-label="Durée (s)" type="number" min={3} max={10} style={inputStyle}
                 value={durationSeconds}
                 onChange={e => setDurationSeconds(Math.min(10, Math.max(3, Number(e.target.value) || 3)))}
                 disabled={isRunning}
@@ -179,7 +167,7 @@ export function OpenMontageSettingsTab() {
             type="button"
             style={{ ...btnStyle, justifyContent: 'center', opacity: status === 'READY_LOCAL' ? 1 : 0.5 }}
             onClick={() => void startRender()}
-            disabled={status !== 'READY_LOCAL'}
+            disabled={status !== 'READY_LOCAL' || submitting}
           >
             <Play size={12} /> Générer localement
           </button>
@@ -188,6 +176,9 @@ export function OpenMontageSettingsTab() {
 
       {job && (
         <div style={cardStyle}>
+          <p>Job : {job.jobId}</p>
+          {renderError && <p role="alert">{renderError}</p>}
+          {job.status === 'running' && <p>Aperçu disponible après rendu.</p>}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#e2e8f0' }}>
               {job.status === 'running' ? 'Rendu en cours…' : job.status === 'done' ? 'Rendu terminé' : job.status === 'cancelled' ? 'Rendu annulé' : 'Rendu échoué'}
@@ -200,13 +191,10 @@ export function OpenMontageSettingsTab() {
             </button>
           )}
           {job.status === 'failed' && job.error && (
-            <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{job.error}</div>
+            <div role="alert" style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{studioRequestError(job.error)}</div>
           )}
           {job.status === 'done' && job.hasArtifact && (
-            <>
-              <video controls style={{ width: '100%', borderRadius: 6, background: '#000' }} src={cortexClient.getOpenMontageArtifactUrl(job.jobId)} />
-              <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a' }}>output.mp4 — {job.width}×{job.height} @ {job.fps}fps</div>
-            </>
+            <OpenMontageOutput key={job.jobId} job={job} />
           )}
           {(job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') && (
             <button type="button" style={btnStyle} onClick={reset}>Nouveau rendu</button>

@@ -16,7 +16,7 @@ export interface CapabilitySection {
 export type FeatureKey =
   | 'capture' | 'console' | 'notebook' | 'teacher' | 'agents' | 'skills'
   | 'images' | 'kiwix' | 'todo' | 'backup' | 'corpus' | 'prompt-generator'
-  | 'video-summary' | 'metagpt' | 'investment' | 'sherlock'
+  | 'video-summary' | 'metagpt' | 'investment' | 'sherlock' | 'cyber-audit'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
   | 'settings-external' | 'settings-connections';
@@ -121,6 +121,18 @@ export const HELP_DIRECTORY: HelpCategory[] = [
       { name: 'Studio Sherlock', description: 'Recherche de pseudonyme sur des sites publics (GitHub, Reddit, GitLab par défaut). États, durée, profils trouvés ou absents, annulation. Une correspondance ne prouve pas une identité — résultats externes non vérifiés. Une recherche à la fois, 3 départs par minute.', feature: 'sherlock', state: 'local', keywords: ['pseudonyme', 'osint', 'profil', 'username', 'recherche'] },
     ],
   },
+  {
+    emoji: '🛡️',
+    title: 'Sécurité',
+    items: [
+      {
+        name: 'Cyber Audit / SENTINEL',
+        description: 'Audit de sécurité web externe, autorisé et non destructif. Peut : auditer un site pour lequel une autorisation explicite a été confirmée, analyser TLS, en-têtes de sécurité, cookies, CORS, détecter des signaux de divulgation d\'information, crawler de façon bornée (uniquement les liens réels du périmètre, robots.txt et sitemap.xml), produire des findings et un rapport HTML. Ne peut pas (V1) : exploiter une faille, faire du brute force, contourner une authentification, scanner des ports, provoquer un déni de service, utiliser un shell, lancer Nmap/Nuclei/SQLMap/Metasploit, ni tester une cible non autorisée. Débit de requêtes limité (rate limiting réellement appliqué).',
+        feature: 'cyber-audit', state: 'local',
+        keywords: ['sentinel', 'audit', 'sécurité', 'pentest', 'tls', 'headers', 'cookies', 'cors', 'scan'],
+      },
+    ],
+  },
 ];
 
 export const CAPABILITIES: CapabilitySection[] = [
@@ -209,6 +221,7 @@ export const LIMITATIONS: string[] = [
   'Connecteurs Google Drive / OneDrive / YouTube : interface de configuration disponible (Paramètres → Connexions), mais aucune connexion réelle n\'a encore été établie — nécessite de créer des identifiants OAuth (Google Cloud / Azure) hors de Docteur, puis de lancer la connexion',
   'Sherlock : environnement dédié requis, base de sites figée, une recherche à la fois et 3 départs par minute. Une correspondance ne prouve pas une identité ; les résultats ne deviennent pas des instructions pour les agents.',
   'Notebook : résumé et questions/réponses disponibles ; FAQ, flashcards et chronologie pas encore implémentés',
+  'Cyber Audit / SENTINEL : audit externe non authentifié uniquement — pas de test d\'intrusion complet, pas d\'exploitation, pas de scan de ports, pas d\'outils offensifs automatiques. L\'absence de constat ne signifie pas absence de vulnérabilité. Le re-scan/comparaison entre missions n\'est pas encore implémenté (V1).',
 ];
 
 export const SHORTCUTS: Array<{ keys: string; desc: string }> = [

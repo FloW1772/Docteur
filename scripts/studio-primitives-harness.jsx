@@ -26,10 +26,12 @@ function Harness() {
 
   return (
     <div>
+      <button type="button" onClick={() => setShellOpen(true)}>Ouvrir le Studio test</button>
       {shellOpen && (
         <StudioShell icon={<Boxes size={18} />} title="Test Studio" onClose={() => setShellOpen(false)} subtitle="Sous-titre de sécurité">
-          <StudioTabs tabs={TABS} active={tab} onChange={setTab} badges={{ HISTORY: 2 }} />
-          <div data-testid="active-tab">{tab}</div>
+          <StudioTabs tabs={TABS} active={tab} onChange={setTab} badges={{ HISTORY: 2 }}>
+            <div data-testid="active-tab">{tab}</div>
+          </StudioTabs>
 
           <div data-testid="statuses">
             <StudioStatus label="Actif" tone="active" />

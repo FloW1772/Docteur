@@ -1,5 +1,122 @@
 # DOCTEUR STUDIOS UX V2
 
+## Reprise du 18 septembre 2026 (suite à interruption Codex) — STUDIOS UX V2 : PASS
+
+**Ce statut remplace le « PARTIEL » de la section de réaudit ci-dessous.** La divergence OpenMontage qui bloquait le réaudit a été corrigée par la session Codex interrompue, puis vérifiée indépendamment ici par relecture de code, exécution des suites de tests et inspection visuelle. Studios UX V2 est désormais certifié PASS.
+
+### Ce qui a changé depuis le réaudit PARTIEL
+
+**OpenMontage — divergence résolue par limitation du frontend (option approuvée, aucune correction backend) :**
+Les deux formulaires (`VideoSummaryModal.tsx`, `OpenMontageSettingsTab.tsx`) exposent désormais uniquement les paramètres réellement produits par le moteur — `src/components/studio/OpenMontageFormat.tsx` fige `{ resolution: '1920x1080', fps: 30 }` en constante partagée, affichée en lecture seule dans les deux formulaires, sans sélecteur trompeur. `src/components/studio/OpenMontageOutput.tsx` sépare explicitement « Paramètres demandés » (valeurs envoyées à la requête) et « Fichier lu » (dimensions/durée réellement lues depuis l'élément `<video>` une fois l'aperçu chargé, cadence explicitement annoncée comme non mesurée — aucune mesure de FPS n'est possible côté navigateur). Vérifié par lecture de code : `cortex-server/src/routes/openmontage.js` et `cortex-server/src/lib/openmontage-adapter.js` confirment toujours que la route/l'adaptateur n'appliquent jamais les dimensions/cadence demandées au moteur Remotion réel (le gap backend décrit dans la section réaudit ci-dessous reste réel et non corrigé — correctement laissé en l'état, gel backend respecté).
+
+Nouveau test dédié `scripts/test-openmontage-format-browser.mjs` (via le nouvel utilitaire partagé `scripts/studio-browser-checks.mjs`) : **24/24 PASS**, vérifié par exécution indépendante dans cette session. Couvre les deux surfaces (Studio principal + onglet Settings), les champs figés en lecture seule, l'absence de tout `<select>` de résolution/fps, la requête réseau réellement envoyée (1920x1080/30fps), la distinction demandé/observé après complétion, l'annulation, et la non-fuite de diagnostics bruts (chemins/tokens) en cas d'erreur serveur.
+
+**Sherlock — corrections complémentaires :**
+- Le libellé du champ timeout est passé de « Délai maximum par site » à « Délai maximum de la recherche », corrigeant une confusion réelle relevée au réaudit (`sherlock-gateway.js:60` confirme que le timer arrête tout le job, pas un site individuel).
+- Filtres de résultats ajoutés (Tous/Trouvés/Absents/Erreurs), purement frontend sur les résultats déjà reçus — aucun nouvel appel réseau, aucun site picker (conforme à la décision de ne pas en créer faute d'endpoint de catalogue).
+- Aucun historique persistant ajouté (toujours un gap backend documenté, jamais simulé).
+
+**MetaGPT — corrections complémentaires :**
+- `StudioCodeFiles.tsx` (nouveau) : sélecteur de fichier généré + navigation Fichier précédent/suivant + taille en octets — comblait un vrai manque relevé à l'audit initial.
+- Résumé d'approbation ajouté dans l'onglet DIFF (nombre de fichiers, signalements, bloquants, statut d'approbation) sans toucher à la logique d'approbation/application elle-même.
+- Les garanties certifiées (aucun Terminal, aucun Git autonome, aucun auto-approve, aucun auto-apply, aucune exécution libre du code généré) sont intactes — vérifié par relecture complète du diff : aucune ligne ne touche `action('approve')`, `action('apply')`, ni la state machine.
+
+**Investment — corrections complémentaires :**
+- Les multiples acceptent désormais 9 champs réels (`earningsPerShare`, `forwardEarningsPerShare`, `enterpriseValue`, `revenue`, `ebitda`, `marketCap`, `freeCashFlow`, `pe`, `earningsGrowthRatePercent`) au lieu du seul prix — vérifiés un à un contre les signatures exactes des fonctions `calculatePE`/`calculateForwardPE`/`calculateEvToSales`/`calculateEvToEbitda`/`calculatePFcf`/`calculatePeg` dans `cortex-server/src/lib/investment-calc.js`. Aucun nom de champ inventé.
+- Reverse DCF : la valeur d'entreprise cible est maintenant un champ utilisateur réel (`targetEv`), remplaçant l'ancien calcul arbitraire à 15× le FCF.
+- Aucune nouvelle capacité backend, aucun broker, aucun ordre réel.
+
+**Primitives partagées — améliorations d'accessibilité clavier :**
+- `useStudioDialog.ts` (nouveau hook) : piège de focus complet (Tab/Shift+Tab bouclés dans la boîte de dialogue), gestion multi-dialogues empilés, restauration du focus à la fermeture sur l'élément précédemment actif. Remplace l'ancienne gestion Escape-seule de `StudioShell.tsx`.
+- `StudioTabs.tsx` : pattern ARIA tabs complet (`tabIndex` roving, flèches gauche/droite, Home/End, `aria-controls`/`aria-labelledby`).
+- `studio-errors.ts` (nouveau) : humanise les codes d'erreur backend connus (ex. `BLOCKED_BY_POLICY`, `no_financial_data`) sans jamais exposer de diagnostic brut (chemin, token, trace) ; message générique sûr pour tout code inconnu. Utilisé par MetaGPT et Investment.
+- CSS ajouté à `globals.css` : tableaux responsives (`overflow-x: auto` plutôt que débordement de page), anneaux de focus visibles sur tous les contrôles interactifs des Studios, bloc `prefers-reduced-motion` dédié.
+
+### Vérifications indépendantes effectuées dans cette session de reprise
+
+Aucune de ces valeurs n'a été reprise du handoff sans nouvelle exécution :
+
+| Suite | Résultat vérifié |
+|---|---|
+| MetaGPT (`test-metagpt-studio-browser.mjs`) | **22/22 PASS** |
+| Sherlock (`test-sherlock-studio-browser.mjs`) | **18/18 PASS** |
+| Investment (`test-investment-studio-browser.mjs`) | **21/21 PASS** |
+| Studio Vidéo — rendu (`test-video-studio-render-browser.mjs`) | **6/6 PASS** |
+| OpenMontage format (`test-openmontage-format-browser.mjs`, nouveau) | **24/24 PASS** |
+| Primitives Studio partagées (`test-studio-primitives-browser.mjs`) | **29/29 PASS** |
+| Cortex Command Center V1 (régression) | **15/15 PASS** |
+| Dashboard (régression) | **15/15 PASS** |
+| Command Bar (régression) | **13/13 PASS** |
+| HUD primitives (régression) | **23/23 PASS** |
+| Suite backend Docteur complète (`scripts/test-connectors-certification.mjs`) | **789/789 PASS**, 0 échec, 0 annulé, 0 ignoré |
+| Typecheck (`tsc --noEmit`) | **PASS** |
+| Build (`npm run build`) | **PASS** — tous les Studios restent en chunks `lazy()` séparés |
+
+Total tests navigateur frontend (Studios + régressions Command Center) : **186/186 PASS**.
+
+Aucun fichier sous `cortex-server/` modifié (`git status --short cortex-server/` vide) — gel backend intégralement respecté pour cette reprise.
+
+### Fichier SENTINEL — vérifié isolé, non touché
+
+Le chemin mentionné dans le handoff, `cortex-server/src/lib/cyber-audit-scope.js`, **n'existe pas** dans l'arborescence réelle du backend. Seul `.tmp/cyber-draft/cyber-audit-scope.js` existe, à l'intérieur du répertoire `.tmp/` déjà exclu de git (`.gitignore:43`, jamais suivi, jamais commité). Ce fichier n'a pas été lu en détail, pas modifié, pas supprimé, et n'interfère avec aucun fichier Studios UX. Aucune autre référence à SENTINEL/CA-1/CA-2/CA-3 trouvée dans le code source suivi (seule collision de nom sans rapport : la constante préexistante `PRIVATE_SENTINEL` dans `cortex-server/src/lib/privacy-guard.js`, un marqueur de confidentialité sans lien avec la mission SENTINEL).
+
+### Limitation restante (inchangée depuis le rapport initial)
+
+Le gap backend OpenMontage documenté dans la section réaudit ci-dessous reste réel : la route accepte plusieurs résolutions/cadences mais ne les transmet jamais au moteur Remotion réel, qui ne produit que 1920×1080 @ 30 fps. La limitation du frontend aux seuls paramètres réels est la correction correcte compte tenu du gel backend — une future mission backend dédiée pourrait câbler ces paramètres jusqu'au moteur si un besoin réel de multi-résolution émerge.
+
+---
+
+## Réaudit du 18 septembre 2026 — PARTIEL, arrêt UX-1 requis
+
+**Statut actuel : PARTIEL. Le PASS historique plus bas n'est pas une validation du réaudit.**
+L'état relu est le commit `ac82a12`, qui contient déjà une implémentation des Studios et le rapport initial conservé ci-dessous. Ce réaudit n'a modifié aucun code applicatif ni backend et n'a pas réexécuté les tests. Les chiffres historiques ne constituent donc pas une nouvelle certification.
+
+Ordre demandé par l'utilisateur : terminer Studios UX avant SENTINEL. SENTINEL reste en attente.
+
+### Divergence bloquante : paramètres OpenMontage annoncés et rendu effectif
+
+**BACKEND GAP:** la route accepte trois résolutions et les cadences 24/25/30, mais ne transmet au moteur ni les dimensions ni la cadence. Les métadonnées du job sont les valeurs demandées, sans mesure du fichier produit.
+
+Preuves dans l'état local :
+
+- `src/components/modals/VideoSummaryModal.tsx:41` propose paysage, portrait et carré ; `:633` propose notamment 24 fps ; `:679` affiche les valeurs du job comme caractéristiques de `output.mp4`.
+- `cortex-server/src/routes/openmontage.js:106` mémorise les valeurs demandées ; `:109` appelle `startRender` uniquement avec le titre, le sous-titre et le nombre d'images calculé à partir de la cadence demandée ; `:150` renvoie les dimensions et la cadence mémorisées.
+- `cortex-server/src/lib/openmontage-adapter.js:243` déclare un paramètre `fps` inutilisé. La commande construite à `:251` choisit `HeroTitle` et la plage d'images, sans paramètre de dimensions ou de cadence.
+- `external/OpenMontage/remotion-composer/src/Root.tsx:213` fixe `HeroTitle` à 1920×1080, 30 fps, sans calcul dynamique de ces métadonnées. Ce fichier appartient au checkout externe local, actuellement non suivi par le dépôt parent.
+
+**WHY IT MATTERS:** l'utilisateur peut demander du portrait à 24 fps et recevoir un rendu paysage à 30 fps, tandis que l'interface affiche les paramètres demandés comme résultat. La durée est également concernée : pour 6 secondes demandées à 24 fps, la commande sélectionne 144 images ; à 30 fps, cela correspond théoriquement à 4,8 secondes de vidéo. Cet exemple découle de la lecture du code ; aucun nouveau MP4 n'a été rendu pour ce réaudit.
+
+Le rapport initial UX-6 décrit pourtant un formulaire résolution/fps/durée pleinement fonctionnel et qualifie ses résultats de réels. Il s'agit donc d'une divergence importante entre documentation, contrat exposé et moteur effectivement câblé.
+
+**PROPOSED FUTURE API:** conserver `POST /api/openmontage/render`, transmettre et appliquer les paramètres validés au moteur, vérifier les métadonnées de l'artefact terminé et distinguer paramètres demandés et valeurs effectivement obtenues dans `GET /api/openmontage/job/:id`. Cette correction backend n'est pas implémentée.
+
+Une reprise compatible avec le gel backend peut limiter les deux formulaires frontend (Studio et Settings) à 1920×1080, 30 fps et présenter les métadonnées historiques comme paramètres demandés tant que le fichier n'a pas été vérifié. Cette solution évite les nouvelles demandes incompatibles mais ne répare pas le contrat backend.
+
+### Matrice de contrôle de l'implémentation présente
+
+La matrice détaillée historique est conservée ci-dessous ; les constats suivants la corrigent ou la complètent.
+
+| Studio | Backend existant / UI exposée | Capacités à compléter ou absentes | Problèmes UX constatés au réaudit |
+|---|---|---|---|
+| MetaGPT | Cycle mission, artefacts, diff, approbation et application distinctes ; neuf onglets présents | Navigation précédent/suivant entre fichiers à compléter ; retry absent du backend | Le shell ne gère ni focus initial, ni confinement du focus, ni restauration du focus ; validation clavier à reprendre |
+| Sherlock | Recherche, annulation, agrégats, temps de réponse ; Studio dédié présent | Filtres des résultats à compléter ; pas de listing d'historique persistant ni de catalogue de sites exposé | Le champ `timeoutMs` est présenté « par site » alors que le délai arrête le job entier (`sherlock-gateway.js:60`) |
+| Investment | Fondamentaux, valorisation déterministe, événements et métriques paper exposés | Compare/watchlists/reports restent sans UI ; provenance et fraîcheur des métriques à vérifier avant validation | Les affirmations globales PASS doivent être étayées par les contrôles demandés, notamment données manquantes et navigation clavier |
+| Vidéo | Transcription et rendu HeroTitle accessibles ; annulation et aperçu après rendu | Aucune timeline multi-clips câblée ni liste persistante des jobs OpenMontage | Formats/cadences proposés incompatibles avec le moteur ; métadonnées affichées non vérifiées |
+
+Le support d'Escape et les labels accessibles de `StudioShell.tsx` ne suffisent pas à valider le parcours Tab/Shift+Tab demandé. Le rapport initial ne démontre pas non plus le responsive par des captures desktop/mobile. Ces points restent à vérifier après reprise ; aucun PASS supplémentaire n'est attribué.
+
+### Motif de l'arrêt et vérification
+
+La mission utilisateur, §31, impose : « STOP seulement si une divergence importante entre backend et documentation est découverte. » Le §41 impose zéro changement backend par défaut et de documenter les gaps sans les implémenter sans approbation. La divergence OpenMontage déclenche cet arrêt ; elle n'autorise pas à commencer SENTINEL avant la fin de Studios UX.
+
+Vérification effectuée : lecture croisée du formulaire, de la route, de l'adaptateur et de la composition réelle, puis contrôle du diff. Aucun test dynamique ni build relancé pour cette modification documentaire. La justification historique selon laquelle l'absence de changement backend garantirait à elle seule la suite de tests est insuffisante : les tests doivent être réexécutés lors de la validation finale prévue par la mission.
+
+**Décision de reprise nécessaire :** limiter le frontend aux paramètres réellement supportés en conservant le gel backend, ou autoriser séparément la correction du moteur et de ses métadonnées. Studios UX n'est pas déclaré terminé.
+
+---
+
+## Rapport initial conservé — conclusions non revalidées
+
 Date : 2026-09-18
 Portée : refonte UX des quatre Studios déjà fonctionnels (MetaGPT, Sherlock, Investment, Studio Vidéo/OpenMontage). Aucun changement backend, aucune API modifiée, aucune permission élargie.
 
@@ -64,6 +181,7 @@ Portée : refonte UX des quatre Studios déjà fonctionnels (MetaGPT, Sherlock, 
 2. **Sherlock** : aucun historique persistant (jobs en `Map()` mémoire, pas de route de listing). `PROPOSED FUTURE API` : table `sherlock_jobs` + `GET /sherlock/jobs`.
 3. **Sherlock** : aucune route pour lister les sites disponibles au `siteFilter` — un vrai sélecteur de sites nécessiterait soit cette route, soit deviner des noms (interdit). Non implémenté ; UI limitée aux 3 sites par défaut + un contrôle de timeout honnête.
 4. **OpenMontage** : aucune capacité multi-clips/timeline câblée côté adaptateur Docteur malgré le support upstream. `PROPOSED FUTURE API` : exposer un choix de template parmi `external/OpenMontage/pipeline_defs/*.yaml`.
+   **Précision ajoutée lors de la reprise du 18 septembre 2026 :** `POST /api/openmontage/render` accepte et mémorise `resolution`/`fps` (plusieurs valeurs alloutées par la validation de la route), mais `cortex-server/src/lib/openmontage-adapter.js:startRender()` ne transmet jamais ces valeurs au process Remotion réel — seuls `title`/`subtitle`/`durationInFrames` sont utilisés ; la composition `HeroTitle` (`external/OpenMontage/remotion-composer/src/Root.tsx`) est câblée en dur à 1920×1080 @ 30 fps. Le job en base mémorise donc les valeurs *demandées*, jamais les valeurs *produites*, ce qui pouvait auparavant induire l'utilisateur en erreur (ex. portrait 24 fps demandé, paysage 30 fps livré, avec l'ancienne UI qui affichait les valeurs demandées comme si elles décrivaient le fichier obtenu). **Corrigé côté frontend uniquement** (§ voir la section « Reprise du 18 septembre 2026 » en tête de document) : les deux formulaires n'exposent plus que 1920×1080/30fps, et la sortie distingue explicitement paramètres demandés vs métadonnées réellement lues dans le fichier. `PROPOSED FUTURE API` complémentaire : transmettre réellement `resolution`/`fps` jusqu'au process Remotion et vérifier les métadonnées du fichier produit avant de les renvoyer au client.
 5. **Investment** : `GET /portfolios` sans scoping utilisateur (visible par tous en déploiement multi-utilisateur) — hors périmètre de cette mission UX, signalé pour trace.
 
 ---
@@ -204,9 +322,53 @@ Réalisé en continu à travers les phases UX-3 à UX-6 via les primitives parta
 
 **Total navigateur frontend (cette mission + régressions) : 145/145 PASS.**
 
+**STUDIOS UX V2 : PASS** *(nombres remplacés par le rapport final ci-dessous après la reprise du 18 septembre 2026 suite à l'interruption Codex — voir « STUDIOS UX V2 FINAL »)*
+
+---
+
+## STUDIOS UX V2 FINAL
+
+*(Rapport de clôture, produit après la reprise post-interruption Codex du 18 septembre 2026 — voir section en tête de document pour le détail des vérifications. Tous les chiffres ci-dessous ont été obtenus par exécution réelle dans cette session, jamais recopiés d'un handoff.)*
+
+| Critère | Résultat |
+|---|---|
+| Shared design system | PASS |
+| MetaGPT UX | PASS |
+| MetaGPT capabilities exposed | PASS |
+| MetaGPT browser | 22/22 |
+| Sherlock UX | PASS |
+| Sherlock capabilities exposed | PARTIEL (site filter et historique persistant restent des GAP backend documentés, non implémentés par choix — décision explicitement approuvée) |
+| Sherlock browser | 18/18 |
+| Investment UX | PASS |
+| Investment capabilities exposed | PASS (Valuation multi-champs, Reverse DCF paramétrable, métriques portefeuille, saisie fondamentaux/timeline) |
+| Investment browser | 21/21 |
+| Video UX | PASS |
+| Video capabilities exposed | PARTIEL (Timeline/Structure multi-clips délibérément non construite — GAP backend ; OpenMontage limité aux paramètres réellement rendus) |
+| Video/OpenMontage browser | 6/6 (rendu fusionné) + 24/24 (format restreint) |
+| OpenMontage real supported params | 1920×1080 @ 30 fps |
+| OpenMontage misleading controls | 0 (confirmé — aucun sélecteur résolution/fps restant, valeurs figées en lecture seule) |
+| Empty states | PASS |
+| Loading states | PASS |
+| Error states | PASS (codes backend humanisés via `studio-errors.ts`, aucun diagnostic brut exposé) |
+| Responsive | PASS (captures desktop 1365px + mobile 390px vérifiées visuellement pour les 4 Studios) |
+| Keyboard | PASS (piège de focus complet via `useStudioDialog`, pattern ARIA tabs avec flèches/Home/End, focus restauré à la fermeture) |
+| Accessibility | PASS (aucun état couleur seule, `aria-pressed`/`aria-selected`/`aria-controls` corrects) |
+| Lazy loading | PASS (4 Studios + `VideoSummaryModal` en chunks `lazy()` séparés, vérifié dans la sortie de build) |
+| Fake data | 0 attendu — confirmé |
+| Unexpected Studios backend changes | 0 attendu — confirmé (`git status --short cortex-server/` vide) |
+| Pending Sentinel files preserved | OUI — `cortex-server/src/lib/cyber-audit-scope.js` n'existe pas ; seul `.tmp/cyber-draft/cyber-audit-scope.js` (gitignored, jamais suivi) existe et n'a pas été touché |
+| Command Center regression | 15/15 (Cortex V1) + 15/15 (Dashboard) + 13/13 (Command Bar) + 23/23 (HUD primitives) = 66/66 |
+| Suite Docteur | 789/789 PASS, 0 échec, 0 annulé, 0 ignoré (ré-exécutée intégralement dans cette session) |
+| Typecheck | PASS |
+| Build | PASS |
+
+**Total navigateur frontend (Studios + primitives + régressions Command Center) : 186/186 PASS.**
+
 **STUDIOS UX V2 : PASS**
 
-STOP.
+STOP ABSOLU.
 
-NE PAS commencer de nouvelles capacités backend.
+NE PAS reprendre SENTINEL automatiquement.
+NE PAS commencer CA-1/CA-2/CA-3 sans nouvelle instruction.
+NE PAS commit automatiquement.
 NE PAS faire STUDIOS V3.

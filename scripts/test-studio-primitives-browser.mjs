@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { captureStudio } from './studio-browser-checks.mjs';
 
 let browser, server, assertions = 0;
 const check = value => { assert.ok(value); assertions++; };
@@ -11,6 +12,7 @@ const watchdog = setTimeout(() => { console.error('Studio primitives browser dea
 try {
   server = await createServer({
     configFile: false,
+    cacheDir: '.tmp/vite-studio-primitives',
     plugins: [react()],
     optimizeDeps: { entries: ['scripts/studio-primitives-harness.jsx'] },
     server: { watch: null, host: '127.0.0.1', port: 5203, strictPort: true, hmr: false },
@@ -37,6 +39,17 @@ try {
   check(await page.getByTestId('active-tab').innerText() === 'HISTORY');
   const historyTab = page.getByRole('tab', { name: /HISTORY/, exact: false });
   check((await historyTab.innerText()).includes('2'));
+  await historyTab.focus();
+  await page.keyboard.press('ArrowRight');
+  check(await page.getByTestId('active-tab').innerText() === 'OVERVIEW');
+  await page.keyboard.press('End');
+  check(await page.getByRole('tab', { name: /HISTORY/ }).getAttribute('aria-selected') === 'true');
+  const close = page.getByRole('button', { name: 'Fermer Test Studio', exact: true });
+  await close.focus();
+  await page.keyboard.press('Shift+Tab');
+  check(await page.getByRole('button', { name: 'Annuler', exact: true }).evaluate(el => el === document.activeElement));
+  await page.keyboard.press('Tab');
+  check(await close.evaluate(el => el === document.activeElement));
 
   // ── StudioStatus: every tone renders a non-empty text label (never color-only) ──
   const statusesText = await page.getByTestId('statuses').innerText();
@@ -95,9 +108,16 @@ try {
   assertions++;
 
   // ── Keyboard: Escape closes the shell ──
+  await captureStudio(page, 'shared-shell');
   await page.keyboard.press('Escape');
   await page.getByTestId('shell-closed').waitFor();
   assertions++;
+
+  const opener = page.getByRole('button', { name: 'Ouvrir le Studio test', exact: true });
+  await opener.click();
+  await page.getByRole('dialog').waitFor();
+  await page.keyboard.press('Escape');
+  check(await opener.evaluate(el => el === document.activeElement));
 
   check(errors.length === 0);
   console.log(`STUDIO PRIMITIVES FRONTEND PASS ${assertions}/${assertions}`);

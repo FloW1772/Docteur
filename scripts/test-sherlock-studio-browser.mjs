@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { captureStudio } from './studio-browser-checks.mjs';
 
 let browser, server, assertions = 0;
 const check = value => { assert.ok(value); assertions++; };
@@ -11,6 +12,7 @@ const watchdog = setTimeout(() => { console.error('Sherlock Studio browser deadl
 try {
   server = await createServer({
     configFile: false,
+    cacheDir: '.tmp/vite-sherlock-studio',
     plugins: [react()],
     optimizeDeps: { entries: ['scripts/sherlock-studio-harness.jsx'] },
     server: { watch: null, host: '127.0.0.1', port: 5204, strictPort: true, hmr: false },
@@ -93,7 +95,7 @@ try {
 
   // ── Valid search: timeout control passed through, job created and polled ──
   await page.getByLabel('Pseudonyme public', { exact: true }).fill('docteur-fixture');
-  await page.getByLabel('Délai maximum par site', { exact: true }).fill('45');
+  await page.getByLabel('Délai maximum de la recherche', { exact: true }).fill('45');
   await page.getByRole('button', { name: 'Rechercher', exact: true }).click();
   await page.getByText('État : En cours', { exact: false }).waitFor();
   check(lastSearchBody?.username === 'docteur-fixture' && lastSearchBody?.timeoutMs === 45000);
@@ -123,6 +125,15 @@ try {
 
   // ── onJobUpdate fires once the job is done, fixing the dead Dashboard-widget bug ──
   check(await page.getByTestId('last-job-id').innerText() === 'job-1');
+  const results = page.getByRole('list', { name: 'Résultats de recherche' });
+  for (const [filter, site] of [['Trouvés', 'GitHub'], ['Absents', 'Reddit'], ['Erreurs', 'GitLab']]) {
+    await page.getByRole('button', { name: filter, exact: true }).click();
+    check(await results.getByRole('listitem').count() === 1 && (await results.innerText()).includes(site));
+  }
+  await page.getByRole('button', { name: 'Tous', exact: true }).click();
+  check(await results.getByRole('listitem').count() === 3);
+  check(searchCount === 1); // Filtering is local and does not repeat public requests.
+  await captureStudio(page, 'sherlock-results');
 
   check(errors.length === 0);
   console.log(`SHERLOCK STUDIO FRONTEND PASS ${assertions}/${assertions}`);

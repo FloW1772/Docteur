@@ -808,6 +808,128 @@ export function initSqlite(sqlitePath) {
       ON request_logs(timestamp);
   `);
 
+  // ── Cyber Audit Agent (SENTINEL V1, CA-5) — authorized, external,
+  // non-destructive web audit missions. Kept in its own exec() block
+  // (separate from the dense block above) since it's a distinct feature
+  // with its own six-table shape; no existing table/index touched.
+  //
+  // Security posture mirrored from metagpt_missions/metagpt_mission_events
+  // (CA-1 audit): scope/config stored as JSON metadata, one row per
+  // mission + a separate append-only event log. Evidence NEVER stores a
+  // full response body — only a short, already-redacted excerpt (see
+  // cyber-redact.js) plus a sha256 of the excerpt for integrity/dedup.
+  // relevant_headers is the REDACTED header subset only (cyber-redact.js
+  // runs before this table is ever written to — this schema does not
+  // re-redact, it trusts the caller, exactly like metagpt_mission_events'
+  // "jamais de credentials/secrets dans detail" comment documents for its
+  // own caller contract).
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS cyber_audit_missions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      client_name TEXT NOT NULL,
+      authorization_confirmed INTEGER NOT NULL DEFAULT 0,
+      authorization_reference TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'PASSIVE_AUDIT',
+      status TEXT NOT NULL DEFAULT 'DRAFT',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT,
+      completed_at TEXT,
+      error_message TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}'
+    );
+
+    -- One row per mission (1:1) — the frozen, validated scope object
+    -- (cyber-policy.js's validateScope() output) exactly as it was when
+    -- the mission started. Kept separate from cyber_audit_missions so a
+    -- scope can never be silently edited after a mission begins running
+    -- (no UPDATE path is provided for this table — see cyber-evidence.js).
+    CREATE TABLE IF NOT EXISTS cyber_audit_scopes (
+      mission_id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- One row per outbound request the gateway actually made — an audit
+    -- trail independent of findings, so "what did we actually touch" can
+    -- always be answered even for requests that produced no finding.
+    CREATE TABLE IF NOT EXISTS cyber_audit_requests (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      method TEXT NOT NULL,
+      status INTEGER,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Evidence: NEVER a full response body. excerpt is capped and already
+    -- redacted by the caller before this row is written. relevant_headers
+    -- is a redacted headers JSON object, not the raw header set.
+    CREATE TABLE IF NOT EXISTS cyber_audit_evidence (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      method TEXT NOT NULL,
+      timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      response_status INTEGER,
+      relevant_headers TEXT NOT NULL DEFAULT '{}',
+      excerpt TEXT NOT NULL DEFAULT '',
+      sha256 TEXT NOT NULL
+    );
+
+    -- Findings. firstSeen/lastSeen support re-scan dedup (CA-6+): the same
+    -- deterministic finding id observed again on a later request updates
+    -- last_seen rather than creating a duplicate row.
+    -- id is deterministic per detector check (e.g. "header-missing-hsts")
+    -- and therefore legitimately recurs across DIFFERENT missions — the
+    -- real uniqueness key is (id, mission_id), not id alone.
+    CREATE TABLE IF NOT EXISTS cyber_audit_findings (
+      id TEXT NOT NULL,
+      mission_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      asset TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      evidence_ids TEXT NOT NULL DEFAULT '[]',
+      impact TEXT NOT NULL DEFAULT '',
+      recommendation TEXT NOT NULL DEFAULT '',
+      references_json TEXT NOT NULL DEFAULT '[]',
+      first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id, mission_id)
+    );
+
+    -- Append-only mission event log — mirrors metagpt_mission_events:
+    -- one row per state transition or notable lifecycle event, never
+    -- credentials/secrets in detail (only structural facts).
+    CREATE TABLE IF NOT EXISTS cyber_audit_events (
+      id TEXT PRIMARY KEY,
+      mission_id TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_missions_status
+      ON cyber_audit_missions(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_requests_mission_id
+      ON cyber_audit_requests(mission_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_evidence_mission_id
+      ON cyber_audit_evidence(mission_id, timestamp ASC);
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_evidence_request_id
+      ON cyber_audit_evidence(request_id);
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_findings_mission_id
+      ON cyber_audit_findings(mission_id, severity);
+    CREATE INDEX IF NOT EXISTS idx_cyber_audit_events_mission_id
+      ON cyber_audit_events(mission_id, created_at ASC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -3776,4 +3898,184 @@ export function getInvestmentEventsForSecurity(securityId) {
   return database.prepare('SELECT * FROM investment_events WHERE security_id = ? ORDER BY date_reliable DESC, event_date ASC')
     .all(securityId)
     .map(row => ({ ...row, date_reliable: !!row.date_reliable }));
+}
+
+// ---------------------------------------------------------------------
+// Cyber Audit Agent (SENTINEL V1, CA-5) — mission/scope/request/evidence/
+// finding/event persistence. Same partial-update ("only SET provided
+// fields") and JSON-metadata idiom as metagpt_missions above. This module
+// never redacts — callers (cyber-evidence.js) must redact before calling
+// insertCyberAuditEvidence/insertCyberAuditFinding, exactly like
+// metagpt_mission_events documents "never credentials/secrets in detail"
+// as a caller contract rather than re-validating it here.
+// ---------------------------------------------------------------------
+
+function parseCyberAuditMission(row) {
+  if (!row) return null;
+  let metadata = {};
+  try { metadata = JSON.parse(row.metadata || '{}'); } catch { metadata = {}; }
+  return { ...row, authorization_confirmed: !!row.authorization_confirmed, metadata };
+}
+
+export function insertCyberAuditMission({ id, title, client_name, authorization_reference, mode = 'PASSIVE_AUDIT' }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO cyber_audit_missions (id, title, client_name, authorization_confirmed, authorization_reference, mode, status, created_at, updated_at, metadata)
+    VALUES (?, ?, ?, 1, ?, ?, 'DRAFT', ?, ?, '{}')
+  `).run(id, title, client_name, authorization_reference, mode, now, now);
+}
+
+export function updateCyberAuditMission(id, updates) {
+  if (!database) return;
+  const fields = [];
+  const vals = [];
+  if (updates.status         !== undefined) { fields.push('status = ?');         vals.push(updates.status); }
+  if (updates.started_at     !== undefined) { fields.push('started_at = ?');     vals.push(updates.started_at); }
+  if (updates.completed_at   !== undefined) { fields.push('completed_at = ?');   vals.push(updates.completed_at); }
+  if (updates.error_message  !== undefined) { fields.push('error_message = ?');  vals.push(updates.error_message); }
+  if (updates.metadata       !== undefined) { fields.push('metadata = ?');       vals.push(JSON.stringify(updates.metadata)); }
+  fields.push('updated_at = ?');
+  vals.push(new Date().toISOString());
+  vals.push(id);
+  if (fields.length > 1) database.prepare(`UPDATE cyber_audit_missions SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+}
+
+export function getCyberAuditMissionById(id) {
+  if (!database) return null;
+  return parseCyberAuditMission(database.prepare('SELECT * FROM cyber_audit_missions WHERE id = ?').get(id));
+}
+
+export function getAllCyberAuditMissions() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM cyber_audit_missions ORDER BY updated_at DESC').all().map(parseCyberAuditMission);
+}
+
+// Scope is write-once: no update function is provided by design (CA-2's
+// mission model treats the scope as frozen once a mission is scoped —
+// see cyber-policy.js's validateScope/Object.freeze). Re-scoping means
+// creating a new mission.
+export function insertCyberAuditScope({ mission_id, scope }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO cyber_audit_scopes (mission_id, scope, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(mission_id) DO NOTHING
+  `).run(mission_id, JSON.stringify(scope), new Date().toISOString());
+}
+
+export function getCyberAuditScope(missionId) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM cyber_audit_scopes WHERE mission_id = ?').get(missionId);
+  if (!row) return null;
+  let scope = {};
+  try { scope = JSON.parse(row.scope || '{}'); } catch { scope = {}; }
+  return { ...row, scope };
+}
+
+export function insertCyberAuditRequest({ id, mission_id, url, method, status = null }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO cyber_audit_requests (id, mission_id, url, method, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, mission_id, url, method, status, new Date().toISOString());
+}
+
+export function getCyberAuditRequestsForMission(missionId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM cyber_audit_requests WHERE mission_id = ? ORDER BY created_at ASC').all(missionId);
+}
+
+export function insertCyberAuditEvidence({ id, mission_id, request_id, url, method, response_status = null, relevant_headers = {}, excerpt = '', sha256 }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO cyber_audit_evidence (id, mission_id, request_id, url, method, timestamp, response_status, relevant_headers, excerpt, sha256)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, mission_id, request_id, url, method, new Date().toISOString(), response_status, JSON.stringify(relevant_headers), excerpt, sha256);
+}
+
+function parseCyberAuditEvidence(row) {
+  if (!row) return null;
+  let relevant_headers = {};
+  try { relevant_headers = JSON.parse(row.relevant_headers || '{}'); } catch { relevant_headers = {}; }
+  return { ...row, relevant_headers };
+}
+
+export function getCyberAuditEvidenceById(id) {
+  if (!database) return null;
+  return parseCyberAuditEvidence(database.prepare('SELECT * FROM cyber_audit_evidence WHERE id = ?').get(id));
+}
+
+export function getCyberAuditEvidenceForMission(missionId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM cyber_audit_evidence WHERE mission_id = ? ORDER BY timestamp ASC').all(missionId).map(parseCyberAuditEvidence);
+}
+
+function parseCyberAuditFinding(row) {
+  if (!row) return null;
+  let evidence_ids = [];
+  let references = [];
+  try { evidence_ids = JSON.parse(row.evidence_ids || '[]'); } catch { evidence_ids = []; }
+  try { references = JSON.parse(row.references_json || '[]'); } catch { references = []; }
+  return { ...row, evidence_ids, references };
+}
+
+/**
+ * Insert-or-touch: if a finding with the same `id` already exists for this
+ * mission, this UPDATEs last_seen (and merges evidence_ids) instead of
+ * creating a duplicate row — findings are deterministic-id keyed
+ * (category+asset+specific-check), so the same underlying observation
+ * re-detected on a re-scan must never appear twice.
+ */
+export function upsertCyberAuditFinding({ id, mission_id, title, category, severity, confidence, asset, description = '', evidence_ids = [], impact = '', recommendation = '', references = [] }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  const existing = database.prepare('SELECT * FROM cyber_audit_findings WHERE id = ? AND mission_id = ?').get(id, mission_id);
+  if (existing) {
+    let mergedEvidence = [];
+    try { mergedEvidence = JSON.parse(existing.evidence_ids || '[]'); } catch { mergedEvidence = []; }
+    const combined = Array.from(new Set([...mergedEvidence, ...evidence_ids]));
+    database.prepare('UPDATE cyber_audit_findings SET last_seen = ?, evidence_ids = ? WHERE id = ? AND mission_id = ?')
+      .run(now, JSON.stringify(combined), id, mission_id);
+    return 'updated';
+  }
+  database.prepare(`
+    INSERT INTO cyber_audit_findings (id, mission_id, title, category, severity, confidence, status, asset, description, evidence_ids, impact, recommendation, references_json, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, mission_id, title, category, severity, confidence, asset, description, JSON.stringify(evidence_ids), impact, recommendation, JSON.stringify(references), now, now);
+  return 'created';
+}
+
+const CYBER_FINDING_STATUSES = new Set(['OPEN', 'CONFIRMED', 'FALSE_POSITIVE', 'ACCEPTED_RISK', 'RESOLVED']);
+
+export function updateCyberAuditFindingStatus(id, missionId, status) {
+  if (!database) return false;
+  if (!CYBER_FINDING_STATUSES.has(status)) throw new Error(`invalid_finding_status:${status}`);
+  const result = database.prepare('UPDATE cyber_audit_findings SET status = ? WHERE id = ? AND mission_id = ?').run(status, id, missionId);
+  return result.changes > 0;
+}
+
+export function getCyberAuditFindingById(id, missionId) {
+  if (!database) return null;
+  return parseCyberAuditFinding(database.prepare('SELECT * FROM cyber_audit_findings WHERE id = ? AND mission_id = ?').get(id, missionId));
+}
+
+export function getCyberAuditFindingsForMission(missionId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM cyber_audit_findings WHERE mission_id = ? ORDER BY first_seen ASC').all(missionId).map(parseCyberAuditFinding);
+}
+
+export function insertCyberAuditEvent({ id, mission_id, from_status = null, to_status, detail = {} }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO cyber_audit_events (id, mission_id, from_status, to_status, detail, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, mission_id, from_status, to_status, JSON.stringify(detail), new Date().toISOString());
+}
+
+export function getCyberAuditEventsForMission(missionId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM cyber_audit_events WHERE mission_id = ? ORDER BY created_at ASC')
+    .all(missionId)
+    .map(row => ({ ...row, detail: (() => { try { return JSON.parse(row.detail || '{}'); } catch { return {}; } })() }));
 }

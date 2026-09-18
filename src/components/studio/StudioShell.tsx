@@ -3,7 +3,8 @@
 // design language. Purely presentational — each Studio keeps its own state,
 // data fetching, and business logic; this only standardizes the outer frame
 // (backdrop, dialog role, Escape-to-close, header, close button).
-import { useEffect, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
+import { useStudioDialog } from '../../hooks/useStudioDialog';
 import { X } from 'lucide-react';
 
 interface Props {
@@ -17,17 +18,13 @@ interface Props {
 }
 
 export default function StudioShell({ icon, title, onClose, subtitle, children, width = 'min(1080px, calc(100vw - 24px))' }: Props) {
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  const dialogRef = useStudioDialog(onClose);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <section
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -44,7 +41,7 @@ export default function StudioShell({ icon, title, onClose, subtitle, children, 
         </header>
         {subtitle && <p className="studio-shell-subtitle">{subtitle}</p>}
         <div className="studio-shell-body">{children}</div>
-      </section>
+      </div>
     </div>
   );
 }

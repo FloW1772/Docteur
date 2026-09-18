@@ -7,8 +7,12 @@ import {
 import { cortexClient } from '../../lib/cortex/client';
 import type {
   VideoEstimate, VideoJob, VideoJobDetail,
-  OpenMontageCapabilities, OpenMontageJob, OpenMontageResolution,
+  OpenMontageCapabilities, OpenMontageJob,
 } from '../../lib/cortex/client';
+import OpenMontageFormat, { OPENMONTAGE_FORMAT } from '../studio/OpenMontageFormat';
+import OpenMontageOutput from '../studio/OpenMontageOutput';
+import { useStudioDialog } from '../../hooks/useStudioDialog';
+import { studioRequestError } from '../../lib/studio-errors';
 
 interface Props {
   onClose:          () => void;
@@ -36,12 +40,6 @@ const OM_STATUS_LABELS: Record<string, string> = {
   BUSY: 'Occupé',
   ERROR: 'Erreur',
 };
-
-const OM_RESOLUTIONS: { value: OpenMontageResolution; label: string }[] = [
-  { value: '1920x1080', label: '1920×1080 (16:9)' },
-  { value: '1080x1920', label: '1080×1920 (9:16)' },
-  { value: '1080x1080', label: '1080×1080 (1:1)' },
-];
 
 const RESUME_TYPES = [
   { value: 'auto',      label: 'Automatique (recherche du style le plus proche)' },
@@ -84,6 +82,7 @@ function formatBytes(n: number): string {
 }
 
 export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode, onDone, initialView = 'form' }: Props) {
+  const dialogRef = useStudioDialog(onClose);
   const [view, setView]           = useState<View>(initialView);
   const [url, setUrl]             = useState('');
   const [estimate, setEstimate]   = useState<VideoEstimate | null>(null);
@@ -114,11 +113,11 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   const [omError, setOmError] = useState<string | null>(null);
   const [omTitle, setOmTitle] = useState('DOCTEUR');
   const [omSubtitle, setOmSubtitle] = useState('Local Video Pipeline');
-  const [omResolution, setOmResolution] = useState<OpenMontageResolution>('1920x1080');
-  const [omFps, setOmFps] = useState<24 | 25 | 30>(30);
   const [omDurationSeconds, setOmDurationSeconds] = useState(6);
   const [omJob, setOmJob] = useState<OpenMontageJob | null>(null);
   const [omRenderError, setOmRenderError] = useState<string | null>(null);
+  const [omSubmitting, setOmSubmitting] = useState(false);
+  const omSubmittingRef = useRef(false);
   const omStopPollingRef = useRef<(() => void) | null>(null);
 
   const reloadOmCapabilities = useCallback(async () => {
@@ -127,7 +126,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
       setOmCapabilities(caps);
       setOmError(null);
     } catch (e) {
-      setOmError((e as Error).message);
+      setOmError(studioRequestError(e));
     } finally {
       setOmLoading(false);
     }
@@ -137,9 +136,11 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   useEffect(() => () => { omStopPollingRef.current?.(); }, []);
 
   const startOmRender = useCallback(async () => {
+    if (omSubmittingRef.current) return;
+    omSubmittingRef.current = true; setOmSubmitting(true);
     setOmRenderError(null);
     try {
-      const { jobId } = await cortexClient.startOpenMontageRender({ title: omTitle, subtitle: omSubtitle, resolution: omResolution, fps: omFps, durationSeconds: omDurationSeconds });
+      const { jobId } = await cortexClient.startOpenMontageRender({ title: omTitle, subtitle: omSubtitle, ...OPENMONTAGE_FORMAT, durationSeconds: omDurationSeconds });
       omStopPollingRef.current?.();
       omStopPollingRef.current = startJobPolling(
         () => cortexClient.getOpenMontageJob(jobId),
@@ -148,13 +149,15 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
         () => { void reloadOmCapabilities(); },
       );
     } catch (e) {
-      setOmRenderError((e as Error).message);
+      setOmRenderError(studioRequestError(e));
+    } finally {
+      omSubmittingRef.current = false; setOmSubmitting(false);
     }
-  }, [omTitle, omSubtitle, omResolution, omFps, omDurationSeconds, reloadOmCapabilities]);
+  }, [omTitle, omSubtitle, omDurationSeconds, reloadOmCapabilities]);
 
   const cancelOmRender = useCallback(async () => {
     if (!omJob) return;
-    try { await cortexClient.cancelOpenMontageJob(omJob.jobId); } catch { /* best-effort */ }
+    try { await cortexClient.cancelOpenMontageJob(omJob.jobId); } catch { setOmRenderError('Annulation non confirmée. Réessayez.'); }
   }, [omJob]);
 
   const resetOmRender = useCallback(() => {
@@ -166,11 +169,6 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
 
   const cloudForcedLocal = strictLocalMode || isPrivate;
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   // Resume watching an already-running job, if any, when the modal opens.
   useEffect(() => {
@@ -266,7 +264,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
     background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
   };
   const panelStyle: React.CSSProperties = {
-    width: 560, maxHeight: '84vh', display: 'flex', flexDirection: 'column',
+    width: 'min(760px, calc(100vw - 24px))', maxHeight: '90vh', display: 'flex', flexDirection: 'column',
     background: '#0d0f14', border: '1px solid rgba(255,255,255,0.08)',
     borderRadius: 12, overflow: 'hidden', boxShadow: '0 24px 80px rgba(0,0,0,0.7)',
   };
@@ -282,7 +280,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
     return (
       <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 8 }}>
         {showBack && (
-          <button type="button" onClick={backFn} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#c084fc', display: 'flex', padding: 2 }}>
+          <button type="button" aria-label="Retour" onClick={backFn} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#c084fc', display: 'flex', padding: 2 }}>
             <ChevronLeft size={14} />
           </button>
         )}
@@ -301,7 +299,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
             <History size={14} />
           </button>
         )}
-        <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', display: 'flex' }}>
+        <button type="button" aria-label="Fermer Studio Vidéo" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', display: 'flex' }}>
           <X size={14} />
         </button>
       </div>
@@ -563,7 +561,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   // ── Render view (Phase UX-6) — the real MP4-producing system, previously
   // only reachable via Settings under an unrelated Dashboard status badge.
   // Ported from OpenMontageSettingsTab.tsx with the same backend contract
-  // (one fixed Remotion template, 3-10s, allowlisted resolutions/fps) — no
+  // (one fixed Remotion template, 3-10s, 1920x1080 at 30fps) — no
   // new capability, only a proper entry point. ──
   function renderRender() {
     const cardStyle: React.CSSProperties = { background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 };
@@ -614,31 +612,18 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
             <div style={cardStyle}>
               <div>
                 <div style={omLabelStyle}>Titre</div>
-                <input style={inputStyle} value={omTitle} onChange={e => setOmTitle(e.target.value)} maxLength={120} disabled={isRunning} />
+                <input aria-label="Titre du rendu" style={inputStyle} value={omTitle} onChange={e => setOmTitle(e.target.value)} maxLength={120} disabled={isRunning || omSubmitting} />
               </div>
               <div>
                 <div style={omLabelStyle}>Sous-titre</div>
-                <input style={inputStyle} value={omSubtitle} onChange={e => setOmSubtitle(e.target.value)} maxLength={120} disabled={isRunning} />
+                <input aria-label="Sous-titre du rendu" style={inputStyle} value={omSubtitle} onChange={e => setOmSubtitle(e.target.value)} maxLength={120} disabled={isRunning || omSubmitting} />
               </div>
+              <OpenMontageFormat />
               <div style={{ display: 'flex', gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={omLabelStyle}>Format</div>
-                  <select style={inputStyle} value={omResolution} onChange={e => setOmResolution(e.target.value as OpenMontageResolution)} disabled={isRunning}>
-                    {OM_RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                  </select>
-                </div>
-                <div style={{ width: 90 }}>
-                  <div style={omLabelStyle}>FPS</div>
-                  <select style={inputStyle} value={omFps} onChange={e => setOmFps(Number(e.target.value) as 24 | 25 | 30)} disabled={isRunning}>
-                    <option value={24}>24</option>
-                    <option value={25}>25</option>
-                    <option value={30}>30</option>
-                  </select>
-                </div>
                 <div style={{ width: 110 }}>
                   <div style={omLabelStyle}>Durée (s)</div>
                   <input
-                    type="number" min={3} max={10} style={inputStyle}
+                    aria-label="Durée (s)" type="number" min={3} max={10} style={inputStyle}
                     value={omDurationSeconds}
                     onChange={e => setOmDurationSeconds(Math.min(10, Math.max(3, Number(e.target.value) || 3)))}
                     disabled={isRunning}
@@ -650,7 +635,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
                 type="button"
                 style={{ ...omBtnStyle, justifyContent: 'center', opacity: status === 'READY_LOCAL' ? 1 : 0.5 }}
                 onClick={() => void startOmRender()}
-                disabled={status !== 'READY_LOCAL'}
+                disabled={status !== 'READY_LOCAL' || omSubmitting}
               >
                 <Play size={12} /> Générer localement
               </button>
@@ -659,6 +644,9 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
 
           {omJob && (
             <div style={cardStyle}>
+              <p>Job : {omJob.jobId}</p>
+              {omRenderError && <p role="alert">{omRenderError}</p>}
+              {omJob.status === 'running' && <p>Aperçu disponible après rendu.</p>}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#e2e8f0' }}>
                   {omJob.status === 'running' ? 'Rendu en cours…' : omJob.status === 'done' ? 'Rendu terminé' : omJob.status === 'cancelled' ? 'Rendu annulé' : 'Rendu échoué'}
@@ -671,13 +659,10 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
                 </button>
               )}
               {omJob.status === 'failed' && omJob.error && (
-                <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{omJob.error}</div>
+                <div role="alert" style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{studioRequestError(omJob.error)}</div>
               )}
               {omJob.status === 'done' && omJob.hasArtifact && (
-                <>
-                  <video controls style={{ width: '100%', borderRadius: 6, background: '#000' }} src={cortexClient.getOpenMontageArtifactUrl(omJob.jobId)} />
-                  <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a' }}>output.mp4 — {omJob.width}×{omJob.height} @ {omJob.fps}fps</div>
-                </>
+                <OpenMontageOutput key={omJob.jobId} job={omJob} />
               )}
               {(omJob.status === 'done' || omJob.status === 'failed' || omJob.status === 'cancelled') && (
                 <button type="button" style={omBtnStyle} onClick={resetOmRender}>Nouveau rendu</button>
@@ -691,7 +676,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
 
   return (
     <div style={modalStyle} onClick={onClose}>
-      <div style={panelStyle} onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Studio Vidéo" tabIndex={-1} className="studio-video-panel" style={panelStyle} onClick={e => e.stopPropagation()}>
         {view === 'form' && renderForm()}
         {view === 'progress' && renderProgress()}
         {view === 'history' && renderHistory()}

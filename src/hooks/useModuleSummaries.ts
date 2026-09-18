@@ -7,6 +7,7 @@ import { useIntervalPoll } from './useIntervalPoll';
 import { cortexClient } from '../lib/cortex/client';
 import { metagptRequest, type Mission } from '../lib/metagpt-studio';
 import { investmentRequest, type PaperPortfolio } from '../lib/investment-studio';
+import { listCyberMissions } from '../lib/cyber-audit-studio';
 import type { WidgetStatus } from '../components/hud/StatusIndicator';
 
 export interface ModuleSummary {
@@ -95,6 +96,29 @@ export function useOpenMontageSummary(): ModuleSummary {
     return {
       status: statusMap[data.status] ?? 'unavailable',
       metric: data.status,
+      loading: false,
+      error: null,
+    };
+  }, [data, loading, error]);
+}
+
+const CYBER_STATUS_TO_WIDGET: Record<string, WidgetStatus> = {
+  CREATED: 'idle', READY: 'idle', RUNNING: 'searching', COMPLETED: 'done',
+  CANCELLED: 'error', FAILED: 'error', BLOCKED_BY_POLICY: 'error',
+};
+
+export function useCyberAuditSummary(): ModuleSummary {
+  const { data, loading, error } = useIntervalPoll(() => listCyberMissions(), 15000);
+  return useMemo(() => {
+    if (loading) return { status: 'unavailable', loading: true, error: null };
+    if (error) return { status: 'error', loading: false, error, detail: 'Cyber Audit indisponible' };
+    const missions = data?.missions ?? [];
+    if (missions.length === 0) return { status: 'unavailable', loading: false, error: null, detail: 'Aucune mission' };
+    const latest = missions[0];
+    return {
+      status: CYBER_STATUS_TO_WIDGET[latest.status] ?? 'idle',
+      metric: `${latest.counts.findings} finding${latest.counts.findings === 1 ? '' : 's'}`,
+      detail: latest.title,
       loading: false,
       error: null,
     };
