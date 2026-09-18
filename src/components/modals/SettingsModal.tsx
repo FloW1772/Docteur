@@ -3,7 +3,6 @@ import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, Ey
 import { FreeAiFinder } from '../settings/FreeAiFinder';
 import { NotebookLmSettingsSection } from '../settings/NotebookLmSettingsSection';
 import { BrowserSettingsSection } from '../settings/BrowserSettingsSection';
-import { SherlockSettingsSection } from '../settings/SherlockSettingsSection';
 import { exportAllToServer } from '../../lib/storage';
 import ExternalAgentsPanel from '../panels/ExternalAgentsPanel';
 import { ImagesSettingsTab } from '../settings/ImagesSettingsTab';
@@ -1743,8 +1742,6 @@ export default function SettingsModal({
               <NotebookLmSettingsSection />
 
               <BrowserSettingsSection />
-
-              <SherlockSettingsSection />
 
               {/* Claude / OpenAI — mode selector (abonnement CLI vs clé API) */}
               <div className="flex flex-col gap-2">

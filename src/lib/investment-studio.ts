@@ -109,3 +109,49 @@ export interface InvestmentTimeline {
   undated: TimelineEvent[];
   disclaimer: string;
 }
+
+export const EVENT_TYPES = [
+  'earnings', 'guidance', 'filing', 'dividend', 'buyback',
+  'acquisition', 'product', 'regulatory', 'macro', 'other',
+] as const;
+export type EventType = typeof EVENT_TYPES[number];
+
+// ── Valuation (multiples / DCF / reverse DCF) — backend-computed only,
+// the frontend never recalculates a critical financial figure itself. ──
+
+export interface MultiplesResult {
+  pe: number | null;
+  forwardPe: number | null;
+  evToSales: number | null;
+  evToEbitda: number | null;
+  pFcf: number | null;
+  peg: number | null;
+}
+
+export interface DcfResult {
+  assumptions: { baseFcf: number; growthRate: number; discountRate: number; terminalGrowthRate: number; years: number };
+  projectedCashFlows: { year: number; fcf: number; discountFactor: number; presentValue: number }[];
+  terminalValue: number;
+  presentValueOfTerminalValue: number;
+  sumOfDiscountedCashFlows: number;
+  enterpriseValueEstimate: number;
+}
+
+export interface ReverseDcfResult {
+  impliedGrowthRate: number;
+  iterations: number;
+  assumptions: { targetEnterpriseValue: number; baseFcf: number; discountRate: number; terminalGrowthRate: number; years: number };
+}
+
+// ── Paper portfolio performance metrics ──
+
+export interface PortfolioMetrics {
+  cash: number;
+  totalCostBasis: number;
+  totalMarketValue: number;
+  totalAccountValue: number;
+  totalUnrealizedPnl: number;
+  totalUnrealizedPnlPercent: number | null;
+  positions: { symbol: string; quantity: number; costBasis: number; marketValue: number; unrealizedPnl: number; unrealizedPnlPercent: number | null }[];
+  allocation: { symbol: string; weightPercent: number | null }[];
+}

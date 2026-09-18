@@ -1064,6 +1064,7 @@ export interface SherlockInstallState {
   version:     string | null;
   installedAt: number | null;
   lastError:   string | null;
+  pinnedSha?:  string;
 }
 
 export interface SherlockSearchResult {
@@ -1073,6 +1074,7 @@ export interface SherlockSearchResult {
   profileUrl: string;
   status: 'found' | 'absent' | 'invalid' | 'error';
   responseTime: number | null;
+  metadata?: { source?: string; untrusted?: boolean; pinnedSha?: string };
 }
 
 export interface SherlockJob {
@@ -1083,7 +1085,7 @@ export interface SherlockJob {
   duration: number;
   current: number;
   total: number;
-  summary:   { results?: SherlockSearchResult[]; error?: string; exitCode?: number } | null;
+  summary:   { results?: SherlockSearchResult[]; error?: string; exitCode?: number; found?: number; absent?: number; errors?: number } | null;
 }
 
 export interface VoiceSettings {
@@ -3804,9 +3806,10 @@ export const cortexClient = {
     return body;
   },
 
-  async searchSherlock(username: string): Promise<{ jobId: string; username: string }> {
+  async searchSherlock(username: string, options?: { timeoutMs?: number }): Promise<{ jobId: string; username: string }> {
     const res = await apiFetch('/api/sherlock/search', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) }),
     });
     const body = await res.json();
     if (!res.ok) throw new Error(body?.error ?? `Sherlock search HTTP ${res.status}`);

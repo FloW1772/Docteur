@@ -57,6 +57,8 @@ Détails complets dans la section [Installation](#-installation-détaillée) plu
 
 - [Qu'est-ce que Docteur ?](#-quest-ce-que-docteur-)
 - [Fonctionnalités principales](#-fonctionnalités-principales)
+- [Cortex Command Center](#-cortex-command-center)
+- [Studios (MetaGPT, Sherlock, Investment, Vidéo)](#-studios-metagpt-sherlock-investment-vidéo)
 - [Architecture](#-architecture)
 - [Providers IA](#-providers-ia)
 - [Routage IA](#-routage-ia)
@@ -122,7 +124,7 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Prompt Generator : aide à la rédaction de prompts avec sélection de provider/modèle.
 - Import/analyse de CV (PDF) et génération de contenu pour candidature.
 - **Navigateur configurable** : choix du navigateur utilisé pour ouvrir les liens externes depuis Docteur (détection des navigateurs réellement installés, ou chemin personnalisé), indépendant du navigateur affichant Docteur lui-même.
-- **Sherlock OSINT** — 🧪 optionnel, non installé par défaut. Intégration de l'outil officiel [sherlock-project](https://github.com/sherlock-project/sherlock) (MIT) pour rechercher l'existence d'un nom d'utilisateur public sur des sites tiers — jamais de mot de passe, cookie, compte privé, force brute ni contournement d'authentification. Installation déclenchée uniquement par toi (Paramètres → Sherlock OSINT) ; les résultats sauvegardés en neurone sont privés/locaux par défaut.
+- **Sherlock OSINT** — 🧪 optionnel, non installé par défaut. Intégration de l'outil officiel [sherlock-project](https://github.com/sherlock-project/sherlock) (MIT) pour rechercher l'existence d'un nom d'utilisateur public sur des sites tiers — jamais de mot de passe, cookie, compte privé, force brute ni contournement d'authentification. Installation déclenchée uniquement par toi depuis le Studio Sherlock dédié ; les résultats sauvegardés en neurone sont privés/locaux par défaut. Voir [Studios](#-studios-metagpt-sherlock-investment-vidéo).
 
 ### 🎥 Multimédia
 
@@ -130,11 +132,59 @@ Docteur ne fonctionne pas intégralement hors ligne dès l'installation : sans O
 - Analyse d'image 100 % locale via Ollama (`llava` par défaut), avec bascule OCR en cas de dépassement de délai.
 - Reconnaissance de gestes par caméra — 🧪 expérimental.
 
+## 🧠 Cortex Command Center
+
+L'interface principale s'organise autour d'un noyau central (« Cortex », rendu en 3D/Three.js) qui reflète l'état courant du système (repos, écoute, réflexion, recherche, génération, erreur — toujours accompagné d'un texte, jamais uniquement d'une couleur).
+
+- **Mode Focus** : le Cortex et la barre de commande occupent l'essentiel de l'écran, pour une utilisation concentrée.
+- **Mode Dashboard** : les widgets des quatre Studios (MetaGPT, Sherlock, Investment, Vidéo) et des connecteurs s'affichent autour du Cortex, avec un rail d'actions rapides et d'activité récente.
+- **Command Bar** : zone de saisie unique en bas d'écran pour interroger Docteur, avec retour vocal optionnel.
+
+Détails techniques : `reports/CORTEX_COMMAND_CENTER_V2_2026-09.md`.
+
+## 🧰 Studios (MetaGPT, Sherlock, Investment, Vidéo)
+
+Quatre espaces de travail dédiés, accessibles depuis le Dashboard ou le Centre d'aide (`F1`).
+
+### MetaGPT Studio
+
+Assistant de planification et génération de code local (Ollama), organisé en pipeline explicite : **Brief → PRD/Design/Tasks → Génération de code texte → Diff → Approbation humaine → Application contrôlée**. Chaque étape affiche ses artefacts (documents de planification, fichiers générés, diff complet), les éventuels signalements de sécurité et demandes de dépendances détectées, ainsi qu'un historique des transitions.
+
+> [!IMPORTANT]
+> Pas de Terminal, pas de Bash, pas de Git autonome, pas d'accès Internet externe, pas d'exécution du code généré depuis l'interface. Aucune approbation ni application automatique : l'application d'un diff nécessite une approbation humaine explicite du hash exact et de la liste de fichiers, distincte de l'action d'application elle-même.
+
+### Sherlock Studio
+
+Recherche de la présence d'un pseudonyme public sur un nombre restreint de sites (3 par défaut), via une passerelle Docteur qui isole entièrement l'outil [sherlock-project](https://github.com/sherlock-project/sherlock) : réseau limité aux adresses publiques, système de fichiers cloisonné par recherche, code source figé par hash vérifié à chaque appel. Une recherche à la fois, 3 lancements par minute.
+
+> [!NOTE]
+> Isolation au niveau applicatif (réseau/filesystem/hash de code) : oui. Sandbox au niveau du système d'exploitation Windows : non — Sherlock s'exécute sous le même compte utilisateur que Docteur.
+
+Aucun historique de recherches persistant à ce jour (les jobs vivent en mémoire le temps de la session du serveur backend).
+
+### Investment Studio
+
+Analyse financière et simulation — recherche de sources, saisie de données fondamentales, valorisation (multiples, DCF, reverse-DCF avec hypothèses toujours visibles), scoring transparent en 5 catégories (jamais une recommandation d'achat/vente), chronologie d'événements sourcés, et un **portefeuille simulé** (paper trading) avec suivi de performance (valeur de compte, P&L latent, allocation).
+
+> [!IMPORTANT]
+> Aucun broker réel, aucun ordre réel, aucune transaction réelle, aucune donnée de marché en temps réel. Toute action de portefeuille est explicitement marquée **PAPER** ; les tentatives d'action réelle (achat/vente/ordre réel) sont refusées par le serveur, pas seulement masquées côté interface.
+
+### Studio Vidéo
+
+Deux capacités distinctes, réunies dans un seul Studio à onglets :
+
+- **Transcription** : résumé de vidéo longue (télécharge l'audio, transcrit, résume en texte) — ne produit jamais de fichier vidéo.
+- **Rendu (MP4)** : génération locale d'un clip vidéo court (3 à 10 secondes) via un moteur Remotion local, avec aperçu du résultat.
+
+Il n'existe pas aujourd'hui de montage multi-clips ni de ligne de temps éditable dans Docteur (le moteur de rendu local ne pilote qu'un modèle de clip fixe) ; cette page ne présente donc pas de fonctionnalité de « timeline » qui n'existerait pas réellement.
+
+Détails techniques et matrice de capacités des 4 Studios : `reports/STUDIOS_UX_V2_2026-09.md`.
+
 ## 🏗️ Architecture
 
 **Frontend** — React + TypeScript, servi par Vite. Communique avec le backend via une API HTTP locale (`http://localhost:3001` par défaut).
 
-**Cortex Server** — Serveur Node.js (framework [Hono](https://hono.dev)), organisé en routes par fonctionnalité (neurones, recherche, vidéo, agents, etc.).
+**Cortex Server** — Serveur Node.js (framework [Hono](https://hono.dev)), organisé en routes par fonctionnalité (neurones, recherche, vidéo, agents, MetaGPT, Sherlock, Investment, OpenMontage, connecteurs, etc.), chacune avec sa propre politique de sécurité (policy/gateway dédiée quand le module y touche à des ressources externes ou sensibles).
 
 **Données** — SQLite (`better-sqlite3`) pour les neurones, réglages et journaux ; [LanceDB](https://lancedb.com/) pour l'index vectoriel utilisé par la recherche sémantique.
 
@@ -317,6 +367,7 @@ Aucun chemin ni identifiant personnel n'est indiqué ici : l'emplacement exact d
 - Les journaux (logs) masquent automatiquement les clés et tokens détectés.
 - Les appels aux CLI Claude Code et Codex, à Sherlock OSINT et à la sélection de navigateur se font sans interprétation shell des arguments dynamiques (`shell:false` systématique).
 - Contrôle de taille et de format sur les fichiers importés.
+- Chaque Studio à risque applique sa propre politique dédiée plutôt qu'un contrôle générique : MetaGPT n'applique jamais un diff sans approbation humaine explicite du hash et de la liste de fichiers exacts (aucune application automatique) ; Sherlock isole réseau/filesystem et vérifie le hash du code source à chaque appel ; Investment refuse au niveau serveur toute action qui ne serait pas explicitement marquée `PAPER_BUY`/`PAPER_SELL` (aucun ordre réel possible même en contournant l'interface).
 
 ### Verrou de confidentialité (`egress_policy`)
 
@@ -382,6 +433,8 @@ Un Notebook regroupe des sources déjà existantes dans Docteur (neurones) sans 
 | Couverture end-to-end | 🚧 Partielle |
 
 Les suites couvrent notamment : fallback/routage IA, providers, résolution sécurisée des CLI Codex/Claude, mode Strict Local, import de fichiers, agents externes, FreeLLMAPI, transcription vidéo, verrou de confidentialité/egress (certification dédiée), connecteurs OAuth (mocks), mémoire adaptative, Notebook local (retrieval scopé, citations), NotebookLM (zéro appel réseau certifié), navigateur configurable (validation d'URL, injection), Sherlock OSINT (validation d'entrée, `shell:false`). Certaines suites end-to-end (navigateur, serveur de développement déjà lancé) ne sont pas exécutées automatiquement et nécessitent un environnement complet.
+
+Côté frontend, le Cortex Command Center et les quatre Studios disposent chacun de leur propre suite de tests navigateur Playwright isolée (`scripts/test-*-browser.mjs`, données mockées via `page.route`, jamais d'appel au serveur réel) — détails dans `reports/CORTEX_COMMAND_CENTER_V2_2026-09.md` et `reports/STUDIOS_UX_V2_2026-09.md`.
 
 Les tests unitaires/intégration ne remplacent pas une validation end-to-end complète.
 
@@ -475,7 +528,12 @@ Ce message signifie qu'aucun endpoint valide n'a été renseigné dans les régl
 | NotebookLM (Google) | ⚙️ préparation uniquement, aucun appel actif |
 | Connecteurs YouTube / OneDrive | 🚧 backend prêt, aucune UI, aucun compte réel testé |
 | Navigateur configurable | ✅ |
-| Sherlock OSINT | 🧪 optionnel, non installé par défaut |
+| Cortex Command Center (Focus/Dashboard, widgets, Command Bar) | ✅ |
+| MetaGPT Studio (planification, code texte, diff, approbation humaine) | ✅ |
+| Sherlock OSINT / Studio dédié | 🧪 optionnel, non installé par défaut, pas d'historique persistant |
+| Investment Studio (fondamentaux, valorisation, scoring, paper trading) | ✅ analyse/simulation uniquement |
+| Studio Vidéo — transcription | ✅ |
+| Studio Vidéo — rendu MP4 local | ✅ un seul modèle de clip, pas de montage multi-clips |
 | Entraînement local (LoRA/QLoRA) | 📋 étudié, non implémenté (voir `reports/`) |
 | Gestes caméra | 🧪 |
 | FreeLLMAPI | ⚙️ nécessite configuration |
@@ -495,7 +553,7 @@ Docteur est un projet personnel activement développé — il n'est pas présent
 - **Connecteurs YouTube et OneDrive** : le backend (OAuth, synchronisation, déduplication, stockage sécurisé) est implémenté et testé, mais **aucune interface de connexion n'est encore disponible dans les Paramètres**, et aucun compte réel n'a été testé (nécessite des identifiants d'application Google Cloud / Azure fournis par l'utilisateur). L'API officielle YouTube ne permet pas d'accéder à l'historique de visionnage complet (limitation de Google, pas de contournement prévu). OneDrive : formats réellement importables limités à `.md`, `.txt`, `.pdf`, `.xlsx` (pas `.docx`, aucune dépendance de lecture pour ce format actuellement).
 - **NotebookLM (Google)** : uniquement une préparation d'architecture. Une clé API peut être enregistrée, mais aucun appel réel n'est jamais déclenché — c'est un espace réservé pour une intégration future, pas une fonctionnalité active.
 - **Notebook local** : seuls le résumé global et les questions/réponses avec citations sont disponibles. Points clés, FAQ, fiche d'étude, flashcards, chronologie, glossaire et comparaison de sources ne sont pas implémentés.
-- **Sherlock OSINT** : outil tiers optionnel (non développé par Docteur), à installer explicitement depuis les Paramètres — recherche par nom d'utilisateur public uniquement.
+- **Sherlock OSINT** : outil tiers optionnel (non développé par Docteur), à installer explicitement depuis le Studio Sherlock dédié — recherche par nom d'utilisateur public uniquement, aucun historique de recherches persistant (les jobs vivent en mémoire le temps de la session serveur).
 - **Entraînement local (LoRA/QLoRA)** : étudié (voir `reports/MASTER_PHASE_8_TRAINING_FEASIBILITY.md`) mais non implémenté — le RAG et la mémoire adaptative existants couvrent mieux les besoins identifiés que ne le ferait un fine-tuning sur le matériel typique visé par Docteur.
 
 ## 🗺️ Roadmap

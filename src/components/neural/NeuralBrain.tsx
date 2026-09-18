@@ -755,7 +755,7 @@ class OrbitalBrain {
 
     // Wide corona — barely perceptible stellar corona
     this.centralHalo = new THREE.Mesh(
-      new THREE.SphereGeometry(1.1, 20, 20),
+      new THREE.SphereGeometry(1.14, 20, 20),
       new THREE.MeshPhysicalMaterial({
         color: 0xfff0e0,
         emissive: 0xfff0e0,
@@ -782,7 +782,7 @@ class OrbitalBrain {
     this.plasmaLayers = [
       this.buildParticleLayer({ count: 55, minRadius: 0.12, maxRadius: 0.24, size: 0.016, opacity: 0.28, color: 0x0f1a2e, drift: 0.0008, swirl: 0.0007, spin: new THREE.Vector3(0.002, 0.001, 0.001) }),
       this.buildParticleLayer({ count: 45, minRadius: 0.18, maxRadius: 0.36, size: 0.020, opacity: 0.24, color: 0x253040, drift: 0.001, swirl: 0.0009, spin: new THREE.Vector3(-0.001, 0.0013, 0.001) }),
-      this.buildParticleLayer({ count: 35, minRadius: 0.26, maxRadius: 0.48, size: 0.026, opacity: 0.18, color: 0xe8e0d4, drift: 0.0012, swirl: 0.0011, spin: new THREE.Vector3(0.001, -0.0007, 0.0014) }),
+      this.buildParticleLayer({ count: this.compact ? 35 : 39, minRadius: 0.26, maxRadius: 0.50, size: 0.026, opacity: 0.20, color: 0xe8e0d4, drift: 0.0012, swirl: 0.0011, spin: new THREE.Vector3(0.001, -0.0007, 0.0014) }),
     ];
 
     this.plasmaLayers.forEach((layer, index) => {
@@ -1775,6 +1775,16 @@ class OrbitalBrain {
 
   private animate = (time = 0): void => {
     this.animId = requestAnimationFrame(this.animate);
+    // Pause real WebGL work while the tab is hidden — rAF itself is already
+    // throttled by the browser in background tabs, but skipping the
+    // render/uniform-update work entirely (rather than relying on that
+    // throttle alone) avoids wasted GPU/CPU work and, on return, avoids a
+    // huge `delta` spike from the elapsed hidden time (lastFrame is reset
+    // below so the next visible frame computes a normal delta).
+    if (document.hidden) {
+      this.lastFrame = 0;
+      return;
+    }
     const t = time * 0.001;
     const delta = this.lastFrame === 0 ? 1 / 60 : Math.max(0.001, (time - this.lastFrame) / 1000);
     this.lastFrame = time;
@@ -1794,8 +1804,8 @@ class OrbitalBrain {
     this.outerRingGroup.scale.setScalar(1 + Math.sin(t * 1.45 + 1.1) * 0.008);
 
     if (this.centralHalo && this.centralAura) {
-      (this.centralHalo.material as THREE.MeshPhysicalMaterial).opacity = 0.022 + Math.sin(t * 2.0) * 0.006 + this.wakePulse * 0.02;
-      (this.centralAura.material as THREE.MeshPhysicalMaterial).opacity = 0.025 + Math.sin(t * 1.7 + 0.5) * 0.005 + this.wakePulse * 0.015;
+      (this.centralHalo.material as THREE.MeshPhysicalMaterial).opacity = this.reducedMotion ? 0.029 : 0.029 + Math.sin(t * 0.65) * 0.004 + this.wakePulse * 0.02;
+      (this.centralAura.material as THREE.MeshPhysicalMaterial).opacity = this.reducedMotion ? 0.025 : 0.025 + Math.sin(t * 1.7 + 0.5) * 0.005 + this.wakePulse * 0.015;
     }
     if (this.centralGlass && this.centralGlass.material instanceof THREE.MeshPhysicalMaterial) {
       this.centralGlass.material.emissiveIntensity = 0.38 + this.wakePulse * 0.06 + Math.sin(t * 1.5) * 0.02;
@@ -1866,8 +1876,9 @@ class OrbitalBrain {
       }
     });
 
-    // Plasma layers — always update (critical for core look)
+    // Keep the core dust static when reduced motion is requested.
     this.plasmaLayers.forEach((layer, index) => {
+      if (this.reducedMotion) return;
       layer.points.rotation.x = Math.sin(t * 0.18 + index) * 0.08;
       layer.points.rotation.y = t * (0.12 + index * 0.04);
       this.updateParticleLayer(layer, t, delta);

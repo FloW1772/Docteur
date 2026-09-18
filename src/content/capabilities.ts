@@ -16,7 +16,7 @@ export interface CapabilitySection {
 export type FeatureKey =
   | 'capture' | 'console' | 'notebook' | 'teacher' | 'agents' | 'skills'
   | 'images' | 'kiwix' | 'todo' | 'backup' | 'corpus' | 'prompt-generator'
-  | 'video-summary' | 'metagpt' | 'investment'
+  | 'video-summary' | 'metagpt' | 'investment' | 'sherlock'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
   | 'settings-external' | 'settings-connections';
@@ -118,7 +118,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     emoji: '🕵️',
     title: 'OSINT',
     items: [
-      { name: 'Sherlock', description: 'Recherche de pseudonyme sur des sites publics via Docteur (onglet Modèles). États, durée, profils trouvés ou absents et annulation. Le pseudonyme est transmis aux sites consultés.', feature: 'settings-models', state: 'disponible', keywords: ['pseudonyme', 'OSINT', 'profil'] },
+      { name: 'Studio Sherlock', description: 'Recherche de pseudonyme sur des sites publics (GitHub, Reddit, GitLab par défaut). États, durée, profils trouvés ou absents, annulation. Une correspondance ne prouve pas une identité — résultats externes non vérifiés. Une recherche à la fois, 3 départs par minute.', feature: 'sherlock', state: 'local', keywords: ['pseudonyme', 'osint', 'profil', 'username', 'recherche'] },
     ],
   },
 ];

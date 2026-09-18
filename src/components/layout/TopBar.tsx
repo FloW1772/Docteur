@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Activity, Bot, Clapperboard, Cog, GraduationCap, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2, Library, Image as ImageIcon, NotebookText } from 'lucide-react';
+import { Activity, Bot, Clapperboard, Cog, GraduationCap, HardDrive, HelpCircle, Map, Mountain, ScrollText, Search, Upload, Mic, MicOff, Camera, CameraOff, Zap, ListTodo, Monitor, MonitorOff, Wand2, Library, Image as ImageIcon, NotebookText, EllipsisVertical } from 'lucide-react';
 import type { VoiceState } from '../../hooks/useVoiceActivation';
 import type { GestureState } from '../../hooks/useGestureCamera';
 import type { ScreenShareState } from '../../hooks/useScreenShare';
@@ -89,10 +89,35 @@ export default function TopBar({
   const popoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offline = isOnline === false;
 
+  // ── "More" overflow menu — groups the less-frequently-used actions so the
+  // TopBar doesn't read as a wall of ~20 identical icon buttons (mission
+  // requirement 6: reduce visual density without removing any action).
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    function onPointerDown(e: PointerEvent) {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setMoreOpen(false);
+        moreRef.current?.querySelector<HTMLButtonElement>('[aria-haspopup]')?.focus();
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [moreOpen]);
 
   // Clear popover timer on unmount
   useEffect(() => () => { if (popoverTimer.current) clearTimeout(popoverTimer.current); }, []);
@@ -139,7 +164,7 @@ export default function TopBar({
         >
           DOCTEUR
         </span>
-        <span className="font-mono text-xs" style={{ color: '#5ee7ff', letterSpacing: '0.2em' }}>
+        <span className="topbar-version font-mono text-xs" style={{ color: '#5ee7ff', letterSpacing: '0.2em' }}>
           v4.7
         </span>
       </div>
@@ -150,7 +175,7 @@ export default function TopBar({
           <div className="topbar-heartbeat" aria-hidden="true" />
 
           {/* Neural active (always) */}
-          <span className="font-mono text-xs tracking-[0.24em]" style={{ color: '#5ee7ff' }}>
+          <span className="topbar-neural-label font-mono text-xs tracking-[0.24em]" style={{ color: '#5ee7ff' }}>
             NEURAL ACTIVE
           </span>
 
@@ -183,7 +208,7 @@ export default function TopBar({
             </span>
           )}
 
-          <span className="font-mono text-xs tracking-[0.2em]" style={{ color: '#7a6c9a' }}>
+          <span className="topbar-page-count font-mono text-xs tracking-[0.2em]" style={{ color: '#9daebb' }}>
             {pageCount} NEURONES
           </span>
         </div>
@@ -303,7 +328,7 @@ export default function TopBar({
           );
         })()}
 
-        {voiceEnabled && (() => {
+        {(() => {
           const VOICE_TITLES: Record<string, string> = {
             idle:           'Activer le micro (Alt+M)',
             'wake-listening': 'En écoute — dites "Hey Docteur"',
@@ -322,7 +347,8 @@ export default function TopBar({
             <button
               type="button"
               className={`topbar-action topbar-action--icon${voiceState === 'recording' ? ' topbar-action--recording' : ''}`}
-              title={VOICE_TITLES[voiceState] ?? ''}
+              title={voiceEnabled ? VOICE_TITLES[voiceState] ?? '' : 'Voix désactivée dans les paramètres'}
+              disabled={!voiceEnabled}
               onClick={onVoiceClick}
               style={voiceColor ? { color: voiceColor } : undefined}
             >
@@ -331,26 +357,9 @@ export default function TopBar({
           );
         })()}
 
-        <button className="topbar-action" type="button" title="Ouvrir la console de recherche (Ctrl+L)" onClick={onSearchOpen}>
+        <button className="topbar-action topbar-search" type="button" title="Ouvrir la console de recherche (Ctrl+L)" onClick={onSearchOpen}>
           <Search size={12} />
           <span>CHERCHER - Ctrl+L</span>
-        </button>
-
-        <button className="topbar-action" type="button" title="Capturer une URL ou une note" onClick={onCaptureOpen}>
-          <Upload size={12} />
-          <span>CAPTURER</span>
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Backup & restauration" onClick={onBackupOpen}>
-          <HardDrive size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Corpus de référence (survie, premiers secours…)" onClick={onCorpusOpen}>
-          <Mountain size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Journal d'activité" onClick={onActivityLogOpen}>
-          <ScrollText size={12} />
         </button>
 
         {onActivityPanelOpen && (
@@ -376,40 +385,6 @@ export default function TopBar({
             )}
           </button>
         )}
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Agents automatiques" onClick={onAgentsOpen}>
-          <Bot size={12} />
-        </button>
-
-        {onVideoSummaryOpen && (
-          <button className="topbar-action topbar-action--icon" type="button" title="Résumé de vidéo longue" onClick={onVideoSummaryOpen}>
-            <Clapperboard size={12} />
-          </button>
-        )}
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Compétences à la demande" onClick={onSkillsOpen}>
-          <Zap size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Générateur de prompts" onClick={onPromptGeneratorOpen}>
-          <Wand2 size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Bibliothèque (archives ZIM hors-ligne)" onClick={onKiwixOpen}>
-          <Library size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Professeur (apprentissage & révision)" onClick={onTeacherOpen}>
-          <GraduationCap size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Notebook local (documents & questions/réponses)" onClick={onNotebookOpen}>
-          <NotebookText size={12} />
-        </button>
-
-        <button className="topbar-action topbar-action--icon" type="button" title="Générateur d'images" onClick={onImageGeneratorOpen}>
-          <ImageIcon size={12} />
-        </button>
 
         <button
           className="topbar-action topbar-action--icon"
@@ -437,13 +412,70 @@ export default function TopBar({
           <Cog size={12} />
         </button>
 
-        <button className="topbar-action topbar-action--icon" type="button" title="Roadmap du projet" onClick={onRoadmapOpen}>
-          <Map size={12} />
-        </button>
+        {/* "More" overflow menu — groups the less-frequently-used actions
+            (mission requirement 6: reduce visual density, keep every action
+            reachable, never add a permanent 21st inline button). */}
+        <div className="topbar-more" ref={moreRef}>
+          <button
+            className={`topbar-action topbar-action--icon${moreOpen ? ' topbar-action--active' : ''}`}
+            type="button"
+            title="Plus d'actions"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen(o => !o)}
+          >
+            <EllipsisVertical size={12} />
+          </button>
 
-        <button className="topbar-action topbar-action--icon" type="button" title="Aide — Capacités de Docteur (F1)" onClick={onHelpOpen}>
-          <HelpCircle size={12} />
-        </button>
+          {moreOpen && (
+            <div className="topbar-more-menu" role="menu">
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onCaptureOpen(); setMoreOpen(false); }}>
+                <Upload size={13} /> Capturer
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onBackupOpen(); setMoreOpen(false); }}>
+                <HardDrive size={13} /> Backup & restauration
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onCorpusOpen(); setMoreOpen(false); }}>
+                <Mountain size={13} /> Corpus de référence
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onActivityLogOpen(); setMoreOpen(false); }}>
+                <ScrollText size={13} /> Journal d'activité
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onAgentsOpen(); setMoreOpen(false); }}>
+                <Bot size={13} /> Agents automatiques
+              </button>
+              {onVideoSummaryOpen && (
+                <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onVideoSummaryOpen(); setMoreOpen(false); }}>
+                  <Clapperboard size={13} /> Résumé de vidéo
+                </button>
+              )}
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onSkillsOpen(); setMoreOpen(false); }}>
+                <Zap size={13} /> Compétences à la demande
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onPromptGeneratorOpen(); setMoreOpen(false); }}>
+                <Wand2 size={13} /> Générateur de prompts
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onKiwixOpen(); setMoreOpen(false); }}>
+                <Library size={13} /> Bibliothèque hors-ligne
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onTeacherOpen(); setMoreOpen(false); }}>
+                <GraduationCap size={13} /> Professeur
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onNotebookOpen(); setMoreOpen(false); }}>
+                <NotebookText size={13} /> Notebook local
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onImageGeneratorOpen(); setMoreOpen(false); }}>
+                <ImageIcon size={13} /> Générateur d'images
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onRoadmapOpen(); setMoreOpen(false); }}>
+                <Map size={13} /> Roadmap du projet
+              </button>
+              <button className="topbar-more-item" type="button" role="menuitem" onClick={() => { onHelpOpen(); setMoreOpen(false); }}>
+                <HelpCircle size={13} /> Aide (F1)
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

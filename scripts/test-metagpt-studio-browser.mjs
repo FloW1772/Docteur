@@ -9,7 +9,7 @@ const check = value => { assert.ok(value); assertions++; };
 const harnessHtml = '<div id="root"></div><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;const {mount} = await import("/scripts/metagpt-studio-harness.jsx");mount();</script>';
 const watchdog = setTimeout(() => { console.error('MG6 browser deadline'); void browser?.close(); void server?.close(); process.exitCode = 1; }, real ? 360000 : 60000);
 try {
-  server = await createServer({ configFile: false, plugins: [react(), { name: 'mg6-harness', configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url?.split('?')[0] !== '/__metagpt_test') return next(); res.setHeader('Content-Type', 'text/html'); res.end(harnessHtml); }); } }], optimizeDeps: { entries: ['scripts/metagpt-studio-harness.jsx'] }, server: { host: '127.0.0.1', port: 5197, strictPort: true, hmr: false }, logLevel: 'error' });
+  server = await createServer({ configFile: false, plugins: [react(), { name: 'mg6-harness', configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url?.split('?')[0] !== '/__metagpt_test') return next(); res.setHeader('Content-Type', 'text/html'); res.end(harnessHtml); }); } }], optimizeDeps: { entries: ['scripts/metagpt-studio-harness.jsx'] }, server: { watch: null, host: '127.0.0.1', port: 5197, strictPort: true, hmr: false }, logLevel: 'error' });
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
@@ -51,13 +51,20 @@ try {
   await page.getByRole('button', { name: 'Démarrer', exact: true }).click();
   await page.getByText('État : PLANNING', { exact: true }).waitFor(); assertions++;
   await page.getByText('État : TASKS_READY', { exact: true }).waitFor(); assertions++;
-  for (const name of ['PRD', 'Design', 'Tasks']) { await page.locator('summary').filter({ hasText: new RegExp(`^${name}$`) }).waitFor(); assertions++; }
+  // PRD/Design/Tasks now live under their own tabs (Phase UX-3 restructure).
+  for (const [tabName, summaryName] of [['PRD', 'PRD'], ['DESIGN', 'Design'], ['TASKS', 'Tasks']]) {
+    await page.getByRole('tab', { name: tabName, exact: true }).click();
+    await page.locator('summary').filter({ hasText: new RegExp(`^${summaryName}$`) }).waitFor();
+    assertions++;
+  }
   await page.reload(); await open(); await page.getByText('État : TASKS_READY', { exact: true }).waitFor(); assertions++;
   await page.getByRole('button', { name: 'Générer le code texte', exact: true }).click();
   await page.getByText('État : CODE_READY', { exact: true }).waitFor();
+  await page.getByRole('tab', { name: 'CODE', exact: true }).click();
   await page.getByText('Code — sample.js', { exact: true }).waitFor(); assertions++;
   await page.getByRole('button', { name: 'Préparer le diff', exact: true }).click();
   await page.getByText('État : AWAITING_APPROVAL', { exact: true }).waitFor();
+  await page.getByRole('tab', { name: 'DIFF', exact: true }).click();
   await page.getByText('Diff complet', { exact: true }).waitFor(); assertions++;
   check(await page.getByRole('button', { name: 'Appliquer', exact: true }).isDisabled());
   check(await page.getByRole('button', { name: 'Approuver CE diff', exact: true }).isEnabled());
@@ -71,6 +78,20 @@ try {
     await page.reload(); await open(); await page.getByRole('alert').filter({ hasText: 'BLOCKED_BY_POLICY' }).waitFor();
     check(await page.getByRole('button', { name: 'Approuver CE diff', exact: true }).isDisabled());
     check(await page.getByRole('button', { name: 'Appliquer', exact: true }).isDisabled());
+
+    // SECURITY tab now surfaces findings with a readable classification chip
+    // instead of a raw JSON dump (Phase UX-3 requirement 6).
+    await page.getByRole('tab', { name: 'SECURITY', exact: true }).click();
+    await page.getByText('BLOCKED', { exact: true }).waitFor();
+    await page.getByText('eval denied', { exact: false }).waitFor();
+    assertions++;
+
+    // DEPENDENCIES tab: empty state shown when no dependency requests exist,
+    // never fabricated.
+    await page.getByRole('tab', { name: 'DEPENDENCIES', exact: true }).click();
+    await page.getByText('Aucune dépendance demandée.', { exact: true }).waitFor();
+    assertions++;
+
     await page.getByRole('button', { name: 'Annuler', exact: true }).click(); await page.getByText('État : CANCELLED', { exact: true }).waitFor(); check(cancelled === 1);
   }
   check(errors.length === 0);

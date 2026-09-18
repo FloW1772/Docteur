@@ -230,6 +230,74 @@ select:focus-visible {
   padding: 0;
 }
 
+.topbar-action--active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(94, 231, 255, 0.1);
+}
+
+/* ── TopBar "More" overflow menu ──────────────────────────────────────────
+   Groups rarely-used actions behind one entry point (mission requirement 6:
+   reduce visual density without removing functionality or adding a
+   permanent 21st button). */
+
+.topbar-more {
+  position: relative;
+}
+
+.topbar-more-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 220px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(10, 8, 20, 0.92);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  animation: topbar-more-in 0.15s ease-out;
+}
+
+@keyframes topbar-more-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.topbar-more-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topbar-more-item:hover,
+.topbar-more-item:focus-visible {
+  background: rgba(94, 231, 255, 0.08);
+  color: var(--cyan);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-more-menu {
+    animation: none;
+  }
+}
+
 .sidebar-hud {
   height: 100%;
   background: rgba(10, 8, 20, 0.5);
@@ -1551,4 +1619,1163 @@ select:focus-visible {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ── HUD Command Center V2 — generic widget primitives ──────────────────────
+   Reuses the same .glass surface, --border/--text-dim tokens and color
+   vocabulary already established by .activity-panel* — no new colors
+   invented. Kept deliberately sober per mission direction ("Jarvis
+   professionnel", not "cyberpunk arcade"): no permanent glow, no gradient
+   overload, borders stay thin and near-transparent. */
+
+:root {
+  --hud-bg: linear-gradient(145deg, rgba(17, 32, 45, .96), rgba(8, 17, 29, .94));
+  --hud-border: rgba(128, 182, 201, .2);
+  --hud-glow: rgba(94, 231, 255, .09);
+  --hud-shadow: 0 12px 32px rgba(0, 0, 0, .24), inset 0 1px rgba(207, 238, 255, .035);
+  --hud-radius: 12px;
+  --hud-muted: #9daebb;
+  --hud-accent: #8bdde7;
+}
+
+.hud2-panel {
+  border-radius: var(--hud-radius);
+  padding: 12px;
+  background: var(--hud-bg);
+  border-color: var(--hud-border);
+  box-shadow: var(--hud-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: border-color 200ms ease;
+}
+
+.hud2-panel--compact {
+  padding: 10px;
+}
+
+.hud2-panel-title {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--hud-muted);
+  margin: 0 0 8px;
+  text-transform: none;
+}
+
+/* ── StatusIndicator ── */
+
+.hud2-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+}
+
+.hud2-status--compact {
+  font-size: 10px;
+}
+
+.hud2-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.hud2-status-label {
+  white-space: nowrap;
+}
+
+/* ── ModuleWidget ── */
+
+.hud2-module-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hud2-module-widget--active {
+  border-color: rgba(94, 231, 255, 0.4);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(94, 231, 255, 0.12);
+}
+
+.hud2-module-widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hud2-module-widget-name {
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.hud2-module-widget-metric {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.hud2-module-widget-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud2-module-widget-loading {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.hud2-module-widget-error {
+  font-size: 11px;
+  color: #ff4d58;
+  margin: 0;
+}
+
+.hud2-module-widget-open {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--cyan);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.hud2-module-widget-open:hover,
+.hud2-module-widget-open:focus-visible {
+  background: rgba(94, 231, 255, 0.08);
+}
+
+/* ── QuickAction ── */
+
+.hud2-quick-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hud2-quick-action:hover,
+.hud2-quick-action:focus-visible {
+  background: rgba(94, 231, 255, 0.06);
+  border-color: var(--cyan);
+}
+
+.hud2-quick-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── ActivityItem ── */
+
+.hud2-activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(61, 255, 170, 0.08);
+}
+
+.hud2-activity-item:last-child {
+  border-bottom: none;
+}
+
+.hud2-activity-item-module {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.hud2-activity-item-label {
+  color: var(--text-main);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud2-activity-item-time {
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* ── Dashboard mode: corner composition ──────────────────────────────────
+   V2.1: the 4 primary modules dock to the 4 corners around the central
+   Cortex (mission requirement 4 — "une vraie composition autour de lui"),
+   a secondary rail (Connecteurs + Actions rapides + Activité récente) docks
+   top-right. Desktop (>=1024px): full corner spread. Tablet (768-1023px):
+   corners narrow. Mobile (<768px): hidden entirely — Dashboard.tsx is not
+   rendered on mobile (see App.tsx wiring); this CSS covers the tablet tier
+   only, per mission responsive tiers. Widgets never cover the Cortex core —
+   each corner is capped to a width well inside the canvas center. */
+
+.hud2-corner {
+  position: fixed;
+  width: 260px;
+  z-index: 30;
+  animation: hud2-corner-in 0.32s ease-out;
+}
+
+.hud2-corner--tl { top: 56px; left: 12px; }
+.hud2-corner--tr { top: 56px; right: 306px; }
+.hud2-corner--bl { bottom: 96px; left: 12px; }
+.hud2-corner--br { bottom: 96px; right: 306px; }
+
+@keyframes hud2-corner-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.hud2-rail {
+  position: fixed;
+  top: 56px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 280px;
+  overflow-y: auto;
+  z-index: 30;
+  padding: 0 4px;
+}
+
+.hud2-rail--top {
+  right: 12px;
+}
+
+.hud2-quick-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud2-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+@media (max-width: 1439px) {
+  .hud2-corner,
+  .hud2-rail {
+    width: 220px;
+  }
+  .hud2-corner--tr,
+  .hud2-corner--br {
+    right: 246px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .hud2-corner,
+  .hud2-rail {
+    width: 190px;
+  }
+  .hud2-corner--tr,
+  .hud2-corner--br {
+    right: 206px;
+  }
+  .hud2-module-widget-detail {
+    display: none; /* keep tablet corners compact — metric + status only */
+  }
+}
+
+@media (max-width: 767px) {
+  .hud2-corner,
+  .hud2-rail,
+  .hud2-cortex-links {
+    display: none; /* Dashboard mode is desktop/tablet only — mobile stays Focus mode (command bar priority) */
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud2-corner {
+    animation: none;
+  }
+}
+
+/* ── Cortex identity readout ──────────────────────────────────────────────
+   Sits just above the core, centered. Static text, no fabricated metrics
+   (mission requirement 19 — never a fake CPU/GPU/token readout). */
+
+.hud2-cortex-identity {
+  position: fixed;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  pointer-events: none;
+  text-align: center;
+}
+
+.hud2-cortex-identity-name {
+  font-size: 11px;
+  letter-spacing: 0.4em;
+  color: var(--text-dim);
+}
+
+.hud2-cortex-identity-state {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  min-height: 12px;
+}
+
+@media (max-width: 767px) {
+  .hud2-cortex-identity {
+    top: 52px;
+  }
+}
+
+/* ── Cortex ↔ widget connection lines ────────────────────────────────────
+   Very thin, near-transparent static lines from each corner widget toward
+   the core — "modules connected to a central brain", not a circuit board.
+   pointer-events: none so the overlay never intercepts clicks; sits above
+   the Cortex canvas (z-index 0) but below the widgets themselves (30). */
+
+.hud2-cortex-links {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.hud2-cortex-link {
+  stroke: rgba(94, 231, 255, 0.10);
+  stroke-width: 1;
+}
+
+.hud2-cortex-link--active {
+  stroke: rgba(94, 231, 255, 0.28);
+}
+
+.hud2-cortex-link-dot {
+  fill: var(--cyan);
+  opacity: 0.7;
+  /* State feedback stays static; only NeuralBrain runs continuously. */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud2-cortex-link-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+.hud2-mode-toggle {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 35;
+  background: rgba(10, 8, 20, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+  transition: color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.hud2-mode-toggle:hover,
+.hud2-mode-toggle:focus-visible {
+  color: var(--cyan);
+  border-color: var(--cyan);
+  transform: translateX(-50%) translateY(-1px);
+}
+
+@media (max-width: 767px) {
+  .hud2-mode-toggle {
+    display: none; /* mode toggle is meaningless on mobile — always Focus */
+  }
+}
+
+/* ── Bottom Command Bar ──────────────────────────────────────────────────
+   Desktop: centered, generously sized, premium (large touch target, ample
+   padding). Mobile: full-width, becomes the dominant/primary element per
+   mission requirement ("sur mobile: devient l'élément principal"). */
+
+.hud2-command-bar {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 32;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(680px, calc(100vw - 32px));
+  border-radius: 999px;
+  padding: 8px 10px 8px 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.hud2-command-bar:focus-within {
+  border-color: var(--cyan-dim);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(94, 231, 255, 0.18), 0 0 24px rgba(94, 231, 255, 0.08);
+}
+
+.hud2-command-bar--listening {
+  border-color: var(--emerald-dim);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(61, 255, 170, 0.2), 0 0 26px rgba(61, 255, 170, 0.1);
+}
+
+.hud2-command-bar-mic {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.hud2-command-bar-mic--active {
+  color: var(--emerald);
+  border-color: var(--emerald);
+}
+
+.hud2-command-bar-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+}
+
+.hud2-command-bar-status {
+  flex-shrink: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+
+.hud2-command-bar-send,
+.hud2-command-bar-cancel {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(94, 231, 255, 0.08);
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 11px;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.hud2-command-bar-send:not(:disabled):hover {
+  background: rgba(94, 231, 255, 0.16);
+}
+
+.hud2-command-bar-send:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.hud2-command-bar-send:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.hud2-command-bar-cancel {
+  border-color: #ff4d58;
+  color: #ff4d58;
+  background: rgba(255, 77, 88, 0.08);
+}
+
+@media (max-width: 767px) {
+  .hud2-command-bar {
+    bottom: env(safe-area-inset-bottom, 12px);
+    width: calc(100vw - 16px);
+    border-radius: 14px;
+    z-index: 40; /* dominant element on mobile per mission requirement */
+  }
+  .hud2-command-bar-status {
+    display: none; /* status still conveyed via mic color + text on the mic label; avoid crowding narrow width */
+  }
+}
+
+/* V2.1: shared surfaces and quiet, state-driven atmosphere. No render loop. */
+.hud2-module-widget-detail, .hud2-module-widget-loading,
+.hud2-activity-item-module, .hud2-activity-item-time { color: var(--hud-muted); }
+.hud2-module-widget-name { font-size: 13px; letter-spacing: .01em; }
+.hud2-status--compact, .hud2-module-widget-open,
+.hud2-activity-item-module, .hud2-activity-item-time { font-size: 11px; }
+.hud2-activity-item { flex-wrap: wrap; gap: 4px 8px; padding: 9px 0; border-color: var(--hud-border); }
+.hud2-activity-item-label { min-width: 70px; }
+.hud2-quick-action { min-height: 32px; padding: 6px 9px; font-family: inherit; font-size: 12px; }
+.hud2-module-widget-open { min-height: 30px; border-color: var(--hud-border); }
+.hud2-rail { gap: 12px; bottom: 112px; scrollbar-width: thin; }
+.hud2-command-bar { background: var(--hud-bg); border-color: var(--hud-border); box-shadow: var(--hud-shadow); transition: border-color 200ms ease; }
+.hud2-command-bar-input::placeholder { color: var(--hud-muted); }
+.hud2-command-bar-send:disabled { opacity: .55; }
+.hud2-command-bar--listening { border-color: var(--hud-accent); }
+.hud2-mode-toggle { font-size: 11px; letter-spacing: .06em; color: var(--hud-muted); background: #0c1926; }
+.hud2-panel button:focus-visible, .hud2-command-bar button:focus-visible,
+.hud2-mode-toggle:focus-visible, .topbar-action:focus-visible,
+.topbar-more-item:focus-visible, .sidebar-hud button:focus-visible {
+  outline: 2px solid var(--hud-accent); outline-offset: 3px;
+}
+.topbar-action { min-height: 28px; border-radius: 6px; }
+.topbar-action--icon { min-width: 28px; }
+.topbar-action svg { width: 14px; height: 14px; }
+.topbar-action:hover:not(:disabled) { background: var(--hud-glow); }
+.topbar-action:disabled { opacity: .55; cursor: not-allowed; }
+.topbar-more-menu { background: #0c1926; border-color: var(--hud-border); border-radius: var(--hud-radius); }
+.sidebar-hud { background: rgba(8, 17, 29, .94); border-color: var(--hud-border); backdrop-filter: none; -webkit-backdrop-filter: none; clip-path: none; }
+.sidebar-hud .sidebar-item { padding-top: 5px; padding-bottom: 5px; }
+.sidebar-home { padding: 8px 0; }
+.sidebar-home > div { margin-bottom: 10px; }
+.sidebar-section-label { font-size: 11px; letter-spacing: .06em; color: var(--hud-muted); }
+.hud2-cortex-identity { top: 19%; gap: 7px; }
+.hud2-cortex-identity-name { font-size: 12px; letter-spacing: .22em; color: var(--hud-muted); }
+.hud2-cortex-identity-state { font-size: 12px; letter-spacing: .04em; }
+.hud2-cortex-atmosphere {
+  position: fixed; left: 50%; top: 50%; width: min(42vw, 580px); aspect-ratio: 1;
+  transform: translate(-50%, -50%); z-index: 4; pointer-events: none;
+  --core-light: 94, 231, 255;
+  background: radial-gradient(ellipse, transparent 27%, rgba(var(--core-light), .065) 44%, transparent 70%);
+}
+.hud2-cortex-orbit { position: absolute; inset: 12%; border: 1px solid rgba(var(--core-light), .12); border-radius: 50%; transform: rotate(-24deg) scaleY(.7); transition: transform 800ms ease, border-color 400ms ease; }
+.hud2-cortex-orbit::after { content: ''; position: absolute; inset: -12%; border: 1px solid rgba(var(--core-light), .06); border-radius: 50%; }
+.hud2-cortex-dust { position: absolute; inset: 0; opacity: .4; transition: opacity 400ms ease; background: radial-gradient(circle at 17% 39%, var(--hud-accent) 0 1px, transparent 2px), radial-gradient(circle at 76% 23%, var(--hud-accent) 0 1px, transparent 2px), radial-gradient(circle at 83% 64%, var(--hud-accent) 0 1px, transparent 2px), radial-gradient(circle at 33% 79%, var(--hud-accent) 0 1px, transparent 2px); }
+.hud2-cortex-atmosphere[data-state='listening'] .hud2-cortex-orbit { transform: rotate(0deg) scaleY(.95); border-color: rgba(var(--core-light), .3); }
+.hud2-cortex-atmosphere[data-state='thinking'] .hud2-cortex-orbit { transform: rotate(24deg) scaleY(.75); }
+.hud2-cortex-atmosphere[data-state='searching'] .hud2-cortex-orbit { transform: rotate(-12deg) scale(1.15, .8); border-style: dashed; }
+.hud2-cortex-atmosphere[data-state='generating'] .hud2-cortex-dust { opacity: .8; }
+.hud2-cortex-atmosphere[data-state='done'] { --core-light: 114, 213, 177; }
+.hud2-cortex-atmosphere[data-state='error'] { --core-light: 236, 165, 117; }
+.hud2-cortex-atmosphere[data-state='error'] .hud2-cortex-orbit { border-style: dashed; }
+/* Leave a dedicated lane for the existing sidebar; keep four module corners. */
+@media (min-width: 1440px) {
+  .hud2-corner { width: clamp(220px, 16vw, 250px); }
+  .hud2-corner--tl, .hud2-corner--bl { left: 236px; }
+  .hud2-corner--tr, .hud2-corner--br { right: 292px; }
+  .hud2-rail { width: 254px; }
+}
+@media (min-width: 768px) and (max-width: 1439px) {
+  .shell-sidebar { width: 180px; }
+  .hud2-corner { width: 190px; }
+  .hud2-corner--tl, .hud2-corner--bl { left: 192px; }
+  .hud2-corner--tr, .hud2-corner--br { right: 222px; }
+  .hud2-rail { width: 196px; }
+}
+@media (min-width: 768px) and (max-width: 1100px) {
+  .hud2-corner { width: 174px; }
+  .hud2-corner--tr, .hud2-corner--br { right: 12px; }
+  .hud2-rail { top: 260px; bottom: 280px; width: 174px; }
+  .hud2-panel { padding: 9px; }
+  .hud2-module-widget-header { flex-wrap: wrap; gap: 4px; }
+  .hud2-cortex-identity { top: 32%; }
+}
+@media (min-width: 768px) {
+  .hud2-corner--bl, .hud2-corner--br { bottom: 124px; }
+  .hud2-command-bar { width: min(620px, calc(100vw - 440px)); }
+}
+@media (max-width: 767px) {
+  .hud2-cortex-atmosphere { display: none; }
+  .hud2-cortex-identity { top: 56px; }
+  .hud2-command-bar { bottom: max(8px, env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud2-cortex-dust { display: none; }
+  .hud2-cortex-orbit, .hud2-cortex-dust, .hud2-panel, .hud2-command-bar,
+  .hud2-mode-toggle, .topbar-action { transition-duration: .001ms; animation: none; }
+}
+.hud2-module-widget-header { flex-wrap: wrap; }
+.topbar-hud { gap: 12px; }
+.topbar-center, .topbar-brand, .topbar-right { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .topbar-version, .topbar-neural-label, .topbar-page-count, .topbar-clock,
+  .topbar-search > span { display: none; }
+  .topbar-search { width: 28px; padding: 0; justify-content: center; }
+  .topbar-center .cortex-badge { font-size: 11px; letter-spacing: .04em; }
+}
+@media (max-width: 600px) {
+  .topbar-brand { display: none; }
+  .topbar-hud { gap: 6px; padding: 0 4px; }
+  .topbar-right { gap: 4px; }
+  .topbar-heartbeat { display: none; }
+  .topbar-center > div { gap: 4px; }
+}
+@media (max-width: 767px) {
+  .shell-sidebar { bottom: 76px !important; }
+  .hud2-cortex-identity { display: none; }
+}
+
+.topbar-heartbeat::after, .topbar-action--recording { animation: none; }
+
+/* Final polish: collapsible navigation keeps the original sidebar mounted. */
+.hud2-sidebar-shell { display: flex; flex-direction: column; background: #091522; border-right: 1px solid var(--hud-border); }
+.hud2-sidebar-shell--collapsed { width: 52px; }
+.hud2-sidebar-shell:focus-within { z-index: 36; }
+.hud2-sidebar-controls { display: flex; justify-content: flex-end; padding: 6px 9px; border-bottom: 1px solid var(--hud-border); }
+.hud2-sidebar-shell--collapsed .hud2-sidebar-controls { flex-direction: column; align-items: center; gap: 12px; padding: 10px 6px; border: 0; }
+.hud2-sidebar-tool { position: relative; display: inline-flex; }
+.hud2-sidebar-tool button { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--hud-border); border-radius: 8px; background: transparent; color: var(--hud-muted); }
+.hud2-sidebar-tool button:hover { color: var(--hud-accent); background: var(--hud-glow); }
+.hud2-sidebar-tool button:focus-visible { outline: 2px solid var(--hud-accent); outline-offset: 2px; }
+.hud2-sidebar-tooltip { display: none; position: absolute; top: 0; left: calc(100% + 10px); padding: 8px 10px; border: 1px solid var(--hud-border); background: #132636; color: #e1edf4; border-radius: 6px; font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 100; }
+.hud2-sidebar-tool:hover .hud2-sidebar-tooltip, .hud2-sidebar-tool:focus-within .hud2-sidebar-tooltip { display: block; }
+.hud2-sidebar-shell[data-tooltips-dismissed] .hud2-sidebar-tooltip { display: none; }
+.hud2-sidebar-content { flex: 1; min-height: 0; }
+.hud2-sidebar-content[hidden] { display: none; }
+.hud2-sidebar-content .sidebar-hud { border: 0; }
+.sidebar-home .sidebar-item { padding-top: 4px; padding-bottom: 4px; }
+.hud2-command-bar-send:not(:disabled) { background: rgba(94, 231, 255, .13); border-color: var(--hud-accent); }
+.hud2-cortex-identity-state { transition: color 220ms ease; }
+.hud2-cortex-atmosphere { background: radial-gradient(ellipse at 48% 46%, transparent 25%, rgba(var(--core-light), .085) 45%, transparent 72%); }
+.hud2-cortex-orbit::after { border-color: rgba(var(--core-light), .09); }
+@media (min-width: 768px) {
+  .docteur-shell:has(.hud2-sidebar-shell--collapsed) .hud2-corner--tl,
+  .docteur-shell:has(.hud2-sidebar-shell--collapsed) .hud2-corner--bl { left: clamp(84px, 8vw, 154px); }
+}
+@media (max-width: 767px) {
+  .hud2-sidebar-controls { display: none; }
+  .hud2-sidebar-shell { border: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud2-cortex-identity-state { transition-duration: .001ms; }
+}
+.hud2-sidebar-summary > button { min-width: 0; }
+.hud2-sidebar-recents { max-height: 34vh; overflow-y: auto; scrollbar-width: thin; }
+@media (min-width: 768px) and (max-width: 1439px) {
+  .hud2-sidebar-summary { grid-template-columns: minmax(0, 1fr) !important; }
+}
+.hud2-sidebar-shell:has(.hud2-sidebar-tool:hover) { z-index: 36; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   STUDIOS UX V2 — shared design system for MetaGPT, Sherlock, Investment and
+   Studio Video. Reuses the existing hud tokens (hud-bg, hud-border, cyan,
+   emerald, amber) established by the Cortex Command Center (hud2 classes) —
+   no new palette. Each Studio keeps its own functional identity; only the
+   shell, nav, status, artifact, empty and error primitives are shared, per
+   mission requirement 2 (no exact copy between Studios, each keeps its own
+   identity).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── StudioShell ── */
+
+.studio-shell {
+  width: min(1080px, calc(100vw - 24px));
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--hud-radius);
+  padding: 22px;
+  color: var(--text-main);
+  box-shadow: var(--hud-shadow);
+}
+
+.studio-shell-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.studio-shell-icon {
+  display: inline-flex;
+  color: var(--hud-accent);
+}
+
+.studio-shell-title {
+  flex: 1;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.studio-shell-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+.studio-shell-close:hover,
+.studio-shell-close:focus-visible {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.studio-shell-subtitle {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.studio-shell-body {
+  margin-top: 14px;
+  min-height: 0;
+}
+
+@media (max-width: 767px) {
+  .studio-shell {
+    width: calc(100vw - 16px);
+    padding: 16px;
+    max-height: 94vh;
+  }
+}
+
+/* ── StudioTabs ── */
+
+.studio-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.studio-tab {
+  position: relative;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+
+.studio-tab:hover,
+.studio-tab:focus-visible {
+  color: var(--text-main);
+}
+
+.studio-tab--active {
+  color: var(--cyan);
+}
+
+.studio-tab--active::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--cyan);
+  border-radius: 2px 2px 0 0;
+}
+
+.studio-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: rgba(94, 231, 255, 0.16);
+  color: var(--cyan);
+  font-size: 9px;
+}
+
+/* ── StudioStatus ── */
+
+.studio-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.studio-status--compact {
+  font-size: 11px;
+}
+
+.studio-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.studio-status-label {
+  white-space: nowrap;
+}
+
+/* ── StudioToolbar ── */
+
+.studio-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.studio-toolbar-primary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.studio-toolbar-destructive {
+  display: flex;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+@media (max-width: 480px) {
+  .studio-toolbar-destructive {
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    width: 100%;
+  }
+}
+
+/* ── StudioEmptyState / StudioErrorState ── */
+
+.studio-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 4px;
+  color: var(--text-dim);
+}
+
+.studio-empty-message {
+  margin: 0;
+  font-size: 13px;
+}
+
+.studio-error {
+  border: 1px solid rgba(255, 77, 88, 0.3);
+  background: rgba(255, 77, 88, 0.06);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+
+.studio-error-message {
+  margin: 0;
+  color: #ff8a90;
+  font-size: 13px;
+}
+
+.studio-error-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.studio-error-retry {
+  background: transparent;
+  border: 1px solid rgba(255, 77, 88, 0.4);
+  color: #ff8a90;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.studio-error-retry:hover {
+  background: rgba(255, 77, 88, 0.12);
+}
+
+/* ── StudioArtifactViewer ── */
+
+.studio-artifact {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.studio-artifact-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.02);
+  list-style: none;
+}
+
+.studio-artifact-summary::-webkit-details-marker {
+  display: none;
+}
+
+.studio-artifact-summary > span:first-child {
+  flex: 1;
+}
+
+.studio-artifact-meta {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.studio-artifact-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.studio-artifact-copy:hover {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.studio-artifact-body {
+  margin: 0;
+  padding: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 400px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid var(--border);
+}
+
+/* ── StudioSourceBadge ── */
+
+.studio-source-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.studio-source-link {
+  color: var(--cyan);
+  text-decoration: none;
+}
+
+.studio-source-link:hover {
+  text-decoration: underline;
+}
+
+.studio-source-link--plain {
+  color: var(--text-main);
+  cursor: default;
+}
+
+.studio-source-meta {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.studio-source-recency {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── StudioTimeline ── */
+
+.studio-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.studio-timeline-item {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+}
+
+.studio-timeline-item:last-child {
+  border-bottom: none;
+}
+
+.studio-timeline-kind {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--cyan);
+}
+
+.studio-timeline-when {
+  color: var(--text-main);
+}
+
+.studio-timeline-unreliable {
+  color: var(--text-dim);
+}
+
+.studio-timeline-source {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.studio-timeline-interpretation {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--amber);
+  background: rgba(255, 181, 71, 0.06);
+  color: var(--amber);
+  font-size: 11px;
+}
+
+/* ── StudioSplitPane ── */
+
+.studio-split-pane {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 18px;
+  align-items: start;
+}
+
+.studio-split-main {
+  min-width: 0;
+}
+
+.studio-split-secondary {
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 18px;
+}
+
+@media (max-width: 900px) {
+  .studio-split-pane {
+    grid-template-columns: 1fr;
+  }
+  .studio-split-secondary {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 14px;
+  }
+}
+
+/* ── Shared form controls (replaces per-Studio inline `field`/`button` objects) ── */
+
+.studio-field {
+  display: block;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--text-main);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  margin: 6px 0 14px;
+}
+
+.studio-field:focus-visible {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.studio-button {
+  background: rgba(94, 231, 255, 0.08);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.studio-button:hover:not(:disabled) {
+  border-color: var(--cyan);
+  background: rgba(94, 231, 255, 0.14);
+}
+
+.studio-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.studio-button--primary {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: rgba(94, 231, 255, 0.1);
+}
+
+.studio-button--danger {
+  border-color: rgba(255, 77, 88, 0.4);
+  color: #ff8a90;
+  background: rgba(255, 77, 88, 0.08);
+}
+
+.studio-button--danger:hover:not(:disabled) {
+  border-color: #ff4d58;
+  background: rgba(255, 77, 88, 0.16);
 }

@@ -496,12 +496,12 @@ function Sidebar({
       {showHomeScreen ? (
 
         /* ── Home screen ──────────────────────────────────────────────────── */
-        <div className="flex-1 overflow-y-auto" style={{ padding: '12px 0' }}>
+        <div className="sidebar-home flex-1 overflow-y-auto">
 
           {/* CORTEX summary */}
           <div className="px-3 mb-3">
             <div className="flex items-center gap-2 mb-2">
-              <span className="font-mono" style={{ fontSize: 9, letterSpacing: '0.12em', color: '#3d3060' }}>
+              <span className="sidebar-section-label font-mono">
                 CORTEX
               </span>
               <div style={{ flex: 1, height: 1, background: 'rgba(61,255,170,0.08)' }} />
@@ -533,9 +533,9 @@ function Sidebar({
                 </div>
 
                 {/* Kind breakdown — 2 columns */}
-                <div style={{
+                <div className="hud2-sidebar-summary" style={{
                   display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
+                  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
                   gap: '3px 8px',
                 }}>
                   {SUMMARY_KINDS.map(({ kind, label }) => {
@@ -547,9 +547,9 @@ function Sidebar({
                         key={kind}
                         type="button"
                         className="flex items-center gap-1.5 font-mono text-left rounded px-1 py-0.5 transition-all"
-                        style={{ fontSize: 9, color: '#7a6c9a' }}
+                        style={{ fontSize: 11, color: '#9daebb' }}
                         onMouseEnter={e => (e.currentTarget.style.color = color)}
-                        onMouseLeave={e => (e.currentTarget.style.color = '#7a6c9a')}
+                        onMouseLeave={e => (e.currentTarget.style.color = '#9daebb')}
                         onClick={() => {
                           onToggleHomeScreen(false);
                           setFilter(kind);
@@ -560,7 +560,7 @@ function Sidebar({
                       >
                         <span style={{ color, opacity: 0.7, fontSize: 8 }}>◆</span>
                         <span className="flex-1 truncate">{label}</span>
-                        <span style={{ color: '#3d3060', minWidth: 20, textAlign: 'right' }}>{n}</span>
+                        <span style={{ color: '#9daebb', minWidth: 20, textAlign: 'right' }}>{n}</span>
                       </button>
                     );
                   })}
@@ -571,9 +571,9 @@ function Sidebar({
 
           {/* RÉCENTS */}
           {!loading && recentPages.length > 0 && (
-            <div className="mb-3">
+            <div className="hud2-sidebar-recents mb-3">
               <div className="flex items-center gap-2 px-3 mb-1">
-                <span className="font-mono" style={{ fontSize: 9, letterSpacing: '0.12em', color: '#3d3060' }}>
+                <span className="sidebar-section-label font-mono">
                   RÉCENTS
                 </span>
                 <div style={{ flex: 1, height: 1, background: 'rgba(61,255,170,0.08)' }} />
@@ -597,7 +597,7 @@ function Sidebar({
           {/* ACTIONS */}
           <div className="px-3 mb-3">
             <div className="flex items-center gap-2 mb-2">
-              <span className="font-mono" style={{ fontSize: 9, letterSpacing: '0.12em', color: '#3d3060' }}>
+              <span className="sidebar-section-label font-mono">
                 ACTIONS
               </span>
               <div style={{ flex: 1, height: 1, background: 'rgba(61,255,170,0.08)' }} />
@@ -657,7 +657,7 @@ function Sidebar({
               }}
               onMouseLeave={e => {
                 e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                e.currentTarget.style.color = '#7a6c9a';
+                e.currentTarget.style.color = '#9daebb';
                 e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
               }}
               onClick={() => {

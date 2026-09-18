@@ -14,7 +14,7 @@ try {
     configFile: false,
     plugins: [react(), { name: 'ccc-harness', configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url?.split('?')[0] !== '/__ccc_test') return next(); res.setHeader('Content-Type', 'text/html'); res.end(harnessHtml); }); } }],
     optimizeDeps: { entries: ['scripts/cortex-command-center-harness.jsx'] },
-    server: { host: '127.0.0.1', port: 5198, strictPort: true, hmr: false },
+    server: { watch: null, host: '127.0.0.1', port: 5198, strictPort: true, hmr: false },
     logLevel: 'error',
   });
   await server.listen();

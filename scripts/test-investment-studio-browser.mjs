@@ -13,7 +13,7 @@ try {
     configFile: false,
     plugins: [react(), { name: 'investment-harness', configureServer(vite) { vite.middlewares.use((req, res, next) => { if (req.url?.split('?')[0] !== '/__investment_test') return next(); res.setHeader('Content-Type', 'text/html'); res.end(harnessHtml); }); } }],
     optimizeDeps: { entries: ['scripts/investment-studio-harness.jsx'] },
-    server: { host: '127.0.0.1', port: 5200, strictPort: true, hmr: false },
+    server: { watch: null, host: '127.0.0.1', port: 5200, strictPort: true, hmr: false },
     logLevel: 'error',
   });
   await server.listen();
@@ -58,6 +58,33 @@ try {
         undated: [{ id: 'e2', date: null, dateReliable: false, type: 'other', title: 'Undated headline', summary: '', source: { url: 'https://example.com/filing2', title: 'Mock Filing 2', retrievedAt: '2026-09-18T00:00:00.000Z' }, marketInterpretation: { statement: 'Possible link to price move', basis: 'Same-day timing', speculative: true } }],
         disclaimer: 'Événements construits exclusivement à partir de sources déjà collectées.',
       };
+    } else if (pathname === '/api/investment/valuation' && req.method() === 'POST') {
+      const body = req.postDataJSON();
+      if (body.method === 'multiples') {
+        data = { ok: true, method: 'multiples', inputs: body.inputs, results: { pe: 15, forwardPe: 13, evToSales: 4, evToEbitda: 10, pFcf: 18, peg: 1.2 } };
+      } else if (body.method === 'dcf') {
+        const { baseFcf, growthRate, discountRate, terminalGrowthRate, years } = body.inputs;
+        const projectedCashFlows = Array.from({ length: years }, (_, i) => {
+          const year = i + 1;
+          const fcf = baseFcf * Math.pow(1 + growthRate, year);
+          const discountFactor = 1 / Math.pow(1 + discountRate, year);
+          return { year, fcf, discountFactor, presentValue: fcf * discountFactor };
+        });
+        const sumOfDiscountedCashFlows = projectedCashFlows.reduce((sum, row) => sum + row.presentValue, 0);
+        const finalFcf = projectedCashFlows[projectedCashFlows.length - 1].fcf;
+        const terminalValue = (finalFcf * (1 + terminalGrowthRate)) / (discountRate - terminalGrowthRate);
+        const presentValueOfTerminalValue = terminalValue / Math.pow(1 + discountRate, years);
+        data = {
+          ok: true, method: 'dcf', assumptions: body.inputs, projectedCashFlows, terminalValue,
+          presentValueOfTerminalValue, sumOfDiscountedCashFlows,
+          enterpriseValueEstimate: sumOfDiscountedCashFlows + presentValueOfTerminalValue,
+        };
+      } else if (body.method === 'reverse_dcf') {
+        data = { ok: true, method: 'reverse_dcf', impliedGrowthRate: 0.075, iterations: 42, assumptions: body.inputs };
+      } else {
+        data = { error: 'valuation_method_denied' };
+        status = 400;
+      }
     } else if (pathname === '/api/investment/portfolios' && req.method() === 'GET') {
       data = { ok: true, portfolios };
     } else if (pathname === '/api/investment/portfolios' && req.method() === 'POST') {
@@ -67,6 +94,21 @@ try {
       data = { ok: true, id: 'port-1' };
     } else if (pathname === '/api/investment/portfolios/port-1' && req.method() === 'GET') {
       data = { ok: true, portfolio: activePortfolio, positions, transactions };
+    } else if (pathname === '/api/investment/portfolios/port-1/metrics' && req.method() === 'POST') {
+      const metricsPositions = positions.map(p => ({
+        symbol: p.symbol, quantity: p.quantity, costBasis: p.quantity * p.avg_cost_basis,
+        marketValue: p.quantity * p.avg_cost_basis, unrealizedPnl: 0, unrealizedPnlPercent: 0,
+      }));
+      const totalCostBasis = metricsPositions.reduce((sum, p) => sum + p.costBasis, 0);
+      data = {
+        ok: true,
+        metrics: {
+          cash: activePortfolio?.cash ?? 0, totalCostBasis, totalMarketValue: totalCostBasis,
+          totalAccountValue: (activePortfolio?.cash ?? 0) + totalCostBasis, totalUnrealizedPnl: 0, totalUnrealizedPnlPercent: 0,
+          positions: metricsPositions, allocation: metricsPositions.map(p => ({ symbol: p.symbol, weightPercent: 0 })),
+        },
+        priceDisclaimer: 'currentPrice non fourni = dernier coût moyen utilisé par défaut, jamais un prix de marché en direct.',
+      };
     } else if (pathname === '/api/investment/portfolios/port-1/transactions' && req.method() === 'POST') {
       const body = req.postDataJSON();
       if (!['PAPER_BUY', 'PAPER_SELL'].includes(body.action)) {
@@ -104,14 +146,14 @@ try {
 
   // Fundamentals section
   await page.getByRole('button', { name: 'Charger fondamentaux', exact: true }).click();
-  await page.getByRole('button', { name: 'FUNDAMENTALS', exact: true }).click();
+  await page.getByRole('tab', { name: 'FUNDAMENTALS', exact: true }).click();
   await page.getByText('FY2025', { exact: false }).waitFor();
   assertions++;
 
   // Scoring section: 5 categories displayed, no BUY/SELL recommendation text anywhere
-  await page.getByRole('button', { name: 'OVERVIEW', exact: true }).click();
+  await page.getByRole('tab', { name: 'OVERVIEW', exact: true }).click();
   await page.getByRole('button', { name: 'Calculer le scoring', exact: true }).click();
-  await page.getByRole('button', { name: 'SCORING', exact: true }).click();
+  await page.getByRole('tab', { name: 'SCORING', exact: true }).click();
   for (const category of ['Quality', 'Growth', 'Valuation', 'Balance Sheet', 'Risk']) {
     await page.getByText(category, { exact: true }).waitFor();
   }
@@ -125,33 +167,52 @@ try {
   assertions++;
 
   // Risks tab reuses the same Risk category card, expanded by default
-  await page.getByRole('button', { name: 'RISKS', exact: true }).click();
+  await page.getByRole('tab', { name: 'RISKS', exact: true }).click();
   await page.getByText('Levier < 4x', { exact: false }).waitFor();
   assertions++;
 
   // Timeline section: dated + undated events, provenance and market interpretation shown distinctly
-  await page.getByRole('button', { name: 'OVERVIEW', exact: true }).click();
+  await page.getByRole('tab', { name: 'OVERVIEW', exact: true }).click();
   await page.getByRole('button', { name: 'Charger la timeline', exact: true }).click();
-  await page.getByRole('button', { name: 'TIMELINE', exact: true }).click();
+  await page.getByRole('tab', { name: 'TIMELINE', exact: true }).click();
   await page.getByText('Q3 earnings beat expectations', { exact: false }).waitFor();
   await page.getByText('Undated headline', { exact: false }).waitFor();
   await page.getByText('date non fiable', { exact: false }).waitFor();
   await page.getByText('Interprétation de marché (spéculative)', { exact: false }).waitFor();
   assertions++;
 
+  // Timeline event creation form: sources already fetched, submit a new event
+  await page.locator('summary').filter({ hasText: 'Ajouter un événement' }).click();
+  const eventForm = page.locator('details').filter({ hasText: 'Ajouter un événement' });
+  await eventForm.locator('select').first().selectOption({ label: 'Mock Filing' });
+  await page.getByLabel('Titre', { exact: true }).fill('New guidance issued');
+  await page.getByRole('button', { name: "Ajouter l'événement", exact: true }).click();
+  assertions++;
+
+  // Valuation: DCF surfaces full assumptions (never a bare number)
+  await page.getByRole('tab', { name: 'VALUATION', exact: true }).click();
+  await page.getByRole('button', { name: 'Calculer le DCF', exact: true }).click();
+  await page.getByText("Valeur d'entreprise estimée", { exact: false }).waitFor();
+  await page.getByText('Somme des flux actualisés', { exact: false }).waitFor();
+  assertions++;
+
   // Paper Portfolio: create, buy, verify PAPER marking
-  await page.getByRole('button', { name: 'PAPER PORTFOLIO', exact: true }).click();
+  await page.getByRole('tab', { name: 'PAPER PORTFOLIO', exact: true }).click();
   await page.getByRole('button', { name: 'Nouveau portefeuille', exact: true }).click();
   await page.getByText('cash disponible', { exact: false }).or(page.getByText('Cash disponible', { exact: false })).waitFor();
   assertions++;
 
-  await page.getByPlaceholder('AAPL').last().fill('AAPL');
-  const qtyInput = page.locator('input[type="number"]').first();
-  const priceInput = page.locator('input[type="number"]').last();
-  await qtyInput.fill('10');
-  await priceInput.fill('150');
+  const tradeForm = page.locator('div').filter({ has: page.getByRole('button', { name: 'Exécuter (simulé)', exact: true }) }).last();
+  await tradeForm.getByPlaceholder('AAPL').fill('AAPL');
+  const numberInputs = tradeForm.locator('input[type="number"]');
+  await numberInputs.nth(0).fill('10');
+  await numberInputs.nth(1).fill('150');
   await page.getByRole('button', { name: 'Exécuter (simulé)', exact: true }).click();
   await page.getByText('[PAPER] PAPER_BUY 10 AAPL', { exact: false }).waitFor();
+  assertions++;
+
+  // Portfolio metrics now called (previously-unused endpoint) — real P&L/value shown
+  await page.getByText('Valeur totale du compte', { exact: false }).waitFor();
   assertions++;
 
   // Verify the action selector only ever offers PAPER_BUY/PAPER_SELL (never REAL_*/LIVE_*)

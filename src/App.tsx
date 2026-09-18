@@ -10,6 +10,10 @@ import { useScreenShare } from './hooks/useScreenShare';
 import { useCortexState } from './hooks/useCortexState';
 import type { ActivityEntry } from './components/layout/ActivityPanel';
 import ActivityPanel from './components/layout/ActivityPanel';
+import Dashboard from './components/hud/Dashboard';
+import CommandBar from './components/hud/CommandBar';
+import CortexIdentity from './components/hud/CortexIdentity';
+import type { HudActivityEvent } from './components/hud/ActivityItem';
 import { speakEasterEgg } from './lib/easterEggVoice';
 import VoiceIndicator from './components/layout/VoiceIndicator';
 import GestureOverlay from './components/layout/GestureOverlay';
@@ -33,7 +37,6 @@ import DownloadModal, { type DownloadResult } from './components/modals/Download
 import HelpModal from './components/modals/HelpModal';
 import RoadmapModal from './components/modals/RoadmapModal';
 import AgentsModal   from './components/modals/AgentsModal';
-import VideoSummaryModal from './components/modals/VideoSummaryModal';
 import SkillsModal   from './components/modals/SkillsModal';
 import PromptGeneratorModal from './components/modals/PromptGeneratorModal';
 import TeacherModal from './components/modals/TeacherModal';
@@ -43,6 +46,8 @@ const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
 const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
 const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioModal'));
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
+const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
+const VideoSummaryModal = lazy(() => import('./components/modals/VideoSummaryModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -51,6 +56,7 @@ import BatchProgressModal, { type BatchProgressState, type QueuedJob } from './c
 import ConfirmBatchModal from './components/modals/ConfirmBatchModal';
 import TopBar from './components/layout/TopBar';
 import Sidebar from './components/layout/Sidebar';
+import SidebarShell from './components/layout/SidebarShell';
 import NeuralBrain from './components/neural/NeuralBrain';
 import BlockComp from './components/blocks/Block';
 import ReadingView from './components/reading/ReadingView';
@@ -2312,6 +2318,7 @@ export default function App() {
   useModalOpenTracking(agentsOpen);
   const [videoSummaryOpen, setVideoSummaryOpen] = useState(false);
   const [videoSummaryMinimized, setVideoSummaryMinimized] = useState(false);
+  const [videoSummaryInitialView, setVideoSummaryInitialView] = useState<'form' | 'render'>('form');
   useModalOpenTracking(videoSummaryOpen && !videoSummaryMinimized);
   const [strictLocalMode, setStrictLocalMode]  = useState(false);
   const [skillsOpen, setSkillsOpen]            = useState(false);
@@ -2335,6 +2342,31 @@ export default function App() {
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
   const [investmentStudioOpen, setInvestmentStudioOpen] = useState(false);
   useModalOpenTracking(investmentStudioOpen);
+  const [sherlockStudioOpen, setSherlockStudioOpen] = useState(false);
+  useModalOpenTracking(sherlockStudioOpen);
+  // HUD Command Center V2 — Focus vs Dashboard mode. Persisted locally
+  // (existing localStorage convention, e.g. docteur.showHomeScreen) —
+  // never a new DB table for a pure UI preference. Dashboard is
+  // desktop/tablet only (see .hud-rail responsive rules); mobile always
+  // behaves as Focus mode regardless of this preference.
+  const [viewMode, setViewMode] = useState<'focus' | 'dashboard'>(() => {
+    try { return localStorage.getItem('docteur.viewMode') === 'dashboard' ? 'dashboard' : 'focus'; } catch { return 'focus'; }
+  });
+  const setViewModePersisted = useCallback((mode: 'focus' | 'dashboard') => {
+    setViewMode(mode);
+    try { localStorage.setItem('docteur.viewMode', mode); } catch { /* Optional preference storage. */ }
+  }, []);
+  const [lastSherlockJobId, setLastSherlockJobIdState] = useState<string | null>(() => {
+    try { return localStorage.getItem('docteur.lastSherlockJobId'); } catch { return null; }
+  });
+  // Bug fix (Phase UX-4 audit): the setter below was previously never called
+  // anywhere, so the Dashboard Sherlock widget stayed permanently stuck on
+  // "no recent search" even right after a successful one — this persists the
+  // id so it actually reaches useSherlockSummary() on the next render.
+  const setLastSherlockJobId = useCallback((jobId: string) => {
+    setLastSherlockJobIdState(jobId);
+    try { localStorage.setItem('docteur.lastSherlockJobId', jobId); } catch { /* Optional preference storage. */ }
+  }, []);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
   useModalOpenTracking(todoOpen);
@@ -4526,6 +4558,14 @@ export default function App() {
       : []),
   ];
 
+  // HUD Dashboard's right rail reuses the exact same real activity entries
+  // as ActivityPanel — never a second, competing event source. Only the
+  // shape is adapted (module label added, timestamp added since
+  // ActivityEntry has none) — no new information is invented.
+  const hudActivityEvents: HudActivityEvent[] = activityEntries.map(entry => ({
+    id: entry.id, module: 'CORTEX', type: entry.id, label: entry.label, status: entry.state, timestamp: Date.now(),
+  }));
+
   // Load voice settings once cortex is available
   useEffect(() => {
     if (!cortex.available) return;
@@ -4555,6 +4595,53 @@ export default function App() {
         entries={activityEntries}
         open={activityPanelOpen}
         onClose={() => setActivityPanelOpen(false)}
+      />
+
+      {!isMobile && <CortexIdentity state={cortexVisualState} />}
+
+      {/* Dashboard mode: desktop/tablet only (see .hud-rail responsive rules
+          — hidden below 768px via CSS). Mobile always behaves as Focus mode
+          regardless of the stored preference. */}
+      {viewMode === 'dashboard' && !isMobile && (
+        <Dashboard
+          lastSherlockJobId={lastSherlockJobId}
+          activityEvents={hudActivityEvents}
+          onOpenMetaGpt={() => setMetaGptStudioOpen(true)}
+          onOpenSherlock={() => setSherlockStudioOpen(true)}
+          onOpenInvestment={() => setInvestmentStudioOpen(true)}
+          onOpenVideoSummary={() => {
+            setVideoSummaryInitialView('form');
+            setVideoSummaryOpen(true);
+            setVideoSummaryMinimized(false);
+          }}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onQuickMetaGptMission={() => setMetaGptStudioOpen(true)}
+          onQuickSherlockSearch={() => setSherlockStudioOpen(true)}
+          onQuickInvestmentAnalysis={() => setInvestmentStudioOpen(true)}
+          onQuickVideoRender={() => {
+            setVideoSummaryInitialView('render');
+            setVideoSummaryOpen(true);
+            setVideoSummaryMinimized(false);
+          }}
+        />
+      )}
+
+      <button
+        type="button"
+        className="hud2-mode-toggle"
+        onClick={() => setViewModePersisted(viewMode === 'dashboard' ? 'focus' : 'dashboard')}
+        aria-label={viewMode === 'dashboard' ? 'Passer en mode Focus' : 'Passer en mode Dashboard'}
+        title={viewMode === 'dashboard' ? 'Mode Focus' : 'Mode Dashboard'}
+      >
+        {viewMode === 'dashboard' ? 'FOCUS' : 'DASHBOARD'}
+      </button>
+
+      <CommandBar
+        cortexState={cortexVisualState}
+        voiceEnabled={voiceSettings?.enabled ?? false}
+        voiceState={voice.state}
+        onVoiceClick={voice.triggerManual}
+        onSubmit={query => { setVoiceConsoleQuery(query); setConsoleOpen(true); }}
       />
 
       <div className="shell-topbar">
@@ -4603,7 +4690,8 @@ export default function App() {
       </div>
 
       {/* Sidebar : hidden on mobile when editor is open */}
-      <div className={`shell-sidebar${isMobile && selectedId ? ' mobile-hidden' : ''}`}>
+      <SidebarShell mode={viewMode} mobile={isMobile} hidden={!!(isMobile && selectedId)}
+        onSearch={() => setConsoleOpen(true)} onCapture={() => setCaptureOpen(true)}>
         <Sidebar
           pages={pages}
           selectedPageId={selectedId}
@@ -4621,7 +4709,7 @@ export default function App() {
           allMetaLoaded={allMetaLoaded}
           onLoadAllPages={loadAllMeta}
         />
-      </div>
+      </SidebarShell>
 
       {selectedPage && (
         <div 
@@ -4885,6 +4973,7 @@ export default function App() {
               case 'images':          setImageGeneratorOpen(true); break;
               case 'metagpt':         setMetaGptStudioOpen(true); break;
               case 'investment':      setInvestmentStudioOpen(true); break;
+              case 'sherlock':        setSherlockStudioOpen(true); break;
               case 'kiwix':           setKiwixOpen(true); break;
               case 'todo':            setTodoOpen(true); break;
               case 'backup':          setBackupOpen(true); break;
@@ -4919,12 +5008,15 @@ export default function App() {
       )}
 
       {videoSummaryOpen && !videoSummaryMinimized && (
-        <VideoSummaryModal
-          onClose={() => setVideoSummaryOpen(false)}
-          onMinimize={() => setVideoSummaryMinimized(true)}
-          strictLocalMode={strictLocalMode}
-          onDone={() => { void reloadFromServer(); }}
-        />
+        <Suspense fallback={null}>
+          <VideoSummaryModal
+            onClose={() => setVideoSummaryOpen(false)}
+            onMinimize={() => setVideoSummaryMinimized(true)}
+            strictLocalMode={strictLocalMode}
+            onDone={() => { void reloadFromServer(); }}
+            initialView={videoSummaryInitialView}
+          />
+        </Suspense>
       )}
 
       {todoOpen && (
@@ -4995,6 +5087,7 @@ export default function App() {
       )}
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
+      {sherlockStudioOpen && <Suspense fallback={null}><SherlockStudioModal onClose={() => setSherlockStudioOpen(false)} onJobUpdate={setLastSherlockJobId} /></Suspense>}
 
       {kiwixOpen && (
         <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />

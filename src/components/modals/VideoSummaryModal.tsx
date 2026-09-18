@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import { isTerminalVideoStatus, startVideoJobPolling } from '../../lib/video-job-polling';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { isTerminalVideoStatus, startJobPolling, startVideoJobPolling } from '../../lib/video-job-polling';
 import {
   Clapperboard, X, ChevronLeft, Minimize2, AlertTriangle, CheckCircle,
-  RotateCcw, Ban, HardDrive, Clock, History,
+  RotateCcw, Ban, HardDrive, Clock, History, RefreshCw, Play, Square, Film, Lock,
 } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import type {
   VideoEstimate, VideoJob, VideoJobDetail,
+  OpenMontageCapabilities, OpenMontageJob, OpenMontageResolution,
 } from '../../lib/cortex/client';
 
 interface Props {
@@ -15,9 +16,32 @@ interface Props {
   strictLocalMode:  boolean;
   // Called when a job finishes — caller reloads its neuron list.
   onDone?:          () => void;
+  /** Which tab to land on — 'render' for the "Nouveau rendu vidéo" quick
+   * action, defaults to the transcription form otherwise. */
+  initialView?:     'form' | 'render';
 }
 
-type View = 'form' | 'progress' | 'history';
+// Phase UX-6: 'render' is a new tab exposing the real MP4-producing system
+// (previously only reachable via Settings, under a mismatched Dashboard
+// badge — see reports/STUDIOS_UX_V2_2026-09.md, GAP 5). The transcription
+// views (form/progress/history) and their polling below are UNCHANGED from
+// before this pass — this Studio now honestly presents both as two distinct
+// capabilities instead of conflating them under one ambiguous entry point.
+type View = 'form' | 'progress' | 'history' | 'render';
+
+const OM_STATUS_LABELS: Record<string, string> = {
+  NOT_INSTALLED: 'Non installé',
+  PARTIAL: 'Installation partielle',
+  READY_LOCAL: 'Prêt (local)',
+  BUSY: 'Occupé',
+  ERROR: 'Erreur',
+};
+
+const OM_RESOLUTIONS: { value: OpenMontageResolution; label: string }[] = [
+  { value: '1920x1080', label: '1920×1080 (16:9)' },
+  { value: '1080x1920', label: '1080×1920 (9:16)' },
+  { value: '1080x1080', label: '1080×1080 (1:1)' },
+];
 
 const RESUME_TYPES = [
   { value: 'auto',      label: 'Automatique (recherche du style le plus proche)' },
@@ -59,8 +83,8 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} Go`;
 }
 
-export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode, onDone }: Props) {
-  const [view, setView]           = useState<View>('form');
+export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode, onDone, initialView = 'form' }: Props) {
+  const [view, setView]           = useState<View>(initialView);
   const [url, setUrl]             = useState('');
   const [estimate, setEstimate]   = useState<VideoEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
@@ -81,6 +105,64 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
   const [pollGeneration, setPollGeneration] = useState(0);
+
+  // ── Render view state (Phase UX-6) — entirely separate from the
+  // transcription state/polling above; the two systems share nothing
+  // server-side (see reports/STUDIOS_UX_V2_2026-09.md, GAP 5). ──
+  const [omCapabilities, setOmCapabilities] = useState<OpenMontageCapabilities | null>(null);
+  const [omLoading, setOmLoading] = useState(true);
+  const [omError, setOmError] = useState<string | null>(null);
+  const [omTitle, setOmTitle] = useState('DOCTEUR');
+  const [omSubtitle, setOmSubtitle] = useState('Local Video Pipeline');
+  const [omResolution, setOmResolution] = useState<OpenMontageResolution>('1920x1080');
+  const [omFps, setOmFps] = useState<24 | 25 | 30>(30);
+  const [omDurationSeconds, setOmDurationSeconds] = useState(6);
+  const [omJob, setOmJob] = useState<OpenMontageJob | null>(null);
+  const [omRenderError, setOmRenderError] = useState<string | null>(null);
+  const omStopPollingRef = useRef<(() => void) | null>(null);
+
+  const reloadOmCapabilities = useCallback(async () => {
+    try {
+      const caps = await cortexClient.getOpenMontageCapabilities();
+      setOmCapabilities(caps);
+      setOmError(null);
+    } catch (e) {
+      setOmError((e as Error).message);
+    } finally {
+      setOmLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (view === 'render' && !omCapabilities) void reloadOmCapabilities(); }, [view, omCapabilities, reloadOmCapabilities]);
+  useEffect(() => () => { omStopPollingRef.current?.(); }, []);
+
+  const startOmRender = useCallback(async () => {
+    setOmRenderError(null);
+    try {
+      const { jobId } = await cortexClient.startOpenMontageRender({ title: omTitle, subtitle: omSubtitle, resolution: omResolution, fps: omFps, durationSeconds: omDurationSeconds });
+      omStopPollingRef.current?.();
+      omStopPollingRef.current = startJobPolling(
+        () => cortexClient.getOpenMontageJob(jobId),
+        d => d.status,
+        d => setOmJob(d),
+        () => { void reloadOmCapabilities(); },
+      );
+    } catch (e) {
+      setOmRenderError((e as Error).message);
+    }
+  }, [omTitle, omSubtitle, omResolution, omFps, omDurationSeconds, reloadOmCapabilities]);
+
+  const cancelOmRender = useCallback(async () => {
+    if (!omJob) return;
+    try { await cortexClient.cancelOpenMontageJob(omJob.jobId); } catch { /* best-effort */ }
+  }, [omJob]);
+
+  const resetOmRender = useCallback(() => {
+    omStopPollingRef.current?.();
+    omStopPollingRef.current = null;
+    setOmJob(null);
+    setOmRenderError(null);
+  }, []);
 
   const cloudForcedLocal = strictLocalMode || isPrivate;
 
@@ -214,7 +296,7 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
             <Minimize2 size={10} /> Réduire
           </button>
         )}
-        {view !== 'history' && (
+        {(view === 'form' || view === 'render') && (
           <button type="button" onClick={loadHistory} title="Historique" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b', display: 'flex' }}>
             <History size={14} />
           </button>
@@ -226,11 +308,34 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
     );
   }
 
+  // Two honestly-distinct capabilities (transcription→text vs. real MP4
+  // render — see module header comment) presented as tabs instead of one
+  // ambiguous entry point (Phase UX-6).
+  function renderModeTabs() {
+    return (
+      <div style={{ display: 'flex', gap: 4, padding: '10px 20px 0' }}>
+        <button
+          type="button" onClick={() => setView('form')}
+          style={{ flex: 1, padding: '7px 0', fontSize: 11, fontFamily: 'monospace', letterSpacing: '0.04em', cursor: 'pointer', borderRadius: '6px 6px 0 0', border: 'none', borderBottom: view === 'form' ? '2px solid #c084fc' : '2px solid transparent', background: 'none', color: view === 'form' ? '#c084fc' : '#64748b' }}
+        >
+          TRANSCRIPTION
+        </button>
+        <button
+          type="button" onClick={() => setView('render')}
+          style={{ flex: 1, padding: '7px 0', fontSize: 11, fontFamily: 'monospace', letterSpacing: '0.04em', cursor: 'pointer', borderRadius: '6px 6px 0 0', border: 'none', borderBottom: view === 'render' ? '2px solid #a78bfa' : '2px solid transparent', background: 'none', color: view === 'render' ? '#a78bfa' : '#64748b' }}
+        >
+          RENDU (MP4)
+        </button>
+      </div>
+    );
+  }
+
   // ── Form view ──────────────────────────────────────────────────────────────
   function renderForm() {
     return (
       <>
-        {renderHeader('RÉSUMÉ DE VIDÉO LONGUE')}
+        {renderHeader('STUDIO VIDÉO')}
+        {renderModeTabs()}
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
           <div style={sectionStyle}>
             <label style={labelStyle}>LIEN DE LA VIDÉO</label>
@@ -455,12 +560,142 @@ export default function VideoSummaryModal({ onClose, onMinimize, strictLocalMode
     );
   }
 
+  // ── Render view (Phase UX-6) — the real MP4-producing system, previously
+  // only reachable via Settings under an unrelated Dashboard status badge.
+  // Ported from OpenMontageSettingsTab.tsx with the same backend contract
+  // (one fixed Remotion template, 3-10s, allowlisted resolutions/fps) — no
+  // new capability, only a proper entry point. ──
+  function renderRender() {
+    const cardStyle: React.CSSProperties = { background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 };
+    const omBtnStyle: React.CSSProperties = { background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 6, color: '#a78bfa', padding: '6px 12px', fontSize: 11, cursor: 'pointer', fontFamily: 'monospace', display: 'inline-flex', alignItems: 'center', gap: 6 };
+    const omBtnDangerStyle: React.CSSProperties = { background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 6, color: '#f87171', padding: '6px 12px', fontSize: 11, cursor: 'pointer', fontFamily: 'monospace', display: 'inline-flex', alignItems: 'center', gap: 6 };
+    const omLabelStyle: React.CSSProperties = { fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a', letterSpacing: '0.08em' };
+    const status = omCapabilities?.status ?? 'ERROR';
+    const isRunning = omJob?.status === 'running';
+    const elapsedSeconds = omJob ? Math.round(omJob.elapsedMs / 1000) : 0;
+
+    return (
+      <>
+        {renderHeader('STUDIO VIDÉO')}
+        {renderModeTabs()}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Film size={14} style={{ color: '#a78bfa' }} />
+                <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#e2e8f0' }}>OpenMontage — rendu vidéo local</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Lock size={11} style={{ color: '#3dffaa' }} />
+                <span style={{ fontFamily: 'monospace', fontSize: 10, color: '#3dffaa', letterSpacing: '0.08em' }}>LOCAL</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={omLabelStyle}>État :</span>
+              <span style={{ fontFamily: 'monospace', fontSize: 11, color: status === 'READY_LOCAL' ? '#3dffaa' : status === 'ERROR' ? '#f87171' : '#facc15' }}>
+                {OM_STATUS_LABELS[status] ?? status}
+              </span>
+              <button type="button" style={{ ...omBtnStyle, padding: '4px 8px', marginLeft: 'auto' }} onClick={() => void reloadOmCapabilities()}>
+                <RefreshCw size={11} /> Vérifier
+              </button>
+            </div>
+            {omError && <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{omError}</div>}
+            {omCapabilities && status !== 'READY_LOCAL' && (
+              <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a' }}>
+                Python: {omCapabilities.python.available ? 'OK' : 'manquant'} · FFmpeg: {omCapabilities.ffmpeg.available ? 'OK' : 'manquant'} · Remotion: {omCapabilities.remotion.available ? 'OK' : 'manquant'}
+                {omCapabilities.registry.available && ` · ${omCapabilities.registry.toolCount} outil(s) enregistré(s)`}
+              </div>
+            )}
+          </div>
+
+          {omLoading && <div style={{ fontSize: 12, color: '#64748b' }}>Chargement…</div>}
+
+          {!omLoading && !omJob && (
+            <div style={cardStyle}>
+              <div>
+                <div style={omLabelStyle}>Titre</div>
+                <input style={inputStyle} value={omTitle} onChange={e => setOmTitle(e.target.value)} maxLength={120} disabled={isRunning} />
+              </div>
+              <div>
+                <div style={omLabelStyle}>Sous-titre</div>
+                <input style={inputStyle} value={omSubtitle} onChange={e => setOmSubtitle(e.target.value)} maxLength={120} disabled={isRunning} />
+              </div>
+              <div style={{ display: 'flex', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={omLabelStyle}>Format</div>
+                  <select style={inputStyle} value={omResolution} onChange={e => setOmResolution(e.target.value as OpenMontageResolution)} disabled={isRunning}>
+                    {OM_RESOLUTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ width: 90 }}>
+                  <div style={omLabelStyle}>FPS</div>
+                  <select style={inputStyle} value={omFps} onChange={e => setOmFps(Number(e.target.value) as 24 | 25 | 30)} disabled={isRunning}>
+                    <option value={24}>24</option>
+                    <option value={25}>25</option>
+                    <option value={30}>30</option>
+                  </select>
+                </div>
+                <div style={{ width: 110 }}>
+                  <div style={omLabelStyle}>Durée (s)</div>
+                  <input
+                    type="number" min={3} max={10} style={inputStyle}
+                    value={omDurationSeconds}
+                    onChange={e => setOmDurationSeconds(Math.min(10, Math.max(3, Number(e.target.value) || 3)))}
+                    disabled={isRunning}
+                  />
+                </div>
+              </div>
+              {omRenderError && <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{omRenderError}</div>}
+              <button
+                type="button"
+                style={{ ...omBtnStyle, justifyContent: 'center', opacity: status === 'READY_LOCAL' ? 1 : 0.5 }}
+                onClick={() => void startOmRender()}
+                disabled={status !== 'READY_LOCAL'}
+              >
+                <Play size={12} /> Générer localement
+              </button>
+            </div>
+          )}
+
+          {omJob && (
+            <div style={cardStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#e2e8f0' }}>
+                  {omJob.status === 'running' ? 'Rendu en cours…' : omJob.status === 'done' ? 'Rendu terminé' : omJob.status === 'cancelled' ? 'Rendu annulé' : 'Rendu échoué'}
+                </span>
+                <span style={{ fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a' }}>{elapsedSeconds}s écoulées</span>
+              </div>
+              {omJob.status === 'running' && (
+                <button type="button" style={omBtnDangerStyle} onClick={() => void cancelOmRender()}>
+                  <Square size={11} /> Annuler
+                </button>
+              )}
+              {omJob.status === 'failed' && omJob.error && (
+                <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#f87171' }}>{omJob.error}</div>
+              )}
+              {omJob.status === 'done' && omJob.hasArtifact && (
+                <>
+                  <video controls style={{ width: '100%', borderRadius: 6, background: '#000' }} src={cortexClient.getOpenMontageArtifactUrl(omJob.jobId)} />
+                  <div style={{ fontFamily: 'monospace', fontSize: 10, color: '#5a4a7a' }}>output.mp4 — {omJob.width}×{omJob.height} @ {omJob.fps}fps</div>
+                </>
+              )}
+              {(omJob.status === 'done' || omJob.status === 'failed' || omJob.status === 'cancelled') && (
+                <button type="button" style={omBtnStyle} onClick={resetOmRender}>Nouveau rendu</button>
+              )}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   return (
     <div style={modalStyle} onClick={onClose}>
       <div style={panelStyle} onClick={e => e.stopPropagation()}>
         {view === 'form' && renderForm()}
         {view === 'progress' && renderProgress()}
         {view === 'history' && renderHistory()}
+        {view === 'render' && renderRender()}
       </div>
     </div>
   );
