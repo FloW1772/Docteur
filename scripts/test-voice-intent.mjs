@@ -75,7 +75,9 @@ try {
       level1Allowed: authorizeVoiceIntent({ type: 'SWITCH_FOCUS', parameters: {}, matchType: 'DETERMINISTIC', source: 'mode focus' }),
       unknownDenied: authorizeVoiceIntent({ type: 'UNKNOWN', parameters: { rawText: 'fais un café' }, matchType: 'DETERMINISTIC', source: 'fais un café' }),
       needsClarificationConfirms: authorizeVoiceIntent({ type: 'NEEDS_CLARIFICATION', parameters: { rawText: 'x', candidates: ['a', 'b'] }, matchType: 'DETERMINISTIC', source: 'x' }),
-      explainDenied: authorizeVoiceIntent({ type: 'EXPLAIN_FEATURE', parameters: { featureId: 'cyber-audit', level: 'simple' }, matchType: 'DETERMINISTIC', source: 'explique sentinel' }),
+      explainAllowed: authorizeVoiceIntent({ type: 'EXPLAIN_FEATURE', parameters: { featureId: 'cyber-audit', level: 'simple' }, matchType: 'DETERMINISTIC', source: 'explique sentinel' }),
+      explainUnknownDenied: authorizeVoiceIntent({ type: 'EXPLAIN_FEATURE', parameters: { featureId: 'feature-inconnue', level: 'simple' }, matchType: 'DETERMINISTIC', source: 'explique feature inconnue' }),
+      explainDraftDenied: authorizeVoiceIntent({ type: 'EXPLAIN_FEATURE', parameters: { featureId: 'draft-signal', level: 'simple' }, matchType: 'DETERMINISTIC', source: 'explique draft signal' }),
     };
 
     // Manufacture a fake LEVEL_3-shaped intent type to prove denyLevel3 —
@@ -187,7 +189,9 @@ try {
   check(results.policy.level1Allowed.decision === 'ALLOW', 'LEVEL_1 (SWITCH_FOCUS) allowed');
   check(results.policy.unknownDenied.decision === 'DENY', 'UNKNOWN intent denied');
   check(results.policy.needsClarificationConfirms.decision === 'CONFIRM', 'NEEDS_CLARIFICATION routes to CONFIRM, never an arbitrary pick');
-  check(results.policy.explainDenied.decision === 'DENY', 'EXPLAIN_FEATURE denied (not implemented — never silently executed)');
+  check(results.policy.explainAllowed.decision === 'ALLOW', 'EXPLAIN_FEATURE allowed for a known explainable feature in the registry');
+  check(results.policy.explainUnknownDenied.decision === 'DENY', 'EXPLAIN_FEATURE denied for an unknown feature');
+  check(results.policy.explainDraftDenied.decision === 'DENY', 'EXPLAIN_FEATURE denied for a draft/unverified feature');
   check(results.policy.level3StructurallyDenied === true, 'no intent in the real registry is classified LEVEL_3 in VOICE-5');
 
   // ── Confirmation model ────────────────────────────────────────────────

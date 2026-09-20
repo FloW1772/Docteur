@@ -17,6 +17,11 @@ cortex-server/data/
 # ── Test scratch DBs (recreated from scratch by the tests themselves via
 # fs.rmSync + initSqlite on every run — never meant to hold real content) ───
 cortex-server/data-test-*/
+# Same test-scratch pattern can also land at the repo root depending on a
+# test file's relative cwd (e.g. run from outside cortex-server/) — one
+# such root-level dir/test.db was found already committed by accident
+# before this rule existed; see the git-tracked-file note in the audit.
+data-test-*/
 
 # ── TLS certificates (mobile/HTTPS dev mode) ─────────────────────────────────
 certs/

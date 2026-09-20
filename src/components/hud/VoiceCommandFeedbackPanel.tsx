@@ -6,7 +6,7 @@
 import type { VoiceCommandFeedback } from '../../hooks/useVoiceCommandPipeline';
 import type { PendingVoiceConfirmation } from '../../lib/voicePolicy';
 import { useEffect, useRef } from 'react';
-import { HELP_DIRECTORY } from '../../content/capabilities';
+import { getRegisteredFeatures } from '../../content/featureRegistry';
 import { containsSensitiveContent } from '../../lib/voiceResponsePolicy';
 
 const INTENT_LABEL: Record<string, string> = {
@@ -51,9 +51,9 @@ export default function VoiceCommandFeedbackPanel({ feedback, pendingConfirmatio
     };
   }, [confirmationId]);
   const candidates = 'candidates' in feedback.intent.parameters ? feedback.intent.parameters.candidates : [];
-  const features = HELP_DIRECTORY.flatMap(category => category.items);
+  const features = getRegisteredFeatures();
   const targetId = 'featureId' in feedback.intent.parameters ? feedback.intent.parameters.featureId : undefined;
-  const safeTarget = features.find(item => item.feature === targetId)?.name;
+  const safeTarget = features.find(item => item.id === targetId)?.name;
   return (
     <div ref={panelRef} className="hud2-voice-feedback glass" role="region" aria-label="Résultat de la commande vocale" onKeyDown={event => {
       if (event.key === 'Escape' && pendingConfirmation) { event.preventDefault(); event.stopPropagation(); onCancel(); }
@@ -69,7 +69,7 @@ export default function VoiceCommandFeedbackPanel({ feedback, pendingConfirmatio
           <p role="status" aria-live="polite">Confirmation requise</p>
           <dl className="voice-metadata"><dt>Action</dt><dd>{INTENT_LABEL[pendingConfirmation.intent.type]}</dd><dt>Cible</dt><dd>{safeTarget ?? 'À préciser'}</dd><dt>Expiration</dt><dd><time dateTime={new Date(pendingConfirmation.expiresAt).toISOString()}>{new Date(pendingConfirmation.expiresAt).toLocaleTimeString()}</time> — expire après 20 secondes</dd></dl>
           {candidates.length > 0 && <><p>Précisez l’une des destinations proposées dans une nouvelle commande :</p><ul>{candidates.map(candidate => {
-            const feature = features.find(item => item.feature === candidate);
+            const feature = features.find(item => item.id === candidate);
             return feature ? <li key={candidate}>{feature.name}</li> : null;
           })}</ul></>}
           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>

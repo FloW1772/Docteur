@@ -54,7 +54,7 @@ const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioM
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
 const VideoSummaryModal = lazy(() => import('./components/modals/VideoSummaryModal'));
-const CyberAuditStudioModal = lazy(() => import('./components/modals/CyberAuditStudioModal'));
+const ObservateurStudioModal = lazy(() => import('./components/modals/ObservateurStudioModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -2351,8 +2351,8 @@ export default function App() {
   useModalOpenTracking(investmentStudioOpen);
   const [sherlockStudioOpen, setSherlockStudioOpen] = useState(false);
   useModalOpenTracking(sherlockStudioOpen);
-  const [cyberAuditStudioOpen, setCyberAuditStudioOpen] = useState(false);
-  useModalOpenTracking(cyberAuditStudioOpen);
+  const [observateurStudioOpen, setObservateurStudioOpen] = useState(false);
+  useModalOpenTracking(observateurStudioOpen);
   // HUD Command Center V2 — Focus vs Dashboard mode. Persisted locally
   // (existing localStorage convention, e.g. docteur.showHomeScreen) —
   // never a new DB table for a pure UI preference. Dashboard is
@@ -2375,13 +2375,6 @@ export default function App() {
   const setLastSherlockJobId = useCallback((jobId: string) => {
     setLastSherlockJobIdState(jobId);
     try { localStorage.setItem('docteur.lastSherlockJobId', jobId); } catch { /* Optional preference storage. */ }
-  }, []);
-  const [lastCyberMissionId, setLastCyberMissionIdState] = useState<string | null>(() => {
-    try { return localStorage.getItem('docteur.lastCyberMissionId'); } catch { return null; }
-  });
-  const setLastCyberMissionId = useCallback((missionId: string) => {
-    setLastCyberMissionIdState(missionId);
-    try { localStorage.setItem('docteur.lastCyberMissionId', missionId); } catch { /* Optional preference storage. */ }
   }, []);
   const audioPlayerToggleRef = useRef<(() => void) | null>(null);
   const [todoOpen, setTodoOpen]                = useState(false);
@@ -2409,7 +2402,7 @@ export default function App() {
       case 'metagpt':         setMetaGptStudioOpen(true); break;
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
-      case 'cyber-audit':     setCyberAuditStudioOpen(true); break;
+      case 'cyber-audit':     setObservateurStudioOpen(true); break;
       case 'kiwix':           setKiwixOpen(true); break;
       case 'todo':            setTodoOpen(true); break;
       case 'backup':          setBackupOpen(true); break;
@@ -4693,7 +4686,7 @@ export default function App() {
             setVideoSummaryOpen(true);
             setVideoSummaryMinimized(false);
           }}
-          onOpenCyberAudit={() => setCyberAuditStudioOpen(true)}
+          onOpenObservateur={() => setObservateurStudioOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
           onQuickMetaGptMission={() => setMetaGptStudioOpen(true)}
           onQuickSherlockSearch={() => setSherlockStudioOpen(true)}
@@ -5155,7 +5148,7 @@ export default function App() {
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
       {sherlockStudioOpen && <Suspense fallback={null}><SherlockStudioModal onClose={() => setSherlockStudioOpen(false)} onJobUpdate={setLastSherlockJobId} /></Suspense>}
-      {cyberAuditStudioOpen && <Suspense fallback={null}><CyberAuditStudioModal onClose={() => setCyberAuditStudioOpen(false)} onMissionUpdate={setLastCyberMissionId} /></Suspense>}
+      {observateurStudioOpen && <Suspense fallback={null}><ObservateurStudioModal onClose={() => setObservateurStudioOpen(false)} initialTab="WEB AUDIT" /></Suspense>}
 
       {kiwixOpen && (
         <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />

@@ -8,6 +8,7 @@ import { cortexClient } from '../lib/cortex/client';
 import { metagptRequest, type Mission } from '../lib/metagpt-studio';
 import { investmentRequest, type PaperPortfolio } from '../lib/investment-studio';
 import { listCyberMissions } from '../lib/cyber-audit-studio';
+import { getMonitorStatus } from '../lib/monitor-studio';
 import type { WidgetStatus } from '../components/hud/StatusIndicator';
 
 export interface ModuleSummary {
@@ -119,6 +120,25 @@ export function useCyberAuditSummary(): ModuleSummary {
       status: CYBER_STATUS_TO_WIDGET[latest.status] ?? 'idle',
       metric: `${latest.counts.findings} finding${latest.counts.findings === 1 ? '' : 's'}`,
       detail: latest.title,
+      loading: false,
+      error: null,
+    };
+  }, [data, loading, error]);
+}
+
+export function useObservateurSummary(): ModuleSummary {
+  const { data, loading, error } = useIntervalPoll(() => getMonitorStatus(), 15000);
+  return useMemo(() => {
+    if (loading) return { status: 'unavailable', loading: true, error: null };
+    if (error) return { status: 'error', loading: false, error, detail: 'Observateur indisponible' };
+    const status = data?.status;
+    if (!status) return { status: 'unavailable', loading: false, error: null, detail: 'Arrêté' };
+    if (status.degraded) return { status: 'error', loading: false, error: null, detail: 'MONITORING DEGRADED' };
+    if (!status.enabled) return { status: 'unavailable', loading: false, error: null, detail: 'Arrêté' };
+    return {
+      status: status.paused ? 'idle' : 'searching',
+      metric: status.paused ? 'En pause' : 'Actif',
+      detail: status.lastReportAt ? `Dernier rapport : ${new Date(status.lastReportAt).toLocaleDateString('fr-FR')}` : 'Aucun rapport',
       loading: false,
       error: null,
     };

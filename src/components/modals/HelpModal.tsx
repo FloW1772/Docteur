@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, HelpCircle, Search } from 'lucide-react';
-import { CAPABILITIES, LIMITATIONS, SHORTCUTS, GESTURES, HELP_DIRECTORY, type FeatureKey, type FeatureState } from '../../content/capabilities';
+import { CAPABILITIES, LIMITATIONS, SHORTCUTS, GESTURES, type FeatureKey, type FeatureState } from '../../content/capabilities';
+import { getRegisteredFeatures, searchFeatures } from '../../content/featureRegistry';
 
 interface Props {
   onClose: () => void;
@@ -34,17 +35,29 @@ export default function HelpModal({ onClose, onOpenFeature }: Props) {
 
   const filteredDirectory = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return HELP_DIRECTORY;
-    return HELP_DIRECTORY
-      .map(category => ({
-        ...category,
-        items: category.items.filter(item =>
-          item.name.toLowerCase().includes(q) ||
-          item.description.toLowerCase().includes(q) ||
-          item.keywords?.some(k => k.toLowerCase().includes(q))
-        ),
-      }))
-      .filter(category => category.items.length > 0);
+    const features = getRegisteredFeatures();
+    const matchedIds = q ? new Set(searchFeatures(q).map(item => item.id)) : new Set(features.map(item => item.id));
+
+    const grouped = new Map<string, { title: string; emoji: string; items: Array<{ name: string; description: string; feature: FeatureKey; state: FeatureState; keywords?: string[] }> }>();
+    for (const definition of features) {
+      if (!matchedIds.has(definition.id)) continue;
+      const categoryTitle = definition.category || 'Autre';
+      const group = grouped.get(categoryTitle) ?? { title: categoryTitle, emoji: '🔧', items: [] };
+      group.items.push({
+        name: definition.name,
+        description: definition.shortDescription,
+        feature: definition.id as FeatureKey,
+        state: definition.status === 'AVAILABLE' ? 'disponible' : definition.status === 'PARTIAL' ? 'partiel' : definition.status === 'EXPERIMENTAL' ? 'partiel' : 'local',
+        keywords: definition.aliases ?? [],
+      });
+      grouped.set(categoryTitle, group);
+    }
+
+    return [...grouped.values()].map(category => ({
+      ...category,
+      emoji: category.emoji,
+      title: category.title,
+    }));
   }, [query]);
 
   return (

@@ -17,7 +17,7 @@ import HudPanel from './HudPanel';
 import CortexLinks from './CortexLinks';
 import {
   useMetaGptSummary, useSherlockSummary, useInvestmentSummary, useOpenMontageSummary, useConnectorsSummary,
-  useCyberAuditSummary,
+  useObservateurSummary,
 } from '../../hooks/useModuleSummaries';
 
 interface Props {
@@ -27,7 +27,7 @@ interface Props {
   onOpenSherlock: () => void;
   onOpenInvestment: () => void;
   onOpenVideoSummary: () => void;
-  onOpenCyberAudit: () => void;
+  onOpenObservateur: () => void;
   onOpenSettings: () => void;
   onQuickMetaGptMission: () => void;
   onQuickSherlockSearch: () => void;
@@ -37,7 +37,7 @@ interface Props {
 
 export default function Dashboard({
   lastSherlockJobId, activityEvents,
-  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenCyberAudit, onOpenSettings,
+  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenObservateur, onOpenSettings,
   onQuickMetaGptMission, onQuickSherlockSearch, onQuickInvestmentAnalysis, onQuickVideoRender,
 }: Props) {
   const metagpt = useMetaGptSummary();
@@ -45,7 +45,7 @@ export default function Dashboard({
   const investment = useInvestmentSummary();
   const openMontage = useOpenMontageSummary();
   const connectors = useConnectorsSummary();
-  const cyberAudit = useCyberAuditSummary();
+  const observateur = useObservateurSummary();
 
   const modules = [
     { key: 'metagpt', active: metagpt.status !== 'unavailable' && metagpt.status !== 'idle' },
@@ -94,8 +94,8 @@ export default function Dashboard({
         />
 
         <ModuleWidget
-          name="Cyber Audit" status={cyberAudit.status} metric={cyberAudit.metric} detail={cyberAudit.detail}
-          loading={cyberAudit.loading} error={cyberAudit.error ?? undefined} onOpen={onOpenCyberAudit} openLabel="Ouvrir Cyber Studio"
+          name="Observateur" status={observateur.status} metric={observateur.metric} detail={observateur.detail}
+          loading={observateur.loading} error={observateur.error ?? undefined} onOpen={onOpenObservateur} openLabel="Ouvrir Observateur"
         />
 
         <HudPanel title="Actions rapides" compact>

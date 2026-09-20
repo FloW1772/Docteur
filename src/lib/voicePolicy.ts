@@ -4,6 +4,7 @@
 // authorizeVoiceIntent() here.
 import { VOICE_INTENTS } from './voiceIntentRegistry';
 import type { VoiceIntent, VoiceIntentType } from './voiceIntent';
+import { getFeatureDefinition } from '../content/featureRegistry';
 
 export type VoicePolicyDecision = 'ALLOW' | 'CONFIRM' | 'DENY';
 
@@ -34,7 +35,21 @@ export function authorizeVoiceIntent(intent: VoiceIntent): VoicePolicyResult {
 
   if (intent.type === 'UNKNOWN') return { decision: 'DENY', reason: 'Commande non reconnue.' };
   if (intent.type === 'NEEDS_CLARIFICATION') return { decision: 'CONFIRM', reason: 'Plusieurs destinations possibles — clarification requise.' };
-  if (intent.type === 'EXPLAIN_FEATURE') return { decision: 'DENY', reason: 'EXPLAIN_FEATURE is not implemented yet (no Local Explainer exists) — never executed.' };
+
+  if (intent.type === 'EXPLAIN_FEATURE') {
+    const featureId = String((intent.parameters as { featureId?: string }).featureId ?? '');
+    const feature = featureId ? getFeatureDefinition(featureId) : null;
+
+    if (!feature) {
+      return { decision: 'DENY', reason: `La fonctionnalité « ${featureId || 'inconnue'} » n’est pas référencée dans le Feature Registry.` };
+    }
+
+    if (feature.status === 'DRAFT' || feature.status === 'UNVERIFIED' || !feature.available || !feature.verified) {
+      return { decision: 'DENY', reason: `La fonctionnalité « ${feature.name} » n’est pas encore certifiée comme explicable.` };
+    }
+
+    return { decision: 'ALLOW', reason: `EXPLAIN_FEATURE est autorisé pour ${feature.name} — le Local Explainer lit la définition centrale de la fonctionnalité.` };
+  }
 
   if (definition.riskLevel === 'LEVEL_3') return denyLevel3();
 

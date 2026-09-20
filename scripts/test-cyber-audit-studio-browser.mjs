@@ -158,9 +158,9 @@ try {
 
   // ── Open Cyber Studio via Help Center search ──
   const openStudio = async () => {
-    await page.getByPlaceholder(/Rechercher/).fill('SENTINEL');
+    await page.getByPlaceholder(/Rechercher/).fill('Observateur');
     await page.getByRole('button', { name: 'Ouvrir', exact: true }).click();
-    await page.getByRole('dialog', { name: /Cyber Audit Studio/ }).waitFor();
+    await page.getByRole('dialog', { name: /Audit Web/ }).waitFor();
   };
   await openStudio().catch(async e => { console.error(await page.locator('body').innerText()); throw e; });
   assertions++;

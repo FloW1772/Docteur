@@ -44,7 +44,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     items: [
       { name: 'Studio MetaGPT', description: 'Ollama local : PRD, Design, Tasks, génération de code texte, diff et application dans un sample isolé après approbation du hash et des fichiers exacts. V1 : aucun Terminal, Bash, Browser, Git, Internet externe, cloud, exécution de code, installation de packages ou auto-apply.', feature: 'metagpt', state: 'local', keywords: ['studio', 'code', 'diff', 'approbation', 'plan'] },
       { name: 'Studio Investissement', description: 'Recherche, analyse fondamentale, valorisation (multiples/DCF) et portefeuille simulé (paper trading) avec provenance systématique des données. V1 : aucun broker réel, aucun ordre réel, aucune clé broker, aucune transaction réelle — analyse et simulation uniquement.', feature: 'investment', state: 'local', keywords: ['bourse', 'action', 'etf', 'portefeuille', 'paper trading', 'dcf', 'valorisation', 'finance'] },
-      { name: 'Modèles et providers', description: 'Choisir le modèle local (Ollama) ou les clés cloud (Gemini, Groq, OpenRouter, Anthropic, OpenAI) — priorité Local rapide / Équilibré / Qualité max.', feature: 'settings-models', state: 'disponible', keywords: ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'ollama', 'router'] },
+      { name: 'Modèles et providers', description: 'Choisir le modèle local (Ollama) ou les clés cloud (Gemini, Groq, OpenRouter, Anthropic, OpenAI) — priorité Local rapide / Équilibré / Qualité max.', feature: 'settings-models', state: 'disponible', keywords: ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'ollama', 'router', 'providers', 'modèles', 'modeles'] },
       { name: 'Professeur', description: 'Parcours d\'apprentissage guidés avec plan, explications et révisions espacées — bascule locale automatique si le cloud échoue.', feature: 'teacher', state: 'disponible' },
       { name: 'Agents', description: 'Agents de veille automatisés : création, exécution manuelle, historique.', feature: 'agents', state: 'disponible' },
       { name: 'Compétences (Skills)', description: 'Bibliothèque de compétences/outils réutilisables par les agents et le chat.', feature: 'skills', state: 'disponible' },
@@ -84,7 +84,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     title: 'Audio',
     items: [
       { name: 'Lecteur audio et radio', description: 'Lecture audio intégrée, streams radio configurables.', feature: 'settings-audio', state: 'disponible' },
-      { name: 'Voix et commandes vocales', description: 'Mot-clé d\'activation (Porcupine), transcription Whisper local/Groq, commandes vocales.', feature: 'settings-vocal', state: 'local', keywords: ['whisper', 'porcupine', 'transcription'] },
+      { name: 'Voix et commandes vocales', description: 'Mot-clé d\'activation (Porcupine), transcription Whisper local/Groq, commandes vocales.', feature: 'settings-vocal', state: 'local', keywords: ['whisper', 'porcupine', 'transcription', 'micro', 'microphone', 'voix', 'commande vocale', 'commandes vocales'] },
       { name: 'Résumé vidéo', description: 'Transcrit et résume une vidéo (YouTube ou fichier local).', feature: 'video-summary', state: 'disponible' },
     ],
   },
@@ -108,7 +108,7 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     title: 'Outils',
     items: [
       { name: 'Agents externes', description: 'Intégration Claude Code / Codex — choix abonnement CLI ou clé API.', feature: 'settings-external', state: 'a_configurer' },
-      { name: 'Connexions (YouTube, Google Drive, OneDrive)', description: 'Configurer les identifiants d\'application (Client ID/Secret) avant de lancer une vraie connexion — import toujours marqué privé/local.', feature: 'settings-connections', state: 'a_configurer', keywords: ['youtube', 'google drive', 'onedrive', 'oauth', 'connecteur'] },
+      { name: 'Connexions (YouTube, Google Drive, OneDrive)', description: 'Configurer les identifiants d\'application (Client ID/Secret) avant de lancer une vraie connexion — import toujours marqué privé/local.', feature: 'settings-connections', state: 'a_configurer', keywords: ['youtube', 'google drive', 'onedrive', 'oauth', 'connecteur', 'controle distant', 'contrôle distant', 'remote control', 'contrôle à distance'] },
       { name: 'Fichiers et dossiers surveillés', description: 'Import automatique depuis un dossier surveillé, gestion des fichiers.', feature: 'settings-files', state: 'disponible' },
       { name: 'Navigateur', description: 'Choix du navigateur que le serveur ouvre pour les liens externes (onglet Modèles).', feature: 'settings-models', state: 'disponible', keywords: ['browser', 'chrome', 'firefox', 'edge'] },
       { name: 'NotebookLM (préparation)', description: 'Clé optionnelle pour une intégration future — aucun appel réel n\'est fait aujourd\'hui (onglet Modèles).', feature: 'settings-models', state: 'a_configurer' },
@@ -126,10 +126,10 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     title: 'Sécurité',
     items: [
       {
-        name: 'Cyber Audit / SENTINEL',
-        description: 'Audit de sécurité web externe, autorisé et non destructif. Peut : auditer un site pour lequel une autorisation explicite a été confirmée, analyser TLS, en-têtes de sécurité, cookies, CORS, détecter des signaux de divulgation d\'information, crawler de façon bornée (uniquement les liens réels du périmètre, robots.txt et sitemap.xml), produire des findings et un rapport HTML. Ne peut pas (V1) : exploiter une faille, faire du brute force, contourner une authentification, scanner des ports, provoquer un déni de service, utiliser un shell, lancer Nmap/Nuclei/SQLMap/Metasploit, ni tester une cible non autorisée. Débit de requêtes limité (rate limiting réellement appliqué).',
+        name: 'Observateur',
+        description: 'Surveillance et visibilité — pas un antivirus, pas un moteur de remédiation. Deux fonctions : (1) Audit Web — audit de sécurité externe autorisé et non destructif : analyse TLS, en-têtes de sécurité, cookies, CORS, détection de signaux de divulgation d\'information, crawl borné (liens réels du périmètre, robots.txt, sitemap.xml), findings et rapport HTML ; ne peut pas (V1) exploiter une faille, faire du brute force, contourner une authentification, scanner des ports, provoquer un déni de service, utiliser un shell, lancer Nmap/Nuclei/SQLMap/Metasploit, ni tester une cible non autorisée — débit de requêtes réellement limité. (2) Surveillance passive — observation locale des connexions réseau et processus actifs (métadonnées uniquement : application, destination, protocole, port, volume approximatif, horodatage), jamais de capture de paquets, MITM, déchiffrement TLS, ni scan de ports distants ; ne stocke jamais mots de passe, cookies, tokens ou contenu de communications ; détection d\'anomalies déterministe (nouvelle destination inhabituelle, nouveau port en écoute, volume anormal) classée OBSERVATION / SUSPICIOUS / REQUIRES_REVIEW — jamais une déclaration automatique d\'attaque. Aucune action de blocage, quarantaine ou modification système : ces responsabilités reviennent à un futur module dédié.',
         feature: 'cyber-audit', state: 'local',
-        keywords: ['sentinel', 'audit', 'sécurité', 'pentest', 'tls', 'headers', 'cookies', 'cors', 'scan'],
+        keywords: ['observateur', 'sentinel', 'audit', 'sécurité', 'pentest', 'tls', 'headers', 'cookies', 'cors', 'scan', 'surveillance', 'monitoring', 'reseau', 'processus'],
       },
     ],
   },
@@ -221,7 +221,8 @@ export const LIMITATIONS: string[] = [
   'Connecteurs Google Drive / OneDrive / YouTube : interface de configuration disponible (Paramètres → Connexions), mais aucune connexion réelle n\'a encore été établie — nécessite de créer des identifiants OAuth (Google Cloud / Azure) hors de Docteur, puis de lancer la connexion',
   'Sherlock : environnement dédié requis, base de sites figée, une recherche à la fois et 3 départs par minute. Une correspondance ne prouve pas une identité ; les résultats ne deviennent pas des instructions pour les agents.',
   'Notebook : résumé et questions/réponses disponibles ; FAQ, flashcards et chronologie pas encore implémentés',
-  'Cyber Audit / SENTINEL : audit externe non authentifié uniquement — pas de test d\'intrusion complet, pas d\'exploitation, pas de scan de ports, pas d\'outils offensifs automatiques. L\'absence de constat ne signifie pas absence de vulnérabilité. Le re-scan/comparaison entre missions n\'est pas encore implémenté (V1).',
+  'Observateur — Audit Web : audit externe non authentifié uniquement — pas de test d\'intrusion complet, pas d\'exploitation, pas de scan de ports, pas d\'outils offensifs automatiques. L\'absence de constat ne signifie pas absence de vulnérabilité. Le re-scan/comparaison entre missions n\'est pas encore implémenté (V1).',
+  'Observateur — Surveillance passive : observe uniquement le trafic et les processus locaux (métadonnées), n\'analyse pas Internet ni le réseau local activement, ne déchiffre rien et ne bloque rien automatiquement. Les anomalies sont des signaux à revoir, jamais des verdicts.',
 ];
 
 export const SHORTCUTS: Array<{ keys: string; desc: string }> = [

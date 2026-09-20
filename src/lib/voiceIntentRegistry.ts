@@ -4,7 +4,7 @@
 // Handlers are wired in voiceIntentExecutor.ts, not here, so this file
 // stays a pure declaration with no App.tsx/React dependency.
 import type { FeatureKey } from '../content/capabilities';
-import { HELP_DIRECTORY } from '../content/capabilities';
+import { getRegisteredFeatures } from '../content/featureRegistry';
 import type { RiskLevel, VoiceIntentType } from './voiceIntent';
 
 export interface VoiceIntentDefinition {
@@ -41,7 +41,7 @@ export const VOICE_INTENTS: Record<VoiceIntentType, VoiceIntentDefinition> = {
 // voice intent can never reference a feature that doesn't have a real,
 // audited opener in App.tsx. No parallel "second list that could rot."
 export const OPENABLE_FEATURE_IDS: ReadonlySet<FeatureKey> = new Set(
-  HELP_DIRECTORY.flatMap(category => category.items.map(item => item.feature)),
+  getRegisteredFeatures().map(definition => definition.id as FeatureKey),
 );
 
 export function isOpenableFeatureId(value: string): value is FeatureKey {

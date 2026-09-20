@@ -1,13 +1,13 @@
 import { VOICE_INTENTS } from '../../lib/voiceIntentRegistry';
-import { HELP_DIRECTORY } from '../../content/capabilities';
+import { getRegisteredFeatures } from '../../content/featureRegistry';
 import { parseDeterministicIntent } from '../../lib/voiceIntentParser';
 
-const featureExamples = HELP_DIRECTORY.flatMap(category => category.items).flatMap(item => {
-  const example = [item.name, ...(item.keywords ?? [])].map(name => `ouvre ${name}`).find(text => {
+const featureExamples = getRegisteredFeatures().flatMap(item => {
+  const example = [item.name, ...(item.aliases ?? [])].map(name => `ouvre ${name}`).find(text => {
     const parsed = parseDeterministicIntent(text);
-    return parsed.type === 'OPEN_FEATURE' && 'featureId' in parsed.parameters && parsed.parameters.featureId === item.feature;
+    return parsed.type === 'OPEN_FEATURE' && 'featureId' in parsed.parameters && parsed.parameters.featureId === item.id;
   });
-  return example ? [{ feature: item.feature, text: example }] : [];
+  return example ? [{ feature: item.id, text: example }] : [];
 });
 
 /** Registry descriptions are the catalogue; no parallel command/action allowlist. */

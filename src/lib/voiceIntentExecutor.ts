@@ -7,6 +7,7 @@
 // caller (App.tsx) already owns and has already audited.
 import type { VoiceIntent } from './voiceIntent';
 import type { FeatureKey } from '../content/capabilities';
+import { explainFeature, getFeatureDefinition } from '../content/featureRegistry';
 import type { OpenableSettingsTab } from './voiceIntentRegistry';
 
 export interface VoiceIntentActions {
@@ -81,8 +82,12 @@ export function executeVoiceIntent(intent: VoiceIntent, actions: VoiceIntentActi
     case 'CAMERA_OFF':
       actions.cameraOff();
       return { ok: true, message: 'Caméra désactivée.' };
-    case 'EXPLAIN_FEATURE':
-      return { ok: false, message: 'Cette fonctionnalité n’est pas encore disponible.' };
+    case 'EXPLAIN_FEATURE': {
+      const { featureId } = intent.parameters as { featureId: FeatureKey };
+      const feature = getFeatureDefinition(featureId) ?? { id: featureId, name: featureId, status: 'DRAFT', shortDescription: 'Description non certifiée.', limitations: ['Documentation non validée.'] } as const;
+      const summary = explainFeature(featureId);
+      return { ok: true, message: summary || `${feature.name} — ${feature.shortDescription}` };
+    }
     case 'UNKNOWN':
       return { ok: false, message: 'Je n’ai pas reconnu cette commande.' };
     case 'NEEDS_CLARIFICATION':

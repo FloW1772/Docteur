@@ -35,6 +35,17 @@ Agents planifiables, veille thématique, génération de prompts et outils spéc
 🎥 **Multimédia**
 Résumé vidéo, transcription, analyse d'image et OCR.
 
+## ✅ Definition of Done — nouvelle fonctionnalité Docteur
+
+Une nouvelle feature n’est pas terminée tant que :
+
+- elle est enregistrée dans le catalogue central
+- son statut est défini
+- elle est explicable via le Local Explainer
+- ses limites sont documentées
+- ses implications sécurité / local / cloud sont indiquées
+- les tests du registry passent
+
 ## 🚀 Démarrage rapide
 
 ```powershell

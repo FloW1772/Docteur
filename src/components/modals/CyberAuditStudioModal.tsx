@@ -25,6 +25,12 @@ import { studioRequestError } from '../../lib/studio-errors';
 interface Props {
   onClose: () => void;
   onMissionUpdate?: (missionId: string) => void;
+  /** When true, renders only the panel body (no StudioShell backdrop/dialog
+   * chrome) — used by ObservateurStudioModal to embed this exact,
+   * behavior-unchanged panel as its WEB AUDIT tab. Standalone callers
+   * (default, false) keep the original full-modal behavior verified by the
+   * existing 25 Playwright tests. */
+  bare?: boolean;
 }
 
 type Tab = 'OVERVIEW' | 'SCOPE' | 'SCAN' | 'FINDINGS' | 'EVIDENCE' | 'REMEDIATION' | 'REPORT' | 'HISTORY';
@@ -98,7 +104,7 @@ function buildScope(w: WizardState): CyberScopeInput {
   };
 }
 
-export default function CyberAuditStudioModal({ onClose, onMissionUpdate }: Props) {
+export default function CyberAuditStudioModal({ onClose, onMissionUpdate, bare = false }: Props) {
   const [tab, setTab] = useState<Tab>('OVERVIEW');
   const [mission, setMission] = useState<CyberMission | null>(null);
   const [findings, setFindings] = useState<CyberFinding[]>([]);
@@ -278,13 +284,8 @@ export default function CyberAuditStudioModal({ onClose, onMissionUpdate }: Prop
 
   const badges = { FINDINGS: findings.length || undefined };
 
-  return (
-    <StudioShell
-      icon={<ShieldCheck size={20} />}
-      title="Cyber Audit Studio — SENTINEL"
-      onClose={onClose}
-      subtitle="Audit externe, automatisé, autorisé et non destructif. Aucune exploitation, aucun brute force, aucun scan de ports."
-    >
+  const body = (
+    <>
       {error && <StudioErrorState message={error} />}
 
       {!mission && !wizardOpen && (
@@ -365,6 +366,19 @@ export default function CyberAuditStudioModal({ onClose, onMissionUpdate }: Prop
           onCopyEvidence={copyEvidence}
         />
       )}
+    </>
+  );
+
+  if (bare) return body;
+
+  return (
+    <StudioShell
+      icon={<ShieldCheck size={20} />}
+      title="Audit Web — Observateur"
+      onClose={onClose}
+      subtitle="Audit externe, automatisé, autorisé et non destructif. Aucune exploitation, aucun brute force, aucun scan de ports."
+    >
+      {body}
     </StudioShell>
   );
 }

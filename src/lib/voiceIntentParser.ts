@@ -9,7 +9,7 @@
 // SEARCH_QUERY's text is carried as inert data with a hard length cap.
 import { makeIntent, type VoiceIntent } from './voiceIntent';
 import { isOpenableFeatureId, isOpenableSettingsTab, MAX_SEARCH_QUERY_LENGTH, type OpenableSettingsTab } from './voiceIntentRegistry';
-import { HELP_DIRECTORY } from '../content/capabilities';
+import { getRegisteredFeatures, resolveFeatureAlias as resolveRegistryAlias } from '../content/featureRegistry';
 import type { FeatureKey } from '../content/capabilities';
 
 function normalize(text: string): string {
@@ -51,7 +51,7 @@ export function isEmergencyVoiceStop(text: string): boolean {
 // matching producing false positives on named studios) ──────────────────
 
 const FEATURE_ALIASES: Record<string, FeatureKey> = {
-  'sentinel': 'cyber-audit', 'cyber audit': 'cyber-audit', 'audit cyber': 'cyber-audit', 'securite': 'cyber-audit',
+  'observateur': 'cyber-audit', 'audit web': 'cyber-audit', 'cyber audit': 'cyber-audit', 'audit cyber': 'cyber-audit', 'sentinel': 'cyber-audit', 'securite': 'cyber-audit',
   'metagpt': 'metagpt', 'meta gpt': 'metagpt',
   'sherlock': 'sherlock',
   'investissement': 'investment', 'investment': 'investment', 'bourse': 'investment',
@@ -69,16 +69,13 @@ const FEATURE_ALIASES: Record<string, FeatureKey> = {
   'video': 'video-summary', 'resume video': 'video-summary',
 };
 
-// Derived aliases from HELP_DIRECTORY's own keywords/name (mission item 6
-// recommendation) — supplements the curated list above without requiring
-// every feature to be hand-aliased; only added if it doesn't collide with
-// a curated entry, so the explicit list always wins.
-for (const category of HELP_DIRECTORY) {
-  for (const item of category.items) {
-    for (const rawKeyword of [item.name, ...(item.keywords ?? [])]) {
-      const key = normalize(rawKeyword);
-      if (key && !(key in FEATURE_ALIASES)) FEATURE_ALIASES[key] = item.feature;
-    }
+// Registry-backed aliases stay canonical and deterministic. The registry is
+// the source of truth; this local compatibility map just preserves the same
+// low-risk resolution behavior while avoiding a second manual feature list.
+for (const definition of getRegisteredFeatures()) {
+  for (const rawKeyword of [definition.name, ...(definition.aliases ?? [])]) {
+    const key = normalize(rawKeyword);
+    if (key && !(key in FEATURE_ALIASES)) FEATURE_ALIASES[key] = definition.id as FeatureKey;
   }
 }
 
@@ -107,6 +104,8 @@ const CAMERA_ON_RE = /active.*camera|camera.*active/;
 function resolveFeatureAlias(phrase: string): FeatureKey | null {
   const key = normalize(phrase);
   if (key in FEATURE_ALIASES) return FEATURE_ALIASES[key];
+  const registryMatch = resolveRegistryAlias(key);
+  if (registryMatch && isOpenableFeatureId(registryMatch)) return registryMatch as FeatureKey;
   // Loose containment match as a fallback (e.g. "le studio sentinel" ->
   // "sentinel" still resolves) — but only ever resolves to a KNOWN alias
   // key, never invents a featureId from arbitrary text.

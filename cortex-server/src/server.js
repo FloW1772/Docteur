@@ -50,6 +50,8 @@ import { createVideoSummaryRoute } from './routes/video-summary.js';
 import { createOpenMontageRoute } from './routes/openmontage.js';
 import { createMetaGptRoute } from './routes/metagpt.js';
 import { createCyberAuditRoute } from './routes/cyber-audit.js';
+import { createMonitorRoute } from './routes/monitor.js';
+import { startMonitorServiceIfAutostart } from './lib/monitor-service.js';
 import { startAgentScheduler }    from './lib/agent-runner.js';
 import { createInboxRoute }       from './routes/inbox.js';
 import { startInboxWatcher }      from './lib/inbox-watcher.js';
@@ -1686,6 +1688,7 @@ app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createOpenMontageRoute());
 app.route('/api', createMetaGptRoute({ logger }));
 app.route('/api', createCyberAuditRoute({ logger }));
+app.route('/api', createMonitorRoute({ logger, ollamaClient, ollamaModel: env.ANSWER_MODEL }));
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
@@ -1737,6 +1740,11 @@ serve({
   scheduleDailyBackup(env.LANCEDB_PATH, logger);
   startAgentScheduler({ logger, ollamaClient, services });
   startInboxWatcher({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger });
+  try {
+    startMonitorServiceIfAutostart({ ollamaClient, ollamaModel: env.ANSWER_MODEL, logger });
+  } catch (err) {
+    logger.warn({ err: err?.message }, 'observateur monitor: autostart failed, continuing without it');
+  }
   // Compact at 1000 active fragments or when obsolete versions occupy disk.
   // Runs in background so startup is not blocked.
   let checkingCompaction = false;

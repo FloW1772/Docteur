@@ -930,6 +930,115 @@ export function initSqlite(sqlitePath) {
       ON cyber_audit_events(mission_id, created_at ASC);
   `);
 
+  // ── Observateur passive monitoring (monitor-* modules) — local network
+  // connection + process observation, metadata only. Kept in its own
+  // exec() block, separate from cyber_audit_* (Web Audit): distinct
+  // feature, distinct lifecycle, zero shared tables. Config lives under
+  // meta key 'monitor_settings' via getMeta/setMeta (same convention as
+  // inbox_settings) rather than a dedicated settings table — small,
+  // low-write, no query need.
+  //
+  // Bounded-growth strategy: connections/processes are upserted per
+  // HOURLY window_bucket (see monitor-aggregator.js) — one row per
+  // distinct (process, destination, hour) tuple, updated repeatedly via
+  // sample_count/last_seen, never one row per poll. This plus daily
+  // retention purge (monitor-retention.js, mirrors
+  // purgeRequestLogsOlderThan below) is what keeps these tables bounded
+  // under continuous polling.
+  //
+  // Privacy: no column here ever holds packet payload, credentials,
+  // cookies, tokens, or message/document content — enforced upstream by
+  // monitor-privacy-guard.js, which every collector sample must pass
+  // through before reaching the aggregator that writes these rows.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS monitor_connections (
+      id TEXT PRIMARY KEY,
+      process_name TEXT NOT NULL,
+      pid INTEGER,
+      remote_address TEXT NOT NULL,
+      remote_port INTEGER,
+      local_port INTEGER,
+      protocol TEXT NOT NULL,
+      state TEXT,
+      first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sample_count INTEGER NOT NULL DEFAULT 1,
+      approx_bytes INTEGER NOT NULL DEFAULT 0,
+      window_bucket TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uidx_monitor_connections_bucket
+      ON monitor_connections(process_name, remote_address, remote_port, window_bucket);
+
+    CREATE TABLE IF NOT EXISTS monitor_processes (
+      id TEXT PRIMARY KEY,
+      process_name TEXT NOT NULL,
+      pid INTEGER,
+      first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      connection_count INTEGER NOT NULL DEFAULT 0,
+      distinct_destinations INTEGER NOT NULL DEFAULT 0,
+      window_bucket TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uidx_monitor_processes_bucket
+      ON monitor_processes(process_name, window_bucket);
+
+    -- Deterministic-rule anomaly rows (monitor-anomaly.js). severity is
+    -- always one of OBSERVATION/SUSPICIOUS/REQUIRES_REVIEW — never an
+    -- "attack"/"malware" verdict string. security_signal is a JSON blob
+    -- ({source:'observateur', category, severity, confidence,
+    -- evidenceRef}) stored for a future MAITRE module to consume; V1
+    -- never emits it anywhere, it is only queryable/displayable.
+    CREATE TABLE IF NOT EXISTS monitor_anomalies (
+      id TEXT PRIMARY KEY,
+      detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      rule_id TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      process_name TEXT,
+      remote_address TEXT,
+      description TEXT NOT NULL DEFAULT '',
+      evidence_ref TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      security_signal TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS monitor_reports (
+      id TEXT PRIMARY KEY,
+      report_type TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      anomaly_count INTEGER NOT NULL DEFAULT 0,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      llm_narrative TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Append-only lifecycle log — mirrors cyber_audit_events: start,
+    -- pause, resume, mode-change, degraded, report-generated, purge-run.
+    CREATE TABLE IF NOT EXISTS monitor_events (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_monitor_connections_window
+      ON monitor_connections(window_bucket DESC, process_name);
+    CREATE INDEX IF NOT EXISTS idx_monitor_connections_last_seen
+      ON monitor_connections(last_seen DESC);
+    CREATE INDEX IF NOT EXISTS idx_monitor_processes_window
+      ON monitor_processes(window_bucket DESC);
+    CREATE INDEX IF NOT EXISTS idx_monitor_anomalies_detected_at
+      ON monitor_anomalies(detected_at DESC, severity);
+    CREATE INDEX IF NOT EXISTS idx_monitor_reports_period
+      ON monitor_reports(period_start DESC);
+    CREATE INDEX IF NOT EXISTS idx_monitor_events_created_at
+      ON monitor_events(created_at DESC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -1114,6 +1223,153 @@ export function purgeRequestLogsOlderThan(days, { batchSize = REQUEST_LOG_PURGE_
     if (result.changes < batchSize) break; // fewer rows than the batch size means we've caught up
   }
   return totalDeleted;
+}
+
+// ── Observateur passive monitoring — DB access ─────────────────────────────
+//
+// One batched better-sqlite3 transaction per collector cycle (upsertMonitor
+// Connections/Processes), never one write per sample — this is the write
+// side of the "bounded DB writes/min" performance requirement.
+
+const MONITOR_PURGE_BATCH_SIZE = 500;
+const MONITOR_PURGE_MAX_BATCHES = 20;
+
+export function upsertMonitorConnections(rows) {
+  if (!database || rows.length === 0) return;
+  const upsert = database.prepare(`
+    INSERT INTO monitor_connections
+      (id, process_name, pid, remote_address, remote_port, local_port, protocol, state, first_seen, last_seen, sample_count, approx_bytes, window_bucket)
+    VALUES (@id, @process_name, @pid, @remote_address, @remote_port, @local_port, @protocol, @state, @first_seen, @last_seen, 1, @approx_bytes, @window_bucket)
+    ON CONFLICT(process_name, remote_address, remote_port, window_bucket) DO UPDATE SET
+      last_seen = excluded.last_seen,
+      sample_count = sample_count + 1,
+      approx_bytes = approx_bytes + excluded.approx_bytes,
+      state = excluded.state,
+      pid = excluded.pid
+  `);
+  const runAll = database.transaction((batch) => { for (const row of batch) upsert.run(row); });
+  runAll(rows);
+}
+
+export function upsertMonitorProcesses(rows) {
+  if (!database || rows.length === 0) return;
+  const upsert = database.prepare(`
+    INSERT INTO monitor_processes
+      (id, process_name, pid, first_seen, last_seen, connection_count, distinct_destinations, window_bucket)
+    VALUES (@id, @process_name, @pid, @first_seen, @last_seen, @connection_count, @distinct_destinations, @window_bucket)
+    ON CONFLICT(process_name, window_bucket) DO UPDATE SET
+      last_seen = excluded.last_seen,
+      connection_count = excluded.connection_count,
+      distinct_destinations = excluded.distinct_destinations,
+      pid = excluded.pid
+  `);
+  const runAll = database.transaction((batch) => { for (const row of batch) upsert.run(row); });
+  runAll(rows);
+}
+
+export function getLiveMonitorConnections(sinceIso, limit = 500) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM monitor_connections WHERE last_seen >= ? ORDER BY last_seen DESC LIMIT ?'
+  ).all(sinceIso, limit);
+}
+
+export function getMonitorProcesses(sinceIso, limit = 500) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM monitor_processes WHERE last_seen >= ? ORDER BY last_seen DESC LIMIT ?'
+  ).all(sinceIso, limit);
+}
+
+export function getMonitorConnectionHistory(processName, sinceIso) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM monitor_connections WHERE process_name = ? AND first_seen >= ? ORDER BY first_seen ASC'
+  ).all(processName, sinceIso);
+}
+
+export function insertMonitorAnomaly(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO monitor_anomalies
+      (id, detected_at, rule_id, severity, process_name, remote_address, description, evidence_ref, status, security_signal)
+    VALUES (@id, @detected_at, @rule_id, @severity, @process_name, @remote_address, @description, @evidence_ref, @status, @security_signal)
+  `).run(row);
+}
+
+export function getMonitorAnomalies(limit = 200) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM monitor_anomalies ORDER BY detected_at DESC LIMIT ?').all(limit);
+}
+
+export function insertMonitorReport(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO monitor_reports
+      (id, report_type, period_start, period_end, mode, event_count, anomaly_count, summary_json, llm_narrative, created_at)
+    VALUES (@id, @report_type, @period_start, @period_end, @mode, @event_count, @anomaly_count, @summary_json, @llm_narrative, @created_at)
+  `).run(row);
+}
+
+export function getMonitorReports(limit = 100) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM monitor_reports ORDER BY period_start DESC LIMIT ?').all(limit);
+}
+
+export function getMonitorReportById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM monitor_reports WHERE id = ?').get(id) ?? null;
+}
+
+export function getLastMonitorReport(reportType = null) {
+  if (!database) return null;
+  if (reportType) {
+    return database.prepare('SELECT * FROM monitor_reports WHERE report_type = ? ORDER BY period_end DESC LIMIT 1').get(reportType) ?? null;
+  }
+  return database.prepare('SELECT * FROM monitor_reports ORDER BY period_end DESC LIMIT 1').get() ?? null;
+}
+
+export function insertMonitorEvent(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO monitor_events (id, event_type, detail, created_at)
+    VALUES (@id, @event_type, @detail, @created_at)
+  `).run(row);
+}
+
+export function getMonitorEvents(limit = 200) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM monitor_events ORDER BY created_at DESC LIMIT ?').all(limit);
+}
+
+// Purges monitor_* tables older than `days`, in bounded batches — copies
+// purgeRequestLogsOlderThan's shape exactly. Scoped ONLY to monitor_*
+// tables: never touches cyber_audit_* or any other Docteur data.
+export function purgeMonitorDataOlderThan(days, { batchSize = MONITOR_PURGE_BATCH_SIZE, maxBatches = MONITOR_PURGE_MAX_BATCHES } = {}) {
+  if (!database) return 0;
+  const numDays = Number(days);
+  if (!Number.isFinite(numDays)) return 0;
+  const cutoff = new Date(Date.now() - numDays * 86_400_000).toISOString();
+
+  const purgeTable = (table, timeCol) => {
+    const deleteBatch = database.prepare(
+      `DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} WHERE ${timeCol} < ? LIMIT ?)`
+    );
+    let deleted = 0;
+    for (let batch = 0; batch < maxBatches; batch++) {
+      const result = deleteBatch.run(cutoff, batchSize);
+      deleted += result.changes;
+      if (result.changes < batchSize) break;
+    }
+    return deleted;
+  };
+
+  return (
+    purgeTable('monitor_connections', 'last_seen') +
+    purgeTable('monitor_processes', 'last_seen') +
+    purgeTable('monitor_events', 'created_at') +
+    purgeTable('monitor_reports', 'created_at')
+  );
 }
 
 export function setMeta(key, value) {
