@@ -11,6 +11,8 @@ import { ConnectionsSettingsTab } from '../settings/ConnectionsSettingsTab';
 import { OpenMontageSettingsTab } from '../settings/OpenMontageSettingsTab';
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
+import VoiceSettingsSection, { type VoiceRuntime } from '../settings/VoiceSettingsSection';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 const PROVIDER_STATE_LABELS: Record<ProviderHealthState, string> = {
   ready:              'CONNECTÉ',
@@ -93,6 +95,9 @@ interface Props {
   easterEggEnabled?:            boolean;
   onEasterEggEnabledChange?:    (v: boolean) => void;
   initialTab?:                  Tab;
+  voiceRuntime?: VoiceRuntime;
+  onCancelVoice?: () => void;
+  onVoiceSettingsChange?: (settings: VoiceSettings) => void;
 }
 
 const LEVEL_COLORS: Record<number, string> = {
@@ -132,8 +137,11 @@ export default function SettingsModal({
   onGestureSensitivityChange,
   easterEggEnabled = true,
   onEasterEggEnabledChange,
-  initialTab,
+  initialTab, voiceRuntime, onCancelVoice, onVoiceSettingsChange,
 }: Props) {
+  const dialogRef = useDialogFocus();
+  const [routerLoaded, setRouterLoaded] = useState(false);
+  const voiceSaveRef = useRef(false);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'models');
   const [audioSettings, setAudioSettings] = useState<AudioPlayerSettings | null>(null);
   const [audioError, setAudioError]       = useState<string | null>(null);
@@ -258,6 +266,7 @@ export default function SettingsModal({
       ]);
       setStatuses(statusRes.statuses);
       setSettings(statusRes.settings);
+      setRouterLoaded(true);
       setOllamaOk(statusRes.ollama_connected && ollamaRes.connected);
       setOllamaModels(ollamaRes);
       setStats(statsRes.stats);
@@ -289,7 +298,9 @@ export default function SettingsModal({
 
   useEffect(() => {
     if (tab !== 'vocal') return;
-    cortexClient.getVoiceSettings().then(setVoiceSettings).catch(() => {});
+    let active = true;
+    cortexClient.getVoiceSettings().then(value => { if (active) setVoiceSettings(value); }).catch(() => { if (active) setVoiceError('Les réglages vocaux sont indisponibles.'); });
+    return () => { active = false; };
   }, [tab]);
 
   useEffect(() => {
@@ -454,14 +465,20 @@ export default function SettingsModal({
   }
 
   async function saveVoiceSetting(updates: Partial<VoiceSettings>) {
+    if (voiceSaveRef.current || !voiceSettings) return;
+    if (updates.whisperMode === 'groq' && (!routerLoaded || settings.strict_local_mode)) return;
+    voiceSaveRef.current = true;
     setVoiceSaving(true);
     setVoiceError(null);
     try {
       await cortexClient.updateVoiceSettings(updates);
-      setVoiceSettings(prev => prev ? { ...prev, ...updates } : null);
+      const next = { ...voiceSettings, ...updates };
+      setVoiceSettings(next);
+      onVoiceSettingsChange?.(next);
     } catch (e) {
-      setVoiceError(e instanceof Error ? e.message : 'Erreur');
+      setVoiceError('Impossible de sauvegarder les réglages vocaux. Réessayez.');
     } finally {
+      voiceSaveRef.current = false;
       setVoiceSaving(false);
     }
   }
@@ -473,7 +490,7 @@ export default function SettingsModal({
       await cortexClient.uploadPorcupineModel(file);
       setVoiceSettings(prev => prev ? { ...prev, hasPorcupineModel: true } : null);
     } catch (e) {
-      setVoiceError(e instanceof Error ? e.message : 'Erreur upload');
+      setVoiceError('Le modèle vocal n’a pas pu être importé. Réessayez.');
     } finally {
       setPpnUploading(false);
     }
@@ -736,7 +753,7 @@ export default function SettingsModal({
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div
-        className="modal-box"
+        className="modal-box voice-settings-modal" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Paramètres" tabIndex={-1}
         onClick={e => e.stopPropagation()}
         style={{
           width: 'min(980px, calc(100vw - 24px))',
@@ -752,13 +769,13 @@ export default function SettingsModal({
           <Cpu size={15} style={{ color: '#3dffaa', flexShrink: 0 }} />
           <div className="flex-1">
             <h3 className="font-grotesk font-semibold text-base" style={{ color: '#f0eaff' }}>
-              Paramètres — Router intelligent
+              {tab === 'vocal' ? 'Paramètres — Voix & microphone' : 'Paramètres — Router intelligent'}
             </h3>
             <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
-              Ctrl+, · Sélection automatique du LLM selon la complexité
+              {tab === 'vocal' ? 'Alt+M · Dictée, commandes et lecture' : 'Ctrl+, · Sélection automatique du LLM selon la complexité'}
             </p>
           </div>
-          <button type="button" style={{ color: '#5a4a7a' }} onClick={onClose}>
+          <button type="button" aria-label="Fermer les paramètres" style={{ color: '#5a4a7a' }} onClick={onClose}>
             <X size={14} />
           </button>
         </div>
@@ -777,7 +794,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOCAL' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOIX & MICRO' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -2820,69 +2837,7 @@ export default function SettingsModal({
 
           {tab === 'vocal' && (
             <div className="px-5 py-4 flex flex-col gap-5">
-              {voiceError && (
-                <div className="font-mono text-xs px-3 py-2 rounded" style={{ background: 'rgba(255,77,88,0.1)', color: '#ff4d58' }}>
-                  {voiceError}
-                </div>
-              )}
-
-              {/* Enable toggle */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-mono text-xs" style={{ color: '#e2d9f3', letterSpacing: '0.08em' }}>Activer l'interface vocale</p>
-                  <p className="font-mono" style={{ fontSize: 10, color: '#5a4a7a', marginTop: 2 }}>
-                    Bouton micro dans la barre · raccourci Alt+M
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={voiceSaving || !voiceSettings}
-                  onClick={() => saveVoiceSetting({ enabled: !voiceSettings?.enabled })}
-                  className="font-mono text-xs px-3 py-1.5 rounded"
-                  style={{
-                    background: voiceSettings?.enabled ? 'rgba(61,255,170,0.15)' : 'rgba(90,74,122,0.2)',
-                    color: voiceSettings?.enabled ? '#3dffaa' : '#5a4a7a',
-                    border: `1px solid ${voiceSettings?.enabled ? 'rgba(61,255,170,0.3)' : 'rgba(90,74,122,0.3)'}`,
-                  }}
-                >
-                  {voiceSettings?.enabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}
-                </button>
-              </div>
-
-              {/* Transcription mode */}
-              <div style={{ borderTop: '1px solid rgba(61,255,170,0.08)', paddingTop: 16 }}>
-                <p className="font-mono mb-2" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>
-                  TRANSCRIPTION
-                </p>
-                <div className="flex gap-2">
-                  {(['local', 'groq'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={voiceSaving || !voiceSettings}
-                      onClick={() => saveVoiceSetting({ whisperMode: mode })}
-                      className="font-mono text-xs px-3 py-1.5 rounded flex-1"
-                      style={{
-                        background: voiceSettings?.whisperMode === mode ? 'rgba(61,255,170,0.15)' : 'rgba(26,20,42,0.6)',
-                        color: voiceSettings?.whisperMode === mode ? '#3dffaa' : '#5a4a7a',
-                        border: `1px solid ${voiceSettings?.whisperMode === mode ? 'rgba(61,255,170,0.3)' : 'rgba(90,74,122,0.2)'}`,
-                      }}
-                    >
-                      {mode === 'local' ? '🖥 Local (faster-whisper)' : '☁ Groq Whisper'}
-                    </button>
-                  ))}
-                </div>
-                {voiceSettings?.whisperMode === 'groq' && (
-                  <p className="font-mono mt-2" style={{ fontSize: 10, color: '#ffb547', lineHeight: 1.6 }}>
-                    ⚠ Votre voix sera envoyée à Groq Cloud pour transcription. Requiert une clé Groq configurée dans l'onglet Modèles.
-                  </p>
-                )}
-                {voiceSettings?.whisperMode === 'local' && (
-                  <p className="font-mono mt-2" style={{ fontSize: 10, color: '#5a4a7a', lineHeight: 1.6 }}>
-                    Utilise faster-whisper (modèle small, CPU) — 100% local.
-                  </p>
-                )}
-              </div>
+              <VoiceSettingsSection settings={voiceSettings} strictLocal={routerLoaded ? !!settings.strict_local_mode : null} saving={voiceSaving} error={voiceError} onSave={saveVoiceSetting} runtime={voiceRuntime} onCancelVoice={onCancelVoice} />
 
               {/* Push-to-talk note */}
               <div style={{ borderTop: '1px solid rgba(61,255,170,0.08)', paddingTop: 16 }}>
@@ -2914,14 +2869,14 @@ export default function SettingsModal({
                 </div>
 
                 {/* AccessKey */}
-                <label className="font-mono block mb-1" style={{ fontSize: 10, color: '#5a4a7a' }}>AccessKey Picovoice</label>
+                <label htmlFor="picovoice-key" className="font-mono block mb-1" style={{ fontSize: 10, color: '#5a4a7a' }}>AccessKey Picovoice</label>
                 <div className="flex gap-2 mb-3">
                   <input
                     type="password"
                     className="font-mono text-xs px-3 py-1.5 rounded flex-1"
                     style={{ background: 'rgba(26,20,42,0.8)', border: '1px solid rgba(90,74,122,0.3)', color: '#e2d9f3' }}
                     placeholder="Votre AccessKey Picovoice…"
-                    defaultValue={voiceSettings?.porcupineAccessKey ?? ''}
+                    id="picovoice-key" defaultValue={voiceSettings?.porcupineAccessKey ?? ''}
                     onBlur={(e) => {
                       const val = e.target.value.trim();
                       if (val !== (voiceSettings?.porcupineAccessKey ?? '')) {
@@ -2968,19 +2923,6 @@ export default function SettingsModal({
                 )}
               </div>
 
-              {/* Security reminders */}
-              <div style={{ borderTop: '1px solid rgba(61,255,170,0.08)', paddingTop: 16 }}>
-                <p className="font-mono mb-2" style={{ fontSize: 10, color: '#3d3060', letterSpacing: '0.1em' }}>
-                  GARANTIES DE SÉCURITÉ
-                </p>
-                <ul className="font-mono flex flex-col gap-1" style={{ fontSize: 10, color: '#5a4a7a', lineHeight: 1.7 }}>
-                  <li>• L'écoute du mot d'activation ne sort jamais de la machine</li>
-                  <li>• Les enregistrements sont supprimés immédiatement après transcription</li>
-                  <li>• Les commandes vocales ne peuvent pas supprimer de données</li>
-                  <li>• Aucun audio ni transcription dans les logs</li>
-                  {voiceSettings?.whisperMode === 'local' && <li style={{ color: '#3dffaa' }}>• Transcription 100% locale — rien ne quitte votre machine</li>}
-                </ul>
-              </div>
             </div>
           )}
 

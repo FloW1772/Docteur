@@ -1,10 +1,15 @@
 import { agentPageData } from './lib/agent-page';
-import { useState, useCallback, useRef, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
 import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen } from 'lucide-react';
 import { usePages } from './hooks/usePages';
 import { useCortex } from './hooks/useCortex';
 import { useModalOpenTracking, useAnyModalOpen } from './hooks/useModalRegistry';
 import { useVoiceActivation } from './hooks/useVoiceActivation';
+import { useVoiceOutput } from './hooks/useVoiceOutput';
+import { useVoiceLifecycle } from './hooks/useVoiceLifecycle';
+import { useVoiceCommandPipeline } from './hooks/useVoiceCommandPipeline';
+import type { VoiceIntentActions } from './lib/voiceIntentExecutor';
+import type { FeatureKey } from './content/capabilities';
 import { useGestureCamera, getGestureSensitivity, setGestureSensitivity, getEasterEggEnabled, setEasterEggEnabled } from './hooks/useGestureCamera';
 import { useScreenShare } from './hooks/useScreenShare';
 import { useCortexState } from './hooks/useCortexState';
@@ -12,6 +17,7 @@ import type { ActivityEntry } from './components/layout/ActivityPanel';
 import ActivityPanel from './components/layout/ActivityPanel';
 import Dashboard from './components/hud/Dashboard';
 import CommandBar from './components/hud/CommandBar';
+import VoiceCommandFeedbackPanel from './components/hud/VoiceCommandFeedbackPanel';
 import CortexIdentity from './components/hud/CortexIdentity';
 import type { HudActivityEvent } from './components/hud/ActivityItem';
 import { speakEasterEgg } from './lib/easterEggVoice';
@@ -2388,6 +2394,42 @@ export default function App() {
   const [voiceSettings,      setVoiceSettings]     = useState<VoiceSettings | null>(null);
   const [voiceConsoleQuery,  setVoiceConsoleQuery]  = useState<string | null>(null);
 
+  // Single feature-open switch — shared by the Help Center (onOpenFeature)
+  // and the VOICE-5 Intent Layer's OPEN_FEATURE handler, so there is only
+  // ever one place that maps a FeatureKey to the real modal it opens.
+  const handleOpenFeature = useCallback((feature: FeatureKey) => {
+    switch (feature) {
+      case 'capture':         setCaptureOpen(true); break;
+      case 'console':         setConsoleOpen(true); break;
+      case 'notebook':        setNotebookOpen(true); break;
+      case 'teacher':         setTeacherOpen(true); break;
+      case 'agents':          setAgentsOpen(true); break;
+      case 'skills':          setSkillsOpen(true); break;
+      case 'images':          setImageGeneratorOpen(true); break;
+      case 'metagpt':         setMetaGptStudioOpen(true); break;
+      case 'investment':      setInvestmentStudioOpen(true); break;
+      case 'sherlock':        setSherlockStudioOpen(true); break;
+      case 'cyber-audit':     setCyberAuditStudioOpen(true); break;
+      case 'kiwix':           setKiwixOpen(true); break;
+      case 'todo':            setTodoOpen(true); break;
+      case 'backup':          setBackupOpen(true); break;
+      case 'corpus':          setCorpusOpen(true); break;
+      case 'prompt-generator':setPromptGeneratorOpen(true); break;
+      case 'video-summary':   setVideoSummaryOpen(true); break;
+      case 'settings-models':   setSettingsInitialTab('models'); setSettingsOpen(true); break;
+      case 'settings-memory':   setSettingsInitialTab('memory'); setSettingsOpen(true); break;
+      case 'settings-images':   setSettingsInitialTab('images'); setSettingsOpen(true); break;
+      case 'settings-privacy':  setSettingsInitialTab('privacy'); setSettingsOpen(true); break;
+      case 'settings-audio':    setSettingsInitialTab('audio'); setSettingsOpen(true); break;
+      case 'settings-files':    setSettingsInitialTab('files'); setSettingsOpen(true); break;
+      case 'settings-vocal':    setSettingsInitialTab('vocal'); setSettingsOpen(true); break;
+      case 'settings-external': setSettingsInitialTab('external'); setSettingsOpen(true); break;
+      case 'settings-connections': setSettingsInitialTab('connections'); setSettingsOpen(true); break;
+      case 'settings': default: setSettingsOpen(true); break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Gesture camera ──────────────────────────────────────────────────────────
   const gestureInputRef = useRef<((rotDx: number, rotDy: number, zoomDelta: number) => void) | null>(null);
   const [gestureSensitivity, setGestureSensitivityState] = useState<number>(() => getGestureSensitivity());
@@ -2524,22 +2566,48 @@ export default function App() {
   }
 
   // ── Voice activation ────────────────────────────────────────────────────────
+  const voiceLifecycle = useVoiceLifecycle();
+  const voiceOutput = useVoiceOutput(voiceLifecycle.lifecycle);
+  const voiceRef = useRef<ReturnType<typeof useVoiceActivation> | null>(null);
+  // VOICE-5 — Intent Layer action bindings. Each function here is an
+  // ALREADY-EXISTING, already-audited App.tsx callback — the pipeline
+  // never gains any capability beyond what these closures expose (mission
+  // item 32: handlers call only known application functions).
+  const voiceIntentActions = useMemo<VoiceIntentActions>(() => ({
+    openFeature: handleOpenFeature,
+    openSettings: (tab) => { setSettingsInitialTab(tab); setSettingsOpen(true); },
+    goHome: () => { setConsoleOpen(false); setSelectedId(null); },
+    runSearchQuery: (query) => { setVoiceConsoleQuery(query); setConsoleOpen(true); },
+    stopListening: () => voiceRef.current?.stopListening(),
+    stopSpeaking: voiceOutput.stopSpeaking,
+    // A real pending confirmation is already intercepted and cancelled
+    // earlier in useVoiceCommandPipeline.handleTranscript (before an
+    // intent is even parsed) — this branch only runs for "annule" heard
+    // with NOTHING pending, so it's correctly a no-op here rather than a
+    // circular call back into the pipeline that invoked it.
+    cancelPendingVoiceAction: () => {},
+    switchToFocus: () => setViewModePersisted('focus'),
+    switchToDashboard: () => setViewModePersisted('dashboard'),
+    cameraOn: () => { if (gesture.gestureState === 'idle' || gesture.gestureState === 'error') gesture.toggle(); },
+    cameraOff: () => { if (gesture.gestureState === 'active') gesture.stop(); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [handleOpenFeature, voiceOutput.stopSpeaking, setViewModePersisted, gesture.gestureState, gesture.toggle, gesture.stop]);
+  const voicePipeline = useVoiceCommandPipeline(voiceIntentActions, voiceOutput.speakText, voiceLifecycle.lifecycle);
   const voice = useVoiceActivation({
+    lifecycle: voiceLifecycle.lifecycle,
     settings: voiceSettings,
-    onCommand: (text) => {
-      const lower = text.toLowerCase().trim();
-      if (/active.*cam[eé]ra|cam[eé]ra.*active/.test(lower)) {
-        if (gesture.gestureState === 'idle' || gesture.gestureState === 'error') gesture.toggle();
-        return;
-      }
-      if (/d[eé]sactive.*cam[eé]ra|cam[eé]ra.*d[eé]sactive/.test(lower)) {
-        if (gesture.gestureState === 'active') gesture.stop();
-        return;
-      }
+    onListeningStart: voiceOutput.stopSpeaking,
+    onCommand: (text, sessionId) => {
+      const { consumedAsCommand } = voicePipeline.handleTranscript(text, sessionId);
+      if (consumedAsCommand) return;
+      // DICTATION mode (default) — unchanged from before VOICE-5 (mission
+      // item 41: dictation regression must not change): the transcript
+      // becomes text in the console/chat, nothing is interpreted.
       setVoiceConsoleQuery(text);
       setConsoleOpen(true);
     },
   });
+  voiceRef.current = voice;
   const [customShortcuts, setCustomShortcuts]  = useState<Record<string, string>>({});
   // Playlist: choice modal (video with &list= param) + import flow
   const [playlistChoice, setPlaylistChoice]    = useState<{ videoUrl: string; playlistUrl: string } | null>(null);
@@ -4546,6 +4614,7 @@ export default function App() {
     cortexAvailable: cortex.available,
     cortexBusy,
     voiceState: voice.state,
+    unifiedVoiceState: voiceLifecycle.state,
     searchActive: reindexRunning,
     generatingActive: !!batchProgress,
   });
@@ -4651,9 +4720,26 @@ export default function App() {
         cortexState={cortexVisualState}
         voiceEnabled={voiceSettings?.enabled ?? false}
         voiceState={voice.state}
+        unifiedVoiceState={voiceLifecycle.state}
+        onCancelVoice={voiceLifecycle.cancelVoiceInteraction}
         onVoiceClick={voice.triggerManual}
+        ttsSpeaking={voiceOutput.isSpeaking}
+        onStopSpeaking={voiceLifecycle.cancelVoiceInteraction}
         onSubmit={query => { setVoiceConsoleQuery(query); setConsoleOpen(true); }}
+        voiceMode={voicePipeline.mode}
+        onVoiceModeChange={voicePipeline.setMode}
       />
+
+      {voicePipeline.feedback && (
+        <VoiceCommandFeedbackPanel
+          feedback={voicePipeline.feedback}
+          pendingConfirmation={voicePipeline.pendingConfirmation}
+          onConfirm={voicePipeline.confirmPending}
+          onCancel={voicePipeline.cancelPending}
+          onRetry={voice.triggerManual}
+          onSwitchToDictation={() => voicePipeline.setMode('DICTATION')}
+        />
+      )}
 
       <div className="shell-topbar">
         <TopBar
@@ -4972,38 +5058,7 @@ export default function App() {
       {helpOpen && (
         <HelpModal
           onClose={() => setHelpOpen(false)}
-          onOpenFeature={(feature) => {
-            setHelpOpen(false);
-            switch (feature) {
-              case 'capture':         setCaptureOpen(true); break;
-              case 'console':         setConsoleOpen(true); break;
-              case 'notebook':        setNotebookOpen(true); break;
-              case 'teacher':         setTeacherOpen(true); break;
-              case 'agents':          setAgentsOpen(true); break;
-              case 'skills':          setSkillsOpen(true); break;
-              case 'images':          setImageGeneratorOpen(true); break;
-              case 'metagpt':         setMetaGptStudioOpen(true); break;
-              case 'investment':      setInvestmentStudioOpen(true); break;
-              case 'sherlock':        setSherlockStudioOpen(true); break;
-              case 'cyber-audit':     setCyberAuditStudioOpen(true); break;
-              case 'kiwix':           setKiwixOpen(true); break;
-              case 'todo':            setTodoOpen(true); break;
-              case 'backup':          setBackupOpen(true); break;
-              case 'corpus':          setCorpusOpen(true); break;
-              case 'prompt-generator':setPromptGeneratorOpen(true); break;
-              case 'video-summary':   setVideoSummaryOpen(true); break;
-              case 'settings-models':   setSettingsInitialTab('models'); setSettingsOpen(true); break;
-              case 'settings-memory':   setSettingsInitialTab('memory'); setSettingsOpen(true); break;
-              case 'settings-images':   setSettingsInitialTab('images'); setSettingsOpen(true); break;
-              case 'settings-privacy':  setSettingsInitialTab('privacy'); setSettingsOpen(true); break;
-              case 'settings-audio':    setSettingsInitialTab('audio'); setSettingsOpen(true); break;
-              case 'settings-files':    setSettingsInitialTab('files'); setSettingsOpen(true); break;
-              case 'settings-vocal':    setSettingsInitialTab('vocal'); setSettingsOpen(true); break;
-              case 'settings-external': setSettingsInitialTab('external'); setSettingsOpen(true); break;
-              case 'settings-connections': setSettingsInitialTab('connections'); setSettingsOpen(true); break;
-              case 'settings': default: setSettingsOpen(true); break;
-            }
-          }}
+          onOpenFeature={(feature) => { setHelpOpen(false); handleOpenFeature(feature); }}
         />
       )}
 
@@ -5529,6 +5584,9 @@ export default function App() {
       {settingsOpen && (
         <Suspense fallback={<LazyModalFallback />}>
         <SettingsModal
+          voiceRuntime={{ state: voiceLifecycle.state, captureState: voice.state, mode: voicePipeline.mode, ttsState: voiceOutput.state, sttLatencyMs: voice.sttLatencyMs }}
+          onCancelVoice={voiceLifecycle.cancelVoiceInteraction}
+          onVoiceSettingsChange={setVoiceSettings}
           onClose={() => {
             setSettingsOpen(false);
             setSettingsInitialTab(undefined);
@@ -5663,6 +5721,10 @@ export default function App() {
         isOpen={consoleOpen}
         onClose={() => { setConsoleOpen(false); setVoiceConsoleQuery(null); }}
         initialQuery={voiceConsoleQuery}
+        speakText={voiceOutput.speakText}
+        captureVoiceResponseGuard={voiceLifecycle.lifecycle.captureResponseGuard}
+        onVoiceContextClose={voiceLifecycle.cancelVoiceInteraction}
+        isListeningActive={voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'wake-listening'}
         onNavigate={(id) => { setSelectedId(id); setConsoleOpen(false); }}
         onPlayVideo={(videoId, title) => { setActiveVideo({ videoId, title }); setConsoleOpen(false); }}
         onCreatePage={() => { handleNewPage(); setConsoleOpen(false); }}

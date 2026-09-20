@@ -2080,6 +2080,62 @@ select:focus-visible {
   border-color: var(--emerald);
 }
 
+.hud2-command-bar-mic-mode {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.hud2-command-bar-mic-mode-btn {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.hud2-command-bar-mic-mode-btn--active {
+  background: rgba(94, 231, 255, 0.12);
+  color: var(--cyan);
+}
+
+.hud2-voice-feedback {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-main);
+  z-index: 40;
+}
+
+.hud2-voice-feedback-row {
+  margin: 4px 0;
+}
+
+.hud2-voice-feedback-label {
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+.hud2-voice-feedback-confirm {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
 .hud2-command-bar-input {
   flex: 1;
   min-width: 0;
@@ -2799,4 +2855,55 @@ select:focus-visible {
 .studio-filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 @media (prefers-reduced-motion: reduce) {
   .studio-shell *, .studio-video-panel * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+/* VOICE-7: scoped controls, readable states and responsive voice surfaces. */
+.voice-settings { color: #e2d9f3; font-size: 14px; line-height: 1.6; min-width: 0; }
+.voice-settings h2 { font-size: 20px; font-weight: 600; }
+.voice-settings p { margin: 8px 0; color: #c2b7d6; }
+.voice-settings fieldset { border: 1px solid #514365; border-radius: 10px; padding: 16px; margin: 20px 0; min-width: 0; }
+.voice-settings legend { padding: 0 8px; color: #8eeeff; font-weight: 600; }
+.voice-settings label { display: block; margin: 12px 0; }
+.voice-settings select { width: 100%; max-width: 100%; background: #211a30; color: #f0eaff; border: 1px solid #746087; border-radius: 6px; padding: 10px; display: block; }
+.voice-settings input[type="range"], .voice-settings meter { width: 100%; display: block; }
+.voice-settings .voice-check { display: flex; gap: 10px; align-items: center; }
+.voice-settings button, .voice-actions button, .voice-read-aloud { border: 1px solid #746087; border-radius: 7px; background: #211a30; color: #e2d9f3; padding: 9px 12px; min-height: 40px; cursor: pointer; }
+.voice-settings button:disabled { opacity: .55; cursor: default; }
+.voice-settings [role="alert"] { color: #ffadb3; }
+.voice-settings :focus-visible, .hud2-voice-feedback :focus-visible, .voice-read-aloud:focus-visible, .voice-command-help :focus-visible { outline: 2px solid #8eeeff; outline-offset: 3px; }
+.voice-metadata { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 6px 14px; margin: 12px 0; overflow-wrap: anywhere; }
+.voice-metadata dt { color: #c2b7d6; }
+.voice-metadata dd { margin: 0; }
+.voice-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.voice-commands summary, .voice-settings summary { cursor: pointer; min-height: 40px; padding: 8px 0; color: #8eeeff; }
+.voice-commands ul { padding-left: 20px; list-style: disc; }
+.voice-commands li { margin: 6px 0; overflow-wrap: anywhere; }
+.voice-read-aloud { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+
+/* Keep the main voice state visible at all viewport sizes. */
+.hud2-command-bar { flex-wrap: wrap; border-radius: 16px; gap: 8px; }
+.hud2-command-bar-mic { min-width: 40px; min-height: 40px; }
+.hud2-command-bar-mic-mode-btn { min-height: 36px; }
+.hud2-command-bar-mic-mode-btn:not(.hud2-command-bar-mic-mode-btn--active) { color: #c2b7d6; }
+.voice-settings-modal { display: flex; flex-direction: column; max-height: calc(100dvh - 24px); }
+.voice-settings-modal > * { flex-shrink: 0; }
+.voice-settings-modal > div:last-child { flex-shrink: 1; min-height: 0; }
+.voice-settings-modal > div:nth-child(2) button { white-space: nowrap; }
+.hud2-command-bar--command .hud2-command-bar-mic-mode { border-style: double; border-width: 3px; }
+.voice-mode-hint { order: 10; flex-basis: 100%; color: #c2b7d6; font-size: 11px; }
+.hud2-command-bar-status { display: block; white-space: normal; color: #8eeeff; }
+.hud2-command-bar-input { flex-basis: 140px; min-height: 40px; }
+.voice-command-help { font-size: 12px; }
+.voice-command-help details[open] { position: absolute; bottom: calc(100% + 8px); left: 0; width: 100%; max-height: min(55vh, 440px); overflow: auto; padding: 14px; background: #211a30; border: 1px solid #746087; border-radius: 10px; }
+.hud2-voice-feedback { bottom: 210px; width: min(520px, calc(100vw - 24px)); max-height: calc(100dvh - 250px); overflow: auto; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .hud2-command-bar-status { display: block; flex-basis: 100%; order: 8; }
+  .hud2-command-bar { width: calc(100vw - 16px); }
+  .hud2-voice-feedback { bottom: 240px; max-height: calc(100dvh - 260px); }
+  .voice-settings fieldset { padding: 12px; }
+  .voice-metadata { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .voice-metadata dd { margin-bottom: 8px; }
+  .voice-pending-panel { max-width: calc(100vw - 24px); max-height: 50dvh; overflow: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-settings *, .voice-indicator-wrap *, .voice-pending-panel *, .hud2-voice-feedback *, .hud2-command-bar * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

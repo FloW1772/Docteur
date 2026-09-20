@@ -7,6 +7,7 @@
 // already maps VoiceState/GestureState/ScreenShareState to labels/colors.
 import { useMemo } from 'react';
 import type { VoiceState } from './useVoiceActivation';
+import type { UnifiedVoiceState } from '../lib/voiceLifecycle';
 
 export type CortexVisualState =
   | 'idle'
@@ -21,6 +22,7 @@ export interface CortexStateInputs {
   cortexAvailable: boolean;
   cortexBusy: boolean;
   voiceState?: VoiceState;
+  unifiedVoiceState?: UnifiedVoiceState;
   /** True while a search/console query is in flight (SearchConsole, web/local search). */
   searchActive?: boolean;
   /** True while any long-running job (MetaGPT planning/codegen, video render, batch, reindex) is active. */
@@ -56,8 +58,13 @@ export const CORTEX_STATE_COLOR: Record<CortexVisualState, string> = {
  */
 export function deriveCortexState(inputs: CortexStateInputs): CortexVisualState {
   if (!inputs.cortexAvailable) return 'error';
-  if (inputs.voiceState === 'wake-listening' || inputs.voiceState === 'recording') return 'listening';
-  if (inputs.voiceState === 'transcribing') return 'thinking';
+  const voice = inputs.unifiedVoiceState;
+  if (voice === 'ERROR') return 'error';
+  if (voice === 'LISTENING' || voice === 'HEARING_SPEECH') return 'listening';
+  if (voice === 'TRANSCRIBING' || voice === 'UNDERSTANDING' || voice === 'CONFIRMING') return 'thinking';
+  if (voice === 'EXECUTING' || voice === 'SPEAKING') return 'generating';
+  if (!voice && (inputs.voiceState === 'wake-listening' || inputs.voiceState === 'recording')) return 'listening';
+  if (!voice && inputs.voiceState === 'transcribing') return 'thinking';
   if (inputs.generatingActive) return 'generating';
   if (inputs.searchActive) return 'searching';
   if (inputs.cortexBusy) return 'thinking';
@@ -70,6 +77,7 @@ export function useCortexState(inputs: CortexStateInputs): CortexVisualState {
     inputs.cortexAvailable,
     inputs.cortexBusy,
     inputs.voiceState,
+    inputs.unifiedVoiceState,
     inputs.searchActive,
     inputs.generatingActive,
     inputs.justCompleted,

@@ -102,12 +102,12 @@ export function createVoiceRoute({ logger }) {
         const keys = getCloudKeys();
         if (!keys.groq) return c.json({ error: 'Clé Groq non configurée' }, 400);
         const result = await transcribeWithGroq(audioPath, keys.groq);
-        return c.json({ text: result.text ?? '', language: result.language ?? 'fr' });
+        return c.json({ text: result.text ?? '', language: result.language ?? 'fr', provider: 'groq', mode: 'CLOUD' });
       }
 
       // Local faster-whisper
       const result = await transcribeAudioFile(audioPath, model);
-      return c.json({ text: result.text ?? '', language: result.language ?? 'fr' });
+      return c.json({ text: result.text ?? '', language: result.language ?? 'fr', provider: 'local', mode: 'LOCAL' });
 
     } catch (e) {
       logger.error({ err: e }, 'voice-transcribe-error');

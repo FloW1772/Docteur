@@ -1,7 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { VoiceSettings } from '../lib/cortex/client';
+import { describeVoiceCaptureError, getStoredVoiceDeviceId, getVoiceAudioConstraints, isVoiceDeviceUnavailable } from '../lib/voiceMicrophone';
+import { byteTimeDomainToSamples, frameMetrics, VoiceActivityDetector } from '../lib/voiceAudio';
+import { SttError, transcribeAudio, type SttErrorCode, type SttProvider } from '../lib/voiceStt';
+import { VoiceLifecycle } from '../lib/voiceLifecycle';
+import { isEmergencyVoiceStop } from '../lib/voiceIntentParser';
 
 export type VoiceState = 'idle' | 'wake-listening' | 'recording' | 'transcribing' | 'pending';
+export type SttState = 'IDLE' | 'QUEUED' | 'TRANSCRIBING' | 'COMPLETED' | 'COMPLETED_EMPTY' | 'CANCELLED' | 'ERROR';
 
 // Destructive commands are always blocked for voice input
 const DESTRUCTIVE_WORDS = ['supprime', 'efface', 'delete', 'remove', 'vide', 'clear', 'reset', 'drop', 'destroy', 'réinitialise'];
@@ -10,28 +16,36 @@ function isDestructive(text: string): boolean {
   return DESTRUCTIVE_WORDS.some(w => lower.includes(w));
 }
 
-const SILENCE_THRESHOLD_RMS  = 0.012;  // amplitude RMS — below this = silence
 const SILENCE_DURATION_MS    = 2000;   // 2s of silence stops the recording
 const MAX_RECORDING_MS       = 30_000; // hard cap per recording
 
 const SERVER_BASE = `${window.location.protocol}//${window.location.hostname}:3001`;
 
-function computeRms(data: Uint8Array): number {
-  let sum = 0;
-  for (const v of data) sum += ((v - 128) / 128) ** 2;
-  return Math.sqrt(sum / data.length);
-}
-
 export function useVoiceActivation({
   settings,
   onCommand,
+  onListeningStart,
+  lifecycle,
 }: {
   settings: VoiceSettings | null;
-  onCommand: (text: string) => void;
+  onCommand: (text: string, sessionId?: number) => void;
+  onListeningStart?: () => void;
+  lifecycle?: VoiceLifecycle;
 }) {
+  const localLifecycle = useRef(new VoiceLifecycle());
+  const coordinator = lifecycle ?? localLifecycle.current;
+  const sessionRef = useRef(0);
+  const commandRef = useRef(onCommand);
+  const pendingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const sttTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [state,        setState]        = useState<VoiceState>('idle');
   const [pendingText,  setPendingText]  = useState<string | null>(null);
   const [error,        setError]        = useState<string | null>(null);
+  const [sttState,     setSttState]     = useState<SttState>('IDLE');
+  const [sttErrorCode, setSttErrorCode] = useState<SttErrorCode | null>(null);
+  const [sttProvider,  setSttProvider]  = useState<SttProvider>(settings?.whisperMode ?? 'local');
+  const [sttLatencyMs, setSttLatencyMs] = useState<number | null>(null);
 
   const streamRef       = useRef<MediaStream | null>(null);
   const audioCtxRef     = useRef<AudioContext | null>(null);
@@ -46,6 +60,10 @@ export function useVoiceActivation({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wvpRef          = useRef<any>(null);
   const recordingRef    = useRef(false);
+  const captureOperationRef = useRef(0);
+  const vadRef          = useRef<VoiceActivityDetector | null>(null);
+  const transcriptionAbortRef = useRef<AbortController | null>(null);
+  const transcriptionStartedRef = useRef(false);
 
   const isEnabled      = settings?.enabled ?? false;
   const hasPorcupine   = isEnabled && !!settings?.porcupineAccessKey && !!settings?.hasPorcupineModel;
@@ -60,6 +78,7 @@ export function useVoiceActivation({
       try { recorderRef.current.stop(); } catch { /* ignore */ }
     }
     recordingRef.current = false;
+    vadRef.current = null;
   }, []);
 
   const releaseStream = useCallback(() => {
@@ -72,73 +91,149 @@ export function useVoiceActivation({
 
   // ── Transcribe a blob ──────────────────────────────────────────────────────
 
-  const transcribeBlob = useCallback(async (blob: Blob, model = 'small') => {
+  const transcribeBlob = useCallback(async (blob: Blob, model: string, operation: number) => {
+    if (operation !== captureOperationRef.current || transcriptionStartedRef.current) return;
+    transcriptionStartedRef.current = true;
+    const controller = new AbortController();
+    transcriptionAbortRef.current = controller;
+    setSttState('QUEUED');
+    setSttErrorCode(null);
+    setSttProvider(whisperMode);
     setState('transcribing');
+    coordinator.transition('TRANSCRIBING', sessionRef.current);
+    setSttState('TRANSCRIBING');
+    let timedOut = false;
+    const timeout = sttTimerRef.current = setTimeout(() => { timedOut = true; controller.abort(); }, 90_000);
     try {
-      const fd = new FormData();
-      fd.append('audio', blob, 'voice.webm');
-      fd.append('provider', whisperMode);
-      fd.append('model', model);
-      const res = await fetch(`${SERVER_BASE}/api/voice/transcribe`, {
-        method: 'POST',
-        body: fd,
-        signal: AbortSignal.timeout(90_000),
-      });
-      const data = await res.json() as { text?: string; error?: string };
-      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
-      const text = (data.text ?? '').trim();
-      if (text) {
-        setPendingText(text);
+      const result = await transcribeAudio({ audio: blob, provider: whisperMode, model, signal: controller.signal });
+      if (operation !== captureOperationRef.current) return;
+      setSttProvider(result.provider);
+      setSttLatencyMs(result.latencyMs);
+      if (result.text) {
+        if (isEmergencyVoiceStop(result.text)) { coordinator.cancelVoiceInteraction(); return; }
+        pendingRef.current = true;
+        coordinator.transition('CONFIRMING', sessionRef.current);
+        setPendingText(result.text);
         setState('pending');
+        setSttState('COMPLETED');
       } else {
-        setState(hasPorcupine ? 'wake-listening' : 'idle');
+        coordinator.transition('IDLE', sessionRef.current);
+        setSttState('COMPLETED_EMPTY');
+        setError('Aucune parole détectée.');
+        setState('idle');
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur transcription');
-      setState(hasPorcupine ? 'wake-listening' : 'idle');
+    } catch (cause) {
+      if (operation !== captureOperationRef.current) return;
+      const normalized = timedOut
+        ? new SttError('STT_TIMEOUT', whisperMode, 'La transcription a dépassé le délai autorisé.')
+        : cause instanceof SttError
+        ? cause
+        : new SttError('STT_PROVIDER_ERROR', whisperMode, 'Le service de transcription est indisponible.');
+      coordinator.transition('ERROR', sessionRef.current);
+      setSttErrorCode(normalized.code);
+      setSttState(normalized.code === 'STT_CANCELLED' ? 'CANCELLED' : 'ERROR');
+      setError(normalized.message);
+      setState('idle');
+    } finally {
+      clearTimeout(timeout);
+      if (operation === captureOperationRef.current) {
+        sttTimerRef.current = null;
+        transcriptionAbortRef.current = null;
+        transcriptionStartedRef.current = false;
+      }
     }
-  }, [whisperMode, hasPorcupine]);
+  }, [whisperMode, hasPorcupine, coordinator]);
 
   // ── Start full recording after wake word ───────────────────────────────────
 
   const startRecording = useCallback(async (existingStream?: MediaStream) => {
-    if (recordingRef.current) return;
+    if (!mountedRef.current || recordingRef.current) return;
+    sessionRef.current = coordinator.beginCapture();
+    commandRef.current = onCommand;
+    const operation = ++captureOperationRef.current;
     recordingRef.current = true;
     setError(null);
+    onListeningStart?.();
 
     try {
-      const stream = existingStream ?? await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      let stream = existingStream;
+      if (!stream) {
+        const selectedDeviceId = getStoredVoiceDeviceId();
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(getVoiceAudioConstraints(selectedDeviceId));
+        } catch (cause) {
+          if (operation !== captureOperationRef.current) return;
+          if (!selectedDeviceId || !isVoiceDeviceUnavailable(cause)) throw cause;
+          setError('Le microphone sélectionné n’est plus disponible. Utilisation du microphone par défaut.');
+          stream = await navigator.mediaDevices.getUserMedia(getVoiceAudioConstraints(null));
+        }
+      }
+      if (operation !== captureOperationRef.current || !recordingRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       streamRef.current = stream;
 
       const audioCtx  = new AudioContext();
+      audioCtxRef.current = audioCtx;
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      if (operation !== captureOperationRef.current) {
+        void audioCtx.close().catch(() => {});
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       const analyser  = audioCtx.createAnalyser();
       analyser.fftSize = 512;
       audioCtx.createMediaStreamSource(stream).connect(analyser);
       audioCtxRef.current = audioCtx;
       analyserRef.current = analyser;
 
-      const recorder = new MediaRecorder(stream, { mimeType: getSupportedMime() });
+      const mimeType = getSupportedMime();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorderRef.current = recorder;
-      chunksRef.current = [];
+      const chunks: Blob[] = [];
+      chunksRef.current = chunks;
+      let stopped = false;
 
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      recorder.ondataavailable = (e) => { if (operation === captureOperationRef.current && e.data.size > 0) chunks.push(e.data); };
       recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: getSupportedMime() });
+        if (stopped || operation !== captureOperationRef.current || transcriptionStartedRef.current) return;
+        stopped = true;
+        stopRecorder();
+        recorder.onstop = null;
+        recorder.ondataavailable = null;
+        recorder.onerror = null;
+        const blob = new Blob(chunks, { type: mimeType });
+        chunks.length = 0;
         chunksRef.current = [];
-        if (!existingStream) releaseStream();
-        await transcribeBlob(blob, 'small');
+        releaseStream();
+        recorderRef.current = null;
+        await transcribeBlob(blob, 'small', operation);
+      };
+      recorder.onerror = () => {
+        if (operation !== captureOperationRef.current) return;
+        coordinator.cancelVoiceInteraction();
+        coordinator.transition('ERROR');
+        setError('Le microphone est indisponible. Réessayez.');
       };
 
       recorder.start(100);
       setState('recording');
       silenceStartRef.current = null;
+      vadRef.current = new VoiceActivityDetector();
 
       const buf = new Uint8Array(analyser.frequencyBinCount);
       const tick = () => {
-        if (!recordingRef.current || recorder.state !== 'recording') return;
+        if (operation !== captureOperationRef.current || !recordingRef.current || recorder.state !== 'recording') return;
         analyser.getByteTimeDomainData(buf);
-        const rms = computeRms(buf);
-        if (rms < SILENCE_THRESHOLD_RMS) {
+        const metrics = frameMetrics(byteTimeDomainToSamples(buf));
+        const vadResult = vadRef.current?.process(metrics.rms, performance.now());
+        if (vadResult?.event === 'VOICE_START') coordinator.transition('HEARING_SPEECH', sessionRef.current);
+        if (vadResult?.event === 'VOICE_END') {
+          stopRecorder();
+          return;
+        }
+        if (vadResult?.state === 'SILENCE') {
           silenceStartRef.current ??= Date.now();
           if (Date.now() - silenceStartRef.current >= SILENCE_DURATION_MS) {
             stopRecorder();
@@ -150,19 +245,67 @@ export function useVoiceActivation({
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
-      maxTimerRef.current = setTimeout(() => stopRecorder(), MAX_RECORDING_MS);
+      maxTimerRef.current = setTimeout(() => {
+        if (operation === captureOperationRef.current) stopRecorder();
+      }, MAX_RECORDING_MS);
 
     } catch (e) {
+      if (operation !== captureOperationRef.current) return;
       recordingRef.current = false;
-      setError(e instanceof Error ? e.message : 'Micro inaccessible');
-      setState(hasPorcupine ? 'wake-listening' : 'idle');
+      if (recorderRef.current) {
+        recorderRef.current.onstop = null;
+        recorderRef.current.ondataavailable = null;
+        recorderRef.current.onerror = null;
+      }
+      stopRecorder();
+      recorderRef.current = null;
+      releaseStream();
+      coordinator.transition('ERROR', sessionRef.current);
+      setError(describeVoiceCaptureError(e));
+      setState('idle');
     }
-  }, [hasPorcupine, releaseStream, stopRecorder, transcribeBlob]);
+  }, [hasPorcupine, onListeningStart, onCommand, coordinator, releaseStream, stopRecorder, transcribeBlob]);
+
+  const cleanupCapture = useCallback(() => {
+    captureOperationRef.current += 1;
+    pendingRef.current = false;
+    if (sttTimerRef.current) clearTimeout(sttTimerRef.current);
+    sttTimerRef.current = null;
+    transcriptionAbortRef.current?.abort();
+    transcriptionAbortRef.current = null;
+    transcriptionStartedRef.current = false;
+    if (recorderRef.current) {
+      recorderRef.current.onstop = null;
+      recorderRef.current.ondataavailable = null;
+      recorderRef.current.onerror = null;
+    }
+    stopRecorder();
+    recorderRef.current = null;
+    chunksRef.current.length = 0;
+    chunksRef.current = [];
+    releaseStream();
+    if (wvpRef.current && porcupineRef.current) void wvpRef.current.unsubscribe(porcupineRef.current).catch(() => {});
+  }, [releaseStream, stopRecorder]);
+
+  useEffect(() => coordinator.onInterrupt(() => {
+    cleanupCapture();
+    setPendingText(null);
+    setError(null);
+    setSttState('CANCELLED');
+    setState('idle');
+  }), [coordinator, cleanupCapture]);
+  const stopListening = coordinator.cancelVoiceInteraction;
+  const startRecordingRef = useRef(startRecording);
+  startRecordingRef.current = startRecording;
 
   // ── Push-to-talk / manual trigger ─────────────────────────────────────────
 
   const triggerManual = useCallback(() => {
-    if (!isEnabled) return;
+    if (!mountedRef.current || !isEnabled) return;
+    if (recordingRef.current || transcriptionAbortRef.current || state === 'recording' || state === 'transcribing') {
+      stopListening();
+      return;
+    }
     if (state === 'idle' || state === 'wake-listening') {
       // Stop Porcupine first to avoid mic conflict
       if (wvpRef.current && porcupineRef.current) {
@@ -170,13 +313,14 @@ export function useVoiceActivation({
       }
       void startRecording();
     }
-  }, [isEnabled, state, startRecording]);
+  }, [isEnabled, state, startRecording, stopListening]);
 
   // ── Porcupine wake-word (optional, lazy-loaded) ───────────────────────────
 
   useEffect(() => {
     if (!hasPorcupine) return;
     let cancelled = false;
+    const setupSession = coordinator.sessionId;
 
     (async () => {
       try {
@@ -187,28 +331,33 @@ export function useVoiceActivation({
         const res = await fetch(`${SERVER_BASE}/api/voice/porcupine-model`);
         if (!res.ok) throw new Error('Modèle Porcupine introuvable sur le serveur');
         const { model_base64 } = await res.json() as { model_base64: string };
-        if (cancelled) return;
+        if (cancelled || !coordinator.isCurrent(setupSession)) return;
 
         const porcupine = await PorcupineWorker.create(
           settings!.porcupineAccessKey!,
           [{ base64: model_base64, label: 'hey-docteur', sensitivity: 0.65 }],
           () => {
-            if (cancelled || recordingRef.current) return;
+            if (cancelled || recordingRef.current || coordinator.getSnapshot() !== 'LISTENING') return;
             // Stop Porcupine before opening MediaRecorder (mic conflict)
             WebVoiceProcessor.unsubscribe(porcupine).catch(() => {});
-            void startRecording();
+            void startRecordingRef.current();
           },
           { publicPath: '/' }, // default English Porcupine model
         );
 
+        if (cancelled || !coordinator.isCurrent(setupSession)) { porcupine.terminate(); return; }
         porcupineRef.current = porcupine;
         wvpRef.current       = WebVoiceProcessor;
         await WebVoiceProcessor.subscribe(porcupine);
 
-        if (!cancelled) setState('wake-listening');
+        if (cancelled || coordinator.getSnapshot() === 'SPEAKING') await WebVoiceProcessor.unsubscribe(porcupine);
+        else {
+          setState('wake-listening');
+          coordinator.transition('LISTENING', setupSession);
+        }
       } catch (e) {
         if (!cancelled) {
-          setError(`Wake word: ${e instanceof Error ? e.message : 'erreur Porcupine'}`);
+          setError('Le mot d’activation est indisponible. Utilisez le bouton micro.');
         }
       }
     })();
@@ -229,13 +378,20 @@ export function useVoiceActivation({
 
   useEffect(() => {
     if (!isEnabled) {
-      stopRecorder();
-      releaseStream();
+      stopListening();
       setPendingText(null);
       setError(null);
       setState('idle');
     }
-  }, [isEnabled, stopRecorder, releaseStream]);
+  }, [isEnabled, stopListening]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      cleanupCapture();
+    };
+  }, [cleanupCapture]);
 
   // ── Global keyboard shortcut: Alt+M ──────────────────────────────────────
 
@@ -253,24 +409,32 @@ export function useVoiceActivation({
 
   // ── Confirm / cancel pending transcription ────────────────────────────────
 
+  const renderedSession = sessionRef.current;
   const confirmCommand = useCallback((text: string) => {
+    if (!mountedRef.current || !pendingRef.current || !coordinator.isCurrent(renderedSession)) return;
+    pendingRef.current = false;
+    coordinator.transition('UNDERSTANDING', sessionRef.current);
     if (isDestructive(text)) {
+      coordinator.transition('IDLE', sessionRef.current);
       setError('Commande refusée — les actions vocales ne peuvent pas supprimer des données');
       setPendingText(null);
-      setState(hasPorcupine ? 'wake-listening' : 'idle');
+      setState('idle');
       return;
     }
     setPendingText(null);
-    setState(hasPorcupine ? 'wake-listening' : 'idle');
-    onCommand(text);
-  }, [hasPorcupine, onCommand]);
+    setState('idle');
+    try {
+      commandRef.current(text, sessionRef.current);
+      if (coordinator.getSnapshot() === 'UNDERSTANDING') coordinator.transition('IDLE', sessionRef.current);
+    } catch {
+      coordinator.transition('ERROR', sessionRef.current);
+      setError('La commande vocale a échoué. Réessayez.');
+    }
+  }, [hasPorcupine, coordinator, renderedSession]);
 
-  const cancelCommand = useCallback(() => {
-    setPendingText(null);
-    setState(hasPorcupine ? 'wake-listening' : 'idle');
-  }, [hasPorcupine]);
+  const cancelCommand = coordinator.cancelVoiceInteraction;
 
-  return { state, pendingText, setPendingText, error, triggerManual, confirmCommand, cancelCommand };
+  return { state, pendingText, setPendingText, error, sttState, sttErrorCode, sttProvider, sttLatencyMs, triggerManual, stopListening, confirmCommand, cancelCommand };
 }
 
 function getSupportedMime(): string {

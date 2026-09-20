@@ -101,7 +101,6 @@ export default function VoiceIndicator({
         onClick={onMicClick}
         aria-label={state === 'idle' ? 'Activer le micro (Alt+M)' : 'Micro actif'}
         title={state === 'idle' ? 'Activer le micro (Alt+M)' : label}
-        disabled={state === 'transcribing'}
       >
         {state === 'idle' ? <MicOff size={13} /> : <Mic size={13} />}
       </button>

@@ -1,5 +1,6 @@
+import ReadAloudButton from './ReadAloudButton';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Search, Plus, RefreshCw, Bookmark, BookmarkCheck, Globe, BookOpen, Mountain, CheckCircle, AlertTriangle } from 'lucide-react';
+import { X, Search, Plus, RefreshCw, Bookmark, BookmarkCheck, Globe, BookOpen, Mountain, CheckCircle, AlertTriangle, Volume2 } from 'lucide-react';
 import { MarkdownContent } from '../../lib/renderMd';
 import { generateId } from '../../lib/generateId';
 import { cortexClient } from '../../lib/cortex/client';
@@ -8,6 +9,8 @@ import { DETAIL_LEVEL_LABELS } from '../../lib/cortex/client';
 import type { Page, PageKind } from '../../lib/types';
 import { KIND_META } from '../../lib/types';
 import { getCorpusTrustedSites } from '../../lib/corpusSettings';
+import { canAutoSpeak, canManuallySpeak } from '../../lib/voiceResponsePolicy';
+import { getStoredTtsSettings } from '../../lib/voiceTts';
 
 const RESEARCH_RE          = /^(?:veille|recherche)\s+(.+)$/iu;
 const MULTI_SOURCE_RE      = /^veille\+\+\s+(.+)$/iu;
@@ -229,6 +232,19 @@ interface Props {
   pages:              Page[];
   isOnline?:          boolean | null;
   initialQuery?:      string | null;
+  /** VOICE-4.1 — the single shared TTS output (App.tsx's useVoiceOutput()
+   * instance). Speaking a new response always cancels whatever was
+   * playing (single-speak guarantee lives in voiceTts.ts, not here).
+   * Stopping speech has its own always-visible control in CommandBar
+   * (App.tsx wires voiceOutput.stopSpeaking there already) — no separate
+   * Stop control is needed inside the console. */
+  speakText?:         (text: string) => boolean;
+  captureVoiceResponseGuard?: () => () => boolean;
+  onVoiceContextClose?: () => void;
+  /** True while the mic is actively recording/transcribing/wake-listening
+   * — auto-read must never speak into an open microphone (self-listening
+   * guard). */
+  isListeningActive?: boolean;
 }
 
 function localTextSearch(query: string, pages: Page[]): SearchHit[] {
@@ -261,6 +277,7 @@ function hexRgb(hex: string): string {
 
 export default function SearchConsole({
   isOpen, onClose, onNavigate, onCreatePage, onHighlightSources, onClearHighlights, onSaveQR, onResearch, onDeepResearch, onMultiSourceResearch, onPlayVideo, onPdfSubject, onCompare, onSaveWebAnswer, onCreateWebResultsNeuron, onCreateWebDeepNeuron, onAnalyzeImage, onOpenConversation, customShortcuts, pages, isOnline, initialQuery,
+  speakText, isListeningActive, captureVoiceResponseGuard, onVoiceContextClose,
 }: Props) {
   const [imagePasting, setImagePasting] = useState(false);
 
@@ -318,6 +335,45 @@ export default function SearchConsole({
   const chatBottomRef      = useRef<HTMLDivElement>(null);
   const typingIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
   const highlightTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // VOICE-4.1 — the single point where a final response may be proposed
+  // to TTS. Tracks which entry id has already been auto-spoken so a
+  // rerender/duplicate state update can never trigger a second
+  // speakText() call for the SAME response (single-speak guarantee is
+  // also enforced deeper, in voiceTts.ts's speakText() always cancelling
+  // any in-flight utterance first — this ref additionally prevents even
+  // ISSUING a redundant call).
+  const autoSpokenEntryIdsRef = useRef<Set<string>>(new Set());
+  const responseGeneration = useRef(0);
+  useEffect(() => () => { responseGeneration.current++; }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    return () => onVoiceContextClose?.();
+  }, [isOpen, onVoiceContextClose]);
+  const captureResponseGuard = useCallback(() => {
+    const generation = responseGeneration.current;
+    const voiceGuard = captureVoiceResponseGuard?.();
+    return () => generation === responseGeneration.current && (voiceGuard?.() ?? true);
+  }, [captureVoiceResponseGuard]);
+
+  const maybeAutoSpeak = useCallback((entryId: string, text: string, isCurrent?: () => boolean) => {
+    if (isCurrent && !isCurrent()) return;
+    if (!speakText) return;
+    if (autoSpokenEntryIdsRef.current.has(entryId)) return;
+    if (!getStoredTtsSettings().autoSpeak) return;
+    // Never speak into an open microphone — self-listening guard (the mic
+    // itself already calls stopSpeaking() on start, but this additionally
+    // prevents STARTING a new utterance while listening is active).
+    if (isListeningActive) return;
+    if (!canAutoSpeak(text)) return;
+    autoSpokenEntryIdsRef.current.add(entryId);
+    speakText(text);
+  }, [speakText, isListeningActive]);
+
+  const manualReadAloud = useCallback((text: string) => {
+    if (!speakText) return;
+    if (!canManuallySpeak(text)) return;
+    speakText(text);
+  }, [speakText]);
   // Holds the latest handleQuestion — lets the open/close effect (declared before
   // handleQuestion) trigger it for voice-originated queries without a TDZ issue.
   const handleQuestionRef  = useRef<(overrideQuery?: string) => void>(() => {});
@@ -420,6 +476,7 @@ export default function SearchConsole({
     setServerDown(false);
 
     const entryId  = generateId();
+    const responseIsCurrent = captureResponseGuard();
     const newEntry: ChatEntry = { id: entryId, query: q, forceLocal, clarificationContext: clarificationAnswers };
     setChatHistory(prev => [...prev, newEntry]);
 
@@ -434,6 +491,11 @@ export default function SearchConsole({
       });
 
       setChatHistory(prev => prev.map(e => e.id === entryId ? { ...e, answer: result } : e));
+      // Final text is fully known the instant the request resolves — the
+      // typewriter animation below is cosmetic only (see stopTyping/
+      // typingIntervalRef), never a real token stream, so there is no
+      // "wait for streaming to finish" step needed here.
+      maybeAutoSpeak(entryId, result.answer, responseIsCurrent);
 
       const sourceIds = result.sources.map(s => s.id).filter(Boolean);
       if (sourceIds.length > 0) {
@@ -456,16 +518,22 @@ export default function SearchConsole({
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';
       setChatHistory(prev => prev.map(en => en.id === entryId ? { ...en, error: msg } : en));
       setServerDown(true);
+      // Short client-facing error strings only (never a raw stack/path —
+      // this is already the same `.message`-only text shown on screen,
+      // not a technical diagnostic), and still gated by the same
+      // sensitive-content/length policy as any other auto-read text.
+      maybeAutoSpeak(entryId, msg, responseIsCurrent);
     } finally {
       setIsLoading(false);
       setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
-  }, [onHighlightSources, onClearHighlights, answerScope]);
+  }, [onHighlightSources, onClearHighlights, answerScope, maybeAutoSpeak, captureResponseGuard]);
 
   // ── Web quick answer ─────────────────────────────────────────────────────
 
   const handleWebAnswer = useCallback(async (q: string) => {
     const entryId = generateId();
+    const responseIsCurrent = captureResponseGuard();
     setChatHistory(prev => [...prev, {
       id: entryId, query: q,
       webAnswer: { phase: 'searching', phaseMessage: 'Recherche en cours…' },
@@ -484,12 +552,17 @@ export default function SearchConsole({
             ? { ...e, webAnswer: { phase: 'done', answer: evt.answer, sources: evt.sources, modelUsed: evt.model_used, latencyMs: evt.latency_ms } }
             : e,
           ));
+          // 'done' is the one true completion signal for this incremental
+          // event stream (searching -> fetching -> answering -> done) —
+          // never speak on the earlier phase/status events.
+          if (evt.answer) maybeAutoSpeak(entryId, evt.answer, responseIsCurrent);
           setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
         } else if (evt.type === 'error') {
           setChatHistory(prev => prev.map(e => e.id === entryId
             ? { ...e, error: evt.error, webAnswer: { phase: 'error' } }
             : e,
           ));
+          if (evt.error) maybeAutoSpeak(entryId, evt.error, responseIsCurrent);
         }
       });
     } catch (err) {
@@ -498,8 +571,9 @@ export default function SearchConsole({
         ? { ...e, error: msg, webAnswer: { phase: 'error' } }
         : e,
       ));
+      maybeAutoSpeak(entryId, msg, responseIsCurrent);
     }
-  }, []);
+  }, [maybeAutoSpeak, captureResponseGuard]);
 
   // ── Web deep search (cherche) ────────────────────────────────────────────
 
@@ -1498,6 +1572,9 @@ export default function SearchConsole({
                                   {wa.modelUsed ? ` · ${wa.modelUsed.split(':')[0]} · local` : ''}
                                   {wa.latencyMs ? ` · ${(wa.latencyMs / 1000).toFixed(1)}s` : ''}
                                 </p>
+                                {speakText && (
+                                  <ReadAloudButton text={wa.answer!} onRead={() => manualReadAloud(wa.answer!)} />
+                                )}
                                 {onSaveWebAnswer && (
                                   <SaveButton
                                     saved={savedEntries.has(entry.id)}
@@ -1665,6 +1742,11 @@ export default function SearchConsole({
                                 )}
                               </p>
 
+                              {/* Manual "Read Aloud" — works even with auto-read OFF */}
+                              {speakText && (
+                                <ReadAloudButton text={entry.answer!.answer} onRead={() => manualReadAloud(entry.answer!.answer)} />
+                              )}
+
                               {/* Save button — only once per entry */}
                               <SaveButton
                                 saved={savedEntries.has(entry.id)}
@@ -1773,6 +1855,7 @@ function SaveButton({ saved, saving, onSave }: SaveButtonProps) {
     </button>
   );
 }
+
 
 // ── DeepResearchPanel ─────────────────────────────────────────────────────────
 

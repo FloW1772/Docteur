@@ -1,0 +1,200 @@
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import { chromium } from 'playwright';
+
+let server, browser, assertions = 0;
+const check = (condition, label) => { assert.ok(condition, label); assertions++; };
+const html = '<div id="root"></div><script type="module">import R from "/@react-refresh";R.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>t=>t;window.__vite_plugin_react_preamble_installed__=true;import("/scripts/voice-ux-harness.jsx").then(m=>m.mount());</script>';
+try {
+  server = await createServer({ configFile: false, plugins: [react()], cacheDir: '.tmp/vite-voice7', optimizeDeps: { entries: ['scripts/voice-ux-harness.jsx'] }, server: { host: '127.0.0.1', port: 5212, strictPort: true, watch: null, hmr: false }, logLevel: 'error' });
+  await server.listen();
+  browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.route('**/__voice7', route => route.fulfill({ contentType: 'text/html', body: html }));
+  await page.goto('http://127.0.0.1:5212/__voice7');
+  await page.waitForFunction(() => window.h);
+  const settle = () => page.waitForTimeout(60);
+  const open = async () => { await page.getByRole('button', { name: 'Réglages voix' }).click(); await page.getByLabel('Reconnaissance vocale').waitFor(); await page.waitForFunction(() => !document.querySelector('[aria-label="Reconnaissance vocale"]').disabled); };
+  const close = async () => { await page.getByRole('button', { name: 'Fermer les paramètres' }).click(); };
+  const cancel = async () => { await page.evaluate(() => h.lifecycle.cancelVoiceInteraction()); await settle(); };
+
+  check(await page.getByRole('radio', { name: 'Dictée', exact: true }).getAttribute('aria-checked') === 'true', 'DICTATION default');
+  check(await page.getByTestId('sensitive').locator('button').count() === 0, 'sensitive read-aloud absent');
+  await page.getByRole('button', { name: 'Lire à voix haute' }).click();
+  await page.getByRole('button', { name: 'Arrêter la parole' }).waitFor();
+  check(await page.locator('.hud2-command-bar-status').innerText() === 'Lecture…', 'single speaking status');
+  await page.getByRole('button', { name: 'Arrêter la parole' }).click();
+  check(await page.evaluate(() => h.lifecycle.state) === 'IDLE', 'TTS stop uses global cancel');
+  await page.getByRole('radio', { name: 'Commande', exact: true }).focus();
+  await page.keyboard.press('Space');
+  check(await page.getByRole('radio', { name: 'Commande', exact: true }).getAttribute('aria-checked') === 'true', 'Space switches command mode');
+  check((await page.locator('.voice-mode-hint').innerText()).includes('interprétées'), 'pre-speech mode meaning visible');
+  await page.keyboard.press('ArrowLeft');
+  check(await page.getByRole('radio', { name: 'Dictée', exact: true }).getAttribute('aria-checked') === 'true', 'radio arrow keyboard behavior');
+  for (const [state, label] of Object.entries({ HEARING_SPEECH: 'Je vous entends', TRANSCRIBING: 'Transcription', UNDERSTANDING: 'Compréhension', CONFIRMING: 'Confirmation requise', EXECUTING: 'Exécution', ERROR: 'Erreur vocale' })) {
+    await page.evaluate(state => {
+      const lifecycle = h.lifecycle.lifecycle;
+      lifecycle.cancelVoiceInteraction(); lifecycle.beginCapture();
+      if (state === 'ERROR') { lifecycle.transition('ERROR'); return; }
+      for (const step of ['HEARING_SPEECH', 'TRANSCRIBING', 'UNDERSTANDING', 'CONFIRMING', 'EXECUTING']) { lifecycle.transition(step); if (step === state) break; }
+    }, state); await settle();
+    check((await page.locator('.hud2-command-bar-status').innerText()).includes(label), `${state}: one readable status`);
+    check(await page.getByRole('button', { name: 'Arrêter l’interaction vocale' }).isVisible(), `${state}: accessible STOP`);
+  }
+  await cancel();
+  await open();
+  check(await page.getByRole('dialog', { name: 'Paramètres', exact: true }).count() === 1, 'settings dialog semantics');
+  await page.getByRole('dialog').evaluate(dialog => {
+    const controls = Array.from(dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),summary')).filter(el => el.getClientRects().length);
+    controls.at(-1).focus();
+  }); await page.keyboard.press('Tab');
+  check(await page.evaluate(() => document.activeElement.getAttribute('aria-label') === 'Fermer les paramètres'), 'Tab wraps last control to dialog close button');
+  await page.keyboard.press('Shift+Tab');
+  check(await page.evaluate(() => document.querySelector('[role="dialog"]').contains(document.activeElement)), 'Shift+Tab wraps within dialog');
+  check(await page.getByTestId('voice-processing').innerText() === 'LOCAL — Strict Local', 'Strict Local status');
+  check(await page.locator('option[value="groq"]').evaluate(el => el.disabled), 'Strict Local disables cloud option');
+  check(await page.getByRole('group', { name: 'Voice Privacy', exact: true }).innerText().then(t => t.includes('NOT STORED') && t.includes('NOT IMPLEMENTED')), 'privacy facts');
+  check(await page.getByText('Langue : Français (fixe)', { exact: true }).isVisible(), 'fixed supported STT language');
+  check(!await page.getByLabel('Lire les réponses à voix haute', { exact: true }).isChecked(), 'auto-read default OFF');
+  await page.getByLabel('Microphone utilisé').selectOption('usb-mic');
+  await page.getByLabel('Voix de synthèse').selectOption('Voix locale');
+  await page.getByLabel('Vitesse de lecture').fill('1.4');
+  await page.getByLabel('Volume de lecture').fill('0.65');
+  await page.getByLabel('Lire les réponses à voix haute', { exact: true }).check();
+  await page.locator('.voice-settings .voice-commands summary').click();
+  const catalogue = await page.evaluate(async () => {
+    const { VOICE_INTENTS } = await import('/src/lib/voiceIntentRegistry.ts');
+    return Object.values(VOICE_INTENTS).filter(x => x.riskLevel !== 'LEVEL_3' && !['UNKNOWN', 'NEEDS_CLARIFICATION', 'EXPLAIN_FEATURE'].includes(x.id)).map(x => x.id);
+  });
+  check((await page.locator('.voice-settings [data-intent]').evaluateAll(nodes => nodes.map(n => n.dataset.intent))).join() === catalogue.join(), 'catalogue derived from real registry');
+  check(await page.locator('.voice-settings [data-intent="EXPLAIN_FEATURE"]').count() === 0, 'unimplemented explainer hidden');
+  await page.evaluate(async () => {
+    const { VOICE_INTENTS } = await import('/src/lib/voiceIntentRegistry.ts');
+    VOICE_INTENTS.CAMERA_ON.riskLevel = 'LEVEL_3'; VOICE_INTENTS.OPEN_FEATURE.requiresConfirmation = true;
+    h.pipeline.setMode('COMMAND');
+  }); await settle();
+  check(await page.locator('.voice-settings [data-intent="CAMERA_ON"]').count() === 0, 'denied LEVEL_3 never advertised');
+  check((await page.locator('.voice-settings [data-intent="OPEN_FEATURE"]').innerText()).includes('Confirmation requise'), 'registry confirmation requirement visible');
+  await page.evaluate(async () => {
+    const { VOICE_INTENTS } = await import('/src/lib/voiceIntentRegistry.ts');
+    VOICE_INTENTS.CAMERA_ON.riskLevel = 'LEVEL_1'; VOICE_INTENTS.OPEN_FEATURE.requiresConfirmation = false;
+    h.pipeline.setMode('DICTATION');
+  }); await settle();
+  check((await page.locator('.voice-settings [data-intent="OPEN_FEATURE"]').innerText()).includes('ouvre'), 'verified feature command examples');
+  await page.getByLabel('Activer l’interface vocale', { exact: true }).uncheck();
+  await page.waitForFunction(() => !h.settings.enabled);
+  check(await page.evaluate(() => ux.updates === 1 && ux.saves[0].enabled === false), 'settings save updates application immediately');
+  await page.getByLabel('Activer l’interface vocale', { exact: true }).check();
+  await page.waitForFunction(() => h.settings.enabled);
+  await page.getByText('Diagnostics vocaux', { exact: true }).click();
+  await page.getByRole('button', { name: 'Tester le microphone', exact: true }).click();
+  await page.getByText('Microphone actif — test local', { exact: true }).waitFor();
+  await page.waitForFunction(() => Number(document.querySelector('meter').value) > 0);
+  check((await page.getByRole('group', { name: 'Voice Privacy', exact: true }).innerText()).includes('ACTIVE'), 'micro privacy reflects diagnostic capture');
+  check(await page.getByText('48000 Hz', { exact: true }).isVisible(), 'actual settings shown');
+  const commits = await page.evaluate(() => ux.commits);
+  await page.waitForTimeout(1100);
+  const delta = await page.evaluate(previous => ux.commits - previous, commits);
+  check(delta <= 13, `diagnostics <= 10Hz plus scheduling allowance, observed ${delta}`);
+  check(await page.evaluate(() => __voiceTest.fetches) === 0, 'micro test has no network/transcription');
+  check(!(await page.locator('.voice-settings').innerText()).includes('usb-mic'), 'full device ID not shown');
+  await page.getByRole('button', { name: 'Arrêter le test' }).click();
+  check(await page.evaluate(() => __voiceTest.activeTracks.every(t => t.readyState === 'ended')), 'test stop releases tracks');
+  await page.getByLabel('Reconnaissance vocale').focus();
+  await page.keyboard.press('Shift+Tab');
+  check(await page.evaluate(() => document.querySelector('[role="dialog"]').contains(document.activeElement)), 'Shift+Tab remains in modal');
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  check(await page.evaluate(() => document.activeElement.id === 'settings-trigger'), 'Escape closes and restores trigger focus');
+  check(await page.evaluate(() => ux.voiceListeners.size === 0 && __voiceTest.deviceListeners.size === 0), 'settings close cleans voice and device listeners');
+  await open();
+  check(await page.getByLabel('Microphone utilisé').inputValue() === 'usb-mic', 'microphone persistence');
+  check(await page.getByLabel('Voix de synthèse').inputValue() === 'Voix locale', 'voice persistence');
+  check(await page.getByLabel('Vitesse de lecture').inputValue() === '1.4' && await page.getByLabel('Volume de lecture').inputValue() === '0.65', 'rate and volume persistence');
+  check(await page.getByLabel('Lire les réponses à voix haute', { exact: true }).isChecked(), 'auto-read persistence');
+  await page.getByRole('button', { name: 'Réinitialiser les préférences de lecture' }).click();
+  check(!await page.getByLabel('Lire les réponses à voix haute', { exact: true }).isChecked() && await page.getByLabel('Microphone utilisé').inputValue() === 'usb-mic', 'reset scoped to safe reading defaults');
+  await page.evaluate(() => { ux.failSave = true; });
+  await page.getByLabel('Activer l’interface vocale', { exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Impossible de sauvegarder' }).waitFor();
+  check(!(await page.getByRole('alert').innerText()).includes('secret'), 'save error sanitized');
+  await page.evaluate(() => { ux.failSave = false; ux.failMic = true; });
+  await page.getByRole('button', { name: 'Tester le microphone', exact: true }).click();
+  await page.getByText('Autorisation microphone refusée.', { exact: true }).waitFor();
+  check(await page.getByRole('button', { name: 'Tester le microphone', exact: true }).isEnabled(), 'permission error leaves retry possible');
+  await page.evaluate(() => { ux.failMic = false; });
+  await close(); await page.evaluate(() => { ux.strictLocal = false; }); await open();
+  await page.getByLabel('Reconnaissance vocale').selectOption('groq');
+  await page.waitForFunction(() => h.settings.whisperMode === 'groq');
+  check(await page.getByTestId('voice-processing').innerText() === 'CLOUD — Groq', 'cloud provider visible');
+  check(await page.getByText(/L’audio de transcription est envoyé à Groq/).isVisible(), 'cloud transmission explicitly disclosed');
+  await close(); await open();
+  check(await page.getByLabel('Reconnaissance vocale').inputValue() === 'groq', 'STT provider persistence');
+  await close(); await page.evaluate(() => { ux.strictLocal = true; }); await open();
+  check(await page.getByLabel('Reconnaissance vocale').inputValue() === 'local' && await page.locator('option[value="groq"]').evaluate(el => el.disabled), 'Strict Local overrides saved cloud display');
+
+  await mkdir('.tmp/voice7', { recursive: true });
+  for (const [name, width, height] of [['desktop', 1440, 1000], ['laptop', 1024, 800], ['tablet', 768, 1024], ['mobile', 375, 812]]) {
+    await page.setViewportSize({ width, height });
+    await page.locator('.voice-settings h2').scrollIntoViewIfNeeded();
+    const fits = await page.getByRole('dialog').evaluate(el => {
+      const rect = el.getBoundingClientRect(); return rect.x >= 0 && rect.right <= innerWidth && el.scrollWidth <= el.clientWidth + 1;
+    });
+    check(fits, `${name}: settings fits viewport`);
+    await page.screenshot({ path: `.tmp/voice7/settings-${name}.png` });
+    await close();
+    await page.evaluate(() => h.lifecycle.lifecycle.beginCapture());
+    check(await page.getByRole('button', { name: 'Arrêter l’interaction vocale' }).isVisible(), `${name}: STOP visible`);
+    const barFits = await page.locator('.hud2-command-bar').evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && el.scrollWidth <= el.clientWidth + 1; });
+    check(barFits, `${name}: command bar fits viewport`);
+    check(await page.locator('.hud2-command-bar-status').isVisible(), `${name}: state text visible`);
+    await page.screenshot({ path: `.tmp/voice7/command-${name}.png` });
+    await cancel(); await open();
+  }
+  await close();
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.getByRole('radio', { name: 'Commande', exact: true }).click();
+  await page.evaluate(() => h.pipeline.handleTranscript('commande inconnue xyz')); await settle();
+  check(await page.getByText('Commande non reconnue.', { exact: false }).isVisible(), 'unknown feedback');
+  await page.getByRole('button', { name: 'Passer en dictée' }).click();
+  check(await page.getByRole('radio', { name: 'Dictée', exact: true }).getAttribute('aria-checked') === 'true', 'unknown fallback to dictation');
+  await page.getByRole('button', { name: 'Réessayer', exact: true }).click();
+  check(await page.evaluate(() => h.lifecycle.state) === 'LISTENING', 'unknown retry starts microphone path'); await cancel();
+  await page.getByRole('radio', { name: 'Commande', exact: true }).click();
+  const pending = async () => {
+    await page.evaluate(async () => {
+      const { VOICE_INTENTS } = await import('/src/lib/voiceIntentRegistry.ts');
+      VOICE_INTENTS.OPEN_FEATURE.requiresConfirmation = true;
+      h.pipeline.runIntent({ type: 'OPEN_FEATURE', parameters: { featureId: 'cyber-audit' }, source: 'ouvre sentinel', matchType: 'DETERMINISTIC' });
+      VOICE_INTENTS.OPEN_FEATURE.requiresConfirmation = false;
+    }); await settle();
+  };
+  await page.getByRole('radio', { name: 'Commande', exact: true }).focus();
+  await pending();
+  check(await page.getByText('Cible', { exact: true }).isVisible() && await page.getByText('Expiration', { exact: true }).isVisible(), 'confirmation action target expiry');
+  check(await page.evaluate(() => document.activeElement.textContent.trim() === 'Annuler'), 'confirmation focuses safe cancel control');
+  check(await page.locator('.hud2-voice-feedback').evaluate(el => { const r = el.getBoundingClientRect(); return r.x >= 0 && r.right <= innerWidth && r.y >= 0; }), 'mobile confirmation fits screen');
+  await page.screenshot({ path: '.tmp/voice7/confirmation-mobile.png' });
+  await page.keyboard.press('Escape'); await settle();
+  check(await page.getByRole('button', { name: 'Confirmer', exact: true }).count() === 0, 'Escape cancels confirmation');
+  check(await page.evaluate(() => document.activeElement.getAttribute('role') === 'radio'), 'cancel restores prior focus');
+  await pending(); await page.getByRole('button', { name: 'Confirmer', exact: true }).focus(); await page.keyboard.press('Enter'); await settle();
+  check(await page.evaluate(() => ux.actions.filter(x => x === 'openFeature').length) === 1, 'keyboard confirms exactly once');
+  await page.evaluate(() => h.pipeline.runIntent({ type: 'NEEDS_CLARIFICATION', parameters: { rawText: 'ouvrir', candidates: ['cyber-audit', 'metagpt'] }, source: 'ouvrir', matchType: 'DETERMINISTIC' })); await settle();
+  check(await page.locator('.hud2-voice-feedback li').count() === 2, 'ambiguity uses actual structured candidates'); await cancel();
+  await page.evaluate(() => remount()); await settle();
+  check(await page.getByRole('radio', { name: 'Dictée', exact: true }).getAttribute('aria-checked') === 'true', 'COMMAND never persists as startup mode');
+  await page.clock.install(); await pending(); await page.getByLabel('Commande ou question').focus(); await page.clock.runFor(20001); await settle();
+  check((await page.locator('.hud2-voice-feedback').innerText()).includes('expiré') && await page.getByRole('button', { name: 'Confirmer', exact: true }).count() === 0, 'expiry removes confirmation actions');
+  check(await page.evaluate(() => document.activeElement.getAttribute('aria-label') === 'Commande ou question'), 'expiry never steals focus from active input');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  check(await page.locator('.hud2-command-bar-mic').evaluate(el => getComputedStyle(el).animationName === 'none' && getComputedStyle(el).transitionDuration === '0s'), 'reduced motion');
+  check(await page.locator('.hud2-command-bar-status').getAttribute('aria-live') === 'polite', 'screen-reader state announcement');
+  check(await page.evaluate(() => ux.actions.every(x => ['openFeature'].includes(x))), 'no shell arbitrary tool or URL dispatch');
+  check(errors.length === 0, `browser errors: ${errors.join('; ')}`);
+  console.log(`VOICE-7 UX BROWSER PASS ${assertions}/${assertions}`);
+} finally { await browser?.close(); await server?.close(); }
