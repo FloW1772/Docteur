@@ -100,12 +100,27 @@ try {
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data), headers: { 'access-control-allow-origin': '*' } });
   });
 
+  // ── Minimal MAÎTRE fixture backend — only exercised by the final
+  // cross-module navigation assertion below; full MAÎTRE Studio coverage
+  // lives in test-maitre-studio-browser.mjs, not duplicated here.
+  await page.route('**/api/maitre/**', async route => {
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ ok: true, overview: { openIncidentCount: 0, totalIncidentCount: 0, highestActiveSeverity: null, defenderAvailable: false, recentEvents: [], pendingApprovalCount: 0, isolationStatus: 'NOT_ISOLATED' }, incidents: [], events: [], status: 'NOT_ISOLATED' }),
+      headers: { 'access-control-allow-origin': '*' },
+    });
+  });
+
   await page.route('**/__observateur_studio_test', route => route.fulfill({ contentType: 'text/html', body: harnessHtml }));
   await page.goto(`${origin}/__observateur_studio_test`);
 
   // ── Open Observateur via Help Center search ──
+  // Searching "Observateur" alone now also matches MAÎTRE's own
+  // description text (which references Observateur as one of its data
+  // sources) — search by a keyword unique to Observateur's own entry
+  // instead of the ambiguous name, so exactly one "Ouvrir" button exists.
   const openStudio = async () => {
-    await page.getByPlaceholder(/Rechercher/).fill('Observateur');
+    await page.getByPlaceholder(/Rechercher/).fill('sentinel');
     await page.getByRole('button', { name: 'Ouvrir', exact: true }).click();
     await page.getByRole('dialog', { name: /Observateur/ }).waitFor();
   };
@@ -132,11 +147,15 @@ try {
   await page.getByText('chrome.exe', { exact: false }).first().waitFor();
   assertions++;
 
-  // ── ANOMALIES: REQUIRES_REVIEW row shows the inert MAITRE placeholder ──
+  // ── ANOMALIES: REQUIRES_REVIEW row's "Ouvrir dans MAÎTRE" button is
+  // now genuinely enabled (this WAS a permanently disabled placeholder
+  // before MAÎTRE existed) — the actual navigation-click is exercised
+  // at the very end of this file, after every other Observateur-only
+  // assertion, since clicking it unmounts Observateur Studio entirely.
   await page.getByRole('tab', { name: /^ANOMALIES/ }).click();
-  await page.getByText('Analyse approfondie recommandée avec MAITRE', { exact: false }).waitFor();
-  const maitreButton = page.getByRole('button', { name: 'Ouvrir dans MAITRE', exact: true });
-  check(await maitreButton.isDisabled());
+  await page.getByText('Analyse approfondie recommandée avec MAÎTRE', { exact: false }).waitFor();
+  const maitreButton = page.getByRole('button', { name: 'Ouvrir dans MAÎTRE', exact: true });
+  check(!(await maitreButton.isDisabled()));
 
   // ── REPORTS: history entry with export links ──
   await page.getByRole('tab', { name: /^REPORTS/ }).click();
@@ -173,6 +192,14 @@ try {
   check(!/venv|argv|python|filesystem|C:\\\\|\/usr\/|\/home\//i.test(fullBodyText));
 
   await captureStudio(page, 'observateur-studio-results');
+
+  // ── Cross-module integration: clicking "Ouvrir dans MAÎTRE" from a
+  // REQUIRES_REVIEW anomaly genuinely opens MAÎTRE Studio (last, since
+  // it unmounts Observateur Studio) ──
+  await page.getByRole('tab', { name: /^ANOMALIES/ }).click();
+  await page.getByRole('button', { name: 'Ouvrir dans MAÎTRE', exact: true }).click();
+  await page.getByRole('dialog', { name: /MAÎTRE/ }).waitFor();
+  assertions++;
 
   check(errors.length === 0);
   console.log(`OBSERVATEUR STUDIO FRONTEND PASS ${assertions}/${assertions}`);

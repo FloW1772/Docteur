@@ -588,6 +588,7 @@ Pistes d'amélioration identifiées, sans garantie ni date :
 - Améliorer la fiabilité de la reconnaissance de gestes.
 - Ajouter ou affiner le support d'autres providers IA.
 - Poursuivre le durcissement sécurité côté Windows.
+- **MAÎTRE (réponse aux incidents)** : V1 certifié PASS (voir `reports/MAITRE_V1_2026-09.md`) — évolutions V1.1/V2 identifiées et priorisées, non implémentées (voir `reports/MAITRE_FUTURE_WORK_2026-09.md`).
 
 ## 🤝 Contribuer
 

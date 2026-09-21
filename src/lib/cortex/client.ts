@@ -364,6 +364,9 @@ export interface RouterSettings {
     videoModel: string;
     audioModel: string;
   };
+  // Free AI Finder progressive disclosure (AI-5). Default false — Settings
+  // shows only a small recommended subset until this is explicitly enabled.
+  always_show_all_free_apis?: boolean;
 }
 
 export interface RouterStatus {
@@ -408,6 +411,133 @@ export interface OllamaPullProgress {
   model?: string;
   error?: string;
   done?: boolean;
+}
+
+// --- Local AI catalog (AI-3/AI-4) --- mirrors cortex-server/src/lib/local-ai-catalog.js
+
+export type TrustLevel = 'OFFICIAL' | 'VERIFIED_COMMUNITY' | 'COMMUNITY' | 'UNVERIFIED';
+export type ExecutionLocation = 'LOCAL' | 'CLOUD';
+export type FitRating = 'EXCELLENT' | 'GOOD' | 'TIGHT' | 'NOT_RECOMMENDED' | 'UNKNOWN';
+export type RequirementConfidence = 'OFFICIAL_REQUIREMENT' | 'COMMUNITY_ESTIMATE' | 'DERIVED_ESTIMATE' | 'UNKNOWN';
+
+export interface ModelCatalogEntry {
+  canonicalId: string;
+  name: string;
+  family: string;
+  publisher: string;
+  provenance: 'official' | 'community_quant' | 'community_modified';
+  trustLevel: TrustLevel;
+  upstreamCanonicalId: string | null;
+  officialSourceUrl: string | null;
+  huggingFaceUrl: string | null;
+  githubUrl: string | null;
+  releaseDate: string | null;
+  lastVerifiedAt: string;
+  license: string | null;
+  commercialUse: 'unrestricted' | 'conditional' | 'non_commercial' | 'unknown';
+  additionalPolicies: string[];
+  architecture: { type: 'dense' | 'moe' | 'unknown'; totalParameters: number | null; activeParameters: number | null };
+  contextLength: { native: number | null; extended: number | null } | null;
+  capabilities: {
+    reasoning: boolean; coding: boolean; toolCalling: boolean;
+    vision: boolean; audio: boolean; video: boolean; multilingual: boolean;
+  };
+  modalities: string[];
+  strengths: string[];
+  limitations: string[];
+  lifecycle: { status: 'current' | 'superseded' | 'obsolete' | 'unknown'; staleAfter: string | null; replacedBy: string | null };
+  useCaseTags: string[];
+}
+
+export interface ModelDistribution {
+  id: string;
+  canonicalId: string;
+  runtime: 'OLLAMA' | 'LM_STUDIO' | 'GGUF' | 'LLAMA_CPP' | 'TRANSFORMERS';
+  source: string;
+  sourceUrl: string | null;
+  ollamaPullName: string | null;
+  huggingFaceRepo: string | null;
+  localArtifactPath: string | null;
+  artifactSizeBytes: number | null;
+  precision: string | null;
+  quantization: string | null;
+  executionLocation: ExecutionLocation;
+  verified: boolean;
+  lastVerifiedAt: string;
+  requiresRemoteCode: boolean | 'unknown' | 'not_applicable';
+  estimatedRequirements: { ramBytes: number | null; vramBytes: number | null; diskBytes: number | null; confidenceType: RequirementConfidence } | null;
+}
+
+export interface CatalogMeta {
+  catalogVersion: string;
+  generatedAt: string;
+  staleAfterDays: number;
+  stale: boolean;
+  modelCount: number;
+  distributionCount: number;
+}
+
+export interface LocalAiCatalogResult {
+  models: ModelCatalogEntry[];
+  distributions: ModelDistribution[];
+  meta: CatalogMeta;
+}
+
+export interface GpuInfo {
+  name: string;
+  vendor: string | null;
+  vramBytes: number | null;
+  source: string;
+}
+
+export interface LocalHardwareProfile {
+  platform: string;
+  arch: string;
+  cpuModel: string | null;
+  logicalCores: number;
+  totalRamBytes: number;
+  freeRamBytes: number;
+  gpus: GpuInfo[];
+  freeDiskBytes: number | null;
+  osVersion: string | null;
+  detectedAt: string;
+}
+
+export interface FitResult {
+  rating: FitRating;
+  reasons: string[];
+  warnings: string[];
+  estimates: { ramBytes: number | null; vramBytes: number | null; diskBytes: number | null };
+  confidence: string;
+}
+
+export interface LocalAiRecommendationEntry {
+  model: ModelCatalogEntry;
+  distribution: ModelDistribution;
+  fit: FitResult;
+  installed: boolean;
+}
+
+export interface LocalAiRecommendationsResult {
+  results: LocalAiRecommendationEntry[];
+  hardwareProfile: LocalHardwareProfile;
+  catalogMeta: CatalogMeta;
+}
+
+export interface LocalAiInstalledResult {
+  installedOllamaModels: string[];
+  matchedCatalogDistributions: { distributionId: string; canonicalId: string; ollamaPullName: string }[];
+}
+
+export interface LocalAiInstallPreviewResult {
+  ok: boolean;
+  error?: string;
+  model?: ModelCatalogEntry;
+  distribution?: ModelDistribution;
+  fit?: FitResult;
+  hardwareProfile?: LocalHardwareProfile;
+  alreadyInstalled?: boolean;
+  verifiedOllamaPullName?: string;
 }
 
 export interface RouterStat {
@@ -2102,6 +2232,46 @@ export const cortexClient = {
       throw new Error(message.error ?? `Ollama delete HTTP ${res.status}`);
     }
     return res.json() as Promise<{ ok: boolean; model: string }>;
+  },
+
+  // Local AI catalog (AI-3/AI-4) — all local, no Internet calls. See
+  // cortex-server/src/routes/local-ai.js.
+  async localAiCatalog(): Promise<LocalAiCatalogResult> {
+    const res = await apiFetch('/api/local-ai/catalog', { method: 'GET' });
+    if (!res.ok) throw new Error(`Local AI catalog HTTP ${res.status}`);
+    return res.json() as Promise<LocalAiCatalogResult>;
+  },
+
+  async localAiHardware(forceRefresh = false): Promise<{ profile: LocalHardwareProfile }> {
+    const res = await apiFetch(`/api/local-ai/hardware${forceRefresh ? '?refresh=1' : ''}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Local AI hardware HTTP ${res.status}`);
+    return res.json() as Promise<{ profile: LocalHardwareProfile }>;
+  },
+
+  async localAiRecommendations(options: { capability?: string; localOnly?: boolean } = {}): Promise<LocalAiRecommendationsResult> {
+    const params = new URLSearchParams();
+    if (options.capability) params.set('capability', options.capability);
+    if (options.localOnly === false) params.set('localOnly', '0');
+    const qs = params.toString();
+    const res = await apiFetch(`/api/local-ai/recommendations${qs ? `?${qs}` : ''}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Local AI recommendations HTTP ${res.status}`);
+    return res.json() as Promise<LocalAiRecommendationsResult>;
+  },
+
+  async localAiInstalled(): Promise<LocalAiInstalledResult> {
+    const res = await apiFetch('/api/local-ai/installed', { method: 'GET' });
+    if (!res.ok) throw new Error(`Local AI installed HTTP ${res.status}`);
+    return res.json() as Promise<LocalAiInstalledResult>;
+  },
+
+  async localAiInstallPreview(distributionId: string): Promise<LocalAiInstallPreviewResult> {
+    const res = await apiFetch('/api/local-ai/install-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ distributionId }),
+    });
+    const body = await res.json() as LocalAiInstallPreviewResult;
+    return body;
   },
 
   async routerSettings(): Promise<RouterSettings> {

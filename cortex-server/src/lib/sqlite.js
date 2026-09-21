@@ -1039,6 +1039,246 @@ export function initSqlite(sqlitePath) {
       ON monitor_events(created_at DESC);
   `);
 
+  // ── MAÎTRE (defensive security — SecurityEvent/Incident/Evidence, MA-2) ──
+  //
+  // MAÎTRE is a strictly separate module from Observateur (monitor_*) and
+  // Cyber Audit (cyber_audit_*) — own maitre_* table prefix, no shared
+  // table, no foreign key into either of those schemas. MAÎTRE only ever
+  // READS Observateur data (its security_signal column) through
+  // monitor-*.js's own existing getters; it never writes to monitor_*.
+  //
+  // MA-2 scope is data model only: no Defender/Event Log/process/firewall
+  // adapters exist yet, so every row created in this phase's tests is
+  // synthetic. Severity is a closed enum (see MAITRE_SEVERITIES below,
+  // enforced in maitre-models.js, NOT by a SQL CHECK constraint — this
+  // matches the repo's existing convention of validating enums in JS
+  // before the row is ever built, same as monitor-anomaly.js's severities
+  // and monitor-config.js's report-mode/frequency enums). Deliberately no
+  // "MALWARE"/"ATTACK"/"COMPROMISED" value is ever a valid severity —
+  // those words may appear inside a free-text description sourced from a
+  // detector, but never become a MAÎTRE verdict field.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS maitre_events (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      occurred_at TEXT NOT NULL,
+      source TEXT NOT NULL,
+      category TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      subject TEXT NOT NULL DEFAULT '{}',
+      evidence_refs TEXT NOT NULL DEFAULT '[]',
+      metadata TEXT NOT NULL DEFAULT '{}',
+      detector_id TEXT NOT NULL,
+      incident_id TEXT
+    );
+
+    -- Immutable after creation (MA-2 exposes no update function for this
+    -- table) except the one explicitly-allowed mutation: attaching a
+    -- previously-unassigned event to an incident once correlation runs
+    -- (a later phase) — modeled as a single allowed UPDATE of
+    -- incident_id only, never a general-purpose row edit.
+    CREATE INDEX IF NOT EXISTS idx_maitre_events_occurred_at
+      ON maitre_events(occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_events_incident_id
+      ON maitre_events(incident_id);
+    CREATE INDEX IF NOT EXISTS idx_maitre_events_source
+      ON maitre_events(source, occurred_at DESC);
+
+    -- Incident is the only mutable MAÎTRE row — via controlled status
+    -- transitions (validated in maitre-models.js, not here) rather than
+    -- an arbitrary column-by-column update. timeline is an append-only
+    -- JSON array of {at, type, detail} entries, bounded in size by the
+    -- application layer (see MAITRE_LIMITS in maitre-models.js).
+    CREATE TABLE IF NOT EXISTS maitre_incidents (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      severity TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      event_refs TEXT NOT NULL DEFAULT '[]',
+      evidence_refs TEXT NOT NULL DEFAULT '[]',
+      recommendations TEXT NOT NULL DEFAULT '[]',
+      actions_proposed TEXT NOT NULL DEFAULT '[]',
+      actions_executed TEXT NOT NULL DEFAULT '[]',
+      timeline TEXT NOT NULL DEFAULT '[]'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_incidents_status
+      ON maitre_incidents(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_incidents_severity
+      ON maitre_incidents(severity, created_at DESC);
+
+    -- Evidence is immutable after creation (no update function exposed).
+    -- redacted is a boolean flag (0/1) recording whether
+    -- deepRedactEvidence()/redactHeaders() from cyber-redact.js were
+    -- applied to metadata before this row was written — MA-2 always sets
+    -- it to 1, since createEvidence() unconditionally redacts. sha256 is
+    -- the hash of the SUBJECT the evidence describes (e.g. a file's
+    -- content) when known; integrity_hash is the hash of this evidence
+    -- row's own serialized metadata, used only for dedup/tamper-evidence
+    -- of the row itself — never presented as forensic chain-of-custody.
+    CREATE TABLE IF NOT EXISTS maitre_evidence (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      incident_id TEXT,
+      event_id TEXT,
+      sha256 TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      redacted INTEGER NOT NULL DEFAULT 1,
+      integrity_hash TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_evidence_incident_id
+      ON maitre_evidence(incident_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_evidence_event_id
+      ON maitre_evidence(event_id);
+    CREATE INDEX IF NOT EXISTS idx_maitre_evidence_sha256
+      ON maitre_evidence(sha256);
+  `);
+
+  // ── MAÎTRE — action proposal / policy / approval binding (MA-7) ──────────
+  //
+  // Strictly the security boundary BEFORE any executor exists (MA-8+).
+  // No column here ever triggers a system action by itself — these
+  // tables only record proposals, policy decisions, and cryptographic
+  // approval bindings. actionType is validated against a closed enum in
+  // maitre-actions.js (never a SQL CHECK constraint, matching every
+  // other MAÎTRE enum's JS-side validation convention). target/
+  // parameters are redacted JSON, never a raw shell/command shape —
+  // enforced by maitre-actions.js's schema-per-action-type validators,
+  // not by this table.
+  //
+  // maitre_actions.status values: PROPOSED, AWAITING_APPROVAL, APPROVED,
+  // REJECTED, EXPIRED, READY, CONSUMED. Never EXECUTED in MA-7 — that
+  // value is reserved for MA-8's executor.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS maitre_actions (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      incident_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      level INTEGER NOT NULL,
+      target TEXT NOT NULL DEFAULT '{}',
+      parameters TEXT NOT NULL DEFAULT '{}',
+      reason TEXT NOT NULL DEFAULT '',
+      evidence_refs TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'PROPOSED',
+      proposal_hash TEXT NOT NULL,
+      policy_result TEXT NOT NULL DEFAULT '{}',
+      expires_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_actions_incident_id
+      ON maitre_actions(incident_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_actions_status
+      ON maitre_actions(status, created_at DESC);
+
+    -- One approval row per approval DECISION (a rejected-then-reproposed
+    -- action gets a new proposal + a new approval row, never a reused
+    -- one) — status transitions are PENDING -> APPROVED/REJECTED/EXPIRED,
+    -- and APPROVED -> CONSUMED (one-time use, mission §21). target_hash/
+    -- parameters_hash/proposal_hash are SHA-256 of the canonical
+    -- serialization at approval-request time — ANY later mutation of the
+    -- underlying action row makes re-validation fail (mission §18/§25).
+    CREATE TABLE IF NOT EXISTS maitre_action_approvals (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      action_id TEXT NOT NULL,
+      incident_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      target_hash TEXT NOT NULL,
+      parameters_hash TEXT NOT NULL,
+      proposal_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      approved_at TEXT,
+      consumed_at TEXT,
+      expires_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_action_approvals_action_id
+      ON maitre_action_approvals(action_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_action_approvals_status
+      ON maitre_action_approvals(status, expires_at ASC);
+  `);
+
+  // ── MAÎTRE — action execution audit (MA-8) ────────────────────────────────
+  //
+  // One row per EXECUTION ATTEMPT (not per action — a failed attempt
+  // followed by a fresh proposal+approval+retry gets its own row,
+  // preserving full history). result_metadata is bounded, redacted
+  // JSON only — never raw shell output, never a secret. A UNIQUE index
+  // on action_id where status IN ('RUNNING','SUCCEEDED') is deliberately
+  // NOT expressed as a SQL constraint (SQLite partial-unique-on-status
+  // is awkward and every other MAÎTRE invariant is enforced in JS) —
+  // maitre-executor.js's own idempotency/concurrency check queries this
+  // table before inserting a new RUNNING row.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS maitre_action_runs (
+      id TEXT PRIMARY KEY,
+      action_id TEXT NOT NULL,
+      incident_id TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      proposal_hash TEXT NOT NULL,
+      approval_id TEXT,
+      status TEXT NOT NULL DEFAULT 'RUNNING',
+      started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      finished_at TEXT,
+      result_metadata TEXT NOT NULL DEFAULT '{}',
+      error_category TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_action_runs_action_id
+      ON maitre_action_runs(action_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_action_runs_incident_id
+      ON maitre_action_runs(incident_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_action_runs_status
+      ON maitre_action_runs(status, started_at DESC);
+  `);
+
+  // ── MAÎTRE — host isolation rollback state (MA-10) ────────────────────────
+  //
+  // Persisted BEFORE the first firewall modification is ever attempted
+  // (mission §7 — "rollback state FIRST"; if this insert fails,
+  // HOST_ISOLATION is denied before touching the OS at all). One row per
+  // isolation ATTEMPT (mirroring maitre_action_runs' one-row-per-attempt
+  // convention), never overwritten — a retried isolation after a
+  // PARTIAL_FAILURE gets a fresh proposal/approval/row, preserving full
+  // history for manual forensic review if ever needed.
+  //
+  // rules_created is the authoritative record of which specific firewall
+  // rules THIS attempt actually created — restore only ever removes rules
+  // listed here (mission §15 ownership re-check), never a wildcard sweep.
+  // status: PENDING (row inserted, no OS change yet) -> APPLYING ->
+  // ACTIVE | PARTIAL_FAILURE | FAILED -> RESTORING -> RESTORED.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS maitre_isolation_state (
+      id TEXT PRIMARY KEY,
+      action_id TEXT NOT NULL,
+      incident_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      strategy TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      rules_created TEXT NOT NULL DEFAULT '[]',
+      verification_metadata TEXT NOT NULL DEFAULT '{}',
+      restored_at TEXT,
+      restore_action_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maitre_isolation_state_action_id
+      ON maitre_isolation_state(action_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_isolation_state_incident_id
+      ON maitre_isolation_state(incident_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_maitre_isolation_state_status
+      ON maitre_isolation_state(status, created_at DESC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -1372,6 +1612,324 @@ export function purgeMonitorDataOlderThan(days, { batchSize = MONITOR_PURGE_BATC
   );
 }
 
+// ── MAÎTRE — DB access (MA-2: data model only, no adapters/actions yet) ───
+//
+// Rows are inserted as plain objects with a caller-generated
+// crypto.randomUUID() id, matching monitor_*'s convention. All INSERTs use
+// a plain (non-UPSERT) prepared statement — MAÎTRE rows are not
+// aggregated/upserted like monitor_connections; a duplicate id is a
+// genuine caller bug and must surface as a thrown SQLITE_CONSTRAINT
+// error (better-sqlite3's default behavior for a PRIMARY KEY collision),
+// never a silent overwrite.
+
+const MAITRE_EVENTS_PURGE_BATCH_SIZE = 500;
+const MAITRE_EVENTS_PURGE_MAX_BATCHES = 20;
+
+export function insertMaitreEvent(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_events
+      (id, created_at, occurred_at, source, category, severity, confidence, subject, evidence_refs, metadata, detector_id, incident_id)
+    VALUES (@id, @created_at, @occurred_at, @source, @category, @severity, @confidence, @subject, @evidence_refs, @metadata, @detector_id, @incident_id)
+  `).run(row);
+}
+
+export function getMaitreEventById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_events WHERE id = ?').get(id) ?? null;
+}
+
+export function listMaitreEvents({ limit = 100, offset = 0, incidentId = null } = {}) {
+  if (!database) return [];
+  if (incidentId) {
+    return database.prepare(
+      'SELECT * FROM maitre_events WHERE incident_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?'
+    ).all(incidentId, limit, offset);
+  }
+  return database.prepare(
+    'SELECT * FROM maitre_events ORDER BY occurred_at DESC LIMIT ? OFFSET ?'
+  ).all(limit, offset);
+}
+
+// The one allowed post-creation mutation on an event: attaching it to an
+// incident once correlation assigns it (a later phase). Never touches
+// any other column.
+export function attachMaitreEventToIncident(eventId, incidentId) {
+  if (!database) return;
+  database.prepare('UPDATE maitre_events SET incident_id = ? WHERE id = ?').run(incidentId, eventId);
+}
+
+export function purgeMaitreEventsOlderThan(days, { batchSize = MAITRE_EVENTS_PURGE_BATCH_SIZE, maxBatches = MAITRE_EVENTS_PURGE_MAX_BATCHES } = {}) {
+  if (!database) return 0;
+  const numDays = Number(days);
+  if (!Number.isFinite(numDays)) return 0;
+  const cutoff = new Date(Date.now() - numDays * 86_400_000).toISOString();
+  const deleteBatch = database.prepare(
+    'DELETE FROM maitre_events WHERE id IN (SELECT id FROM maitre_events WHERE occurred_at < ? LIMIT ?)'
+  );
+  let deleted = 0;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const result = deleteBatch.run(cutoff, batchSize);
+    deleted += result.changes;
+    if (result.changes < batchSize) break;
+  }
+  return deleted;
+}
+
+export function insertMaitreIncident(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_incidents
+      (id, created_at, updated_at, status, severity, title, summary, event_refs, evidence_refs, recommendations, actions_proposed, actions_executed, timeline)
+    VALUES (@id, @created_at, @updated_at, @status, @severity, @title, @summary, @event_refs, @evidence_refs, @recommendations, @actions_proposed, @actions_executed, @timeline)
+  `).run(row);
+}
+
+export function getMaitreIncidentById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_incidents WHERE id = ?').get(id) ?? null;
+}
+
+export function listMaitreIncidents({ limit = 100, offset = 0, status = null } = {}) {
+  if (!database) return [];
+  if (status) {
+    return database.prepare(
+      'SELECT * FROM maitre_incidents WHERE status = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+    ).all(status, limit, offset);
+  }
+  return database.prepare(
+    'SELECT * FROM maitre_incidents ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+  ).all(limit, offset);
+}
+
+// Controlled update: only the fields a status transition or annotation is
+// allowed to change. Never accepts an arbitrary column set — the caller
+// (maitre-models.js) decides which of these are legal for the current
+// transition; this function only executes the write.
+export function updateMaitreIncident(id, fields) {
+  if (!database) return null;
+  const allowed = ['status', 'severity', 'summary', 'event_refs', 'evidence_refs', 'recommendations', 'actions_proposed', 'actions_executed', 'timeline'];
+  const keys = Object.keys(fields).filter(k => allowed.includes(k));
+  if (keys.length === 0) return getMaitreIncidentById(id);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE maitre_incidents SET ${setClause}, updated_at = @updated_at WHERE id = @id`)
+    .run({ ...fields, id, updated_at: new Date().toISOString() });
+  return getMaitreIncidentById(id);
+}
+
+export function insertMaitreEvidence(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_evidence
+      (id, created_at, type, source, incident_id, event_id, sha256, metadata, redacted, integrity_hash)
+    VALUES (@id, @created_at, @type, @source, @incident_id, @event_id, @sha256, @metadata, @redacted, @integrity_hash)
+  `).run(row);
+}
+
+export function getMaitreEvidenceById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_evidence WHERE id = ?').get(id) ?? null;
+}
+
+export function listMaitreEvidenceForIncident(incidentId, { limit = 200, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM maitre_evidence WHERE incident_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?'
+  ).all(incidentId, limit, offset);
+}
+
+// ── MAÎTRE — action proposal / approval DB access (MA-7) ──────────────────
+
+export function insertMaitreAction(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_actions
+      (id, created_at, updated_at, incident_id, action_type, level, target, parameters, reason, evidence_refs, status, proposal_hash, policy_result, expires_at)
+    VALUES (@id, @created_at, @updated_at, @incident_id, @action_type, @level, @target, @parameters, @reason, @evidence_refs, @status, @proposal_hash, @policy_result, @expires_at)
+  `).run(row);
+}
+
+export function getMaitreActionById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_actions WHERE id = ?').get(id) ?? null;
+}
+
+export function listMaitreActionsForIncident(incidentId, { limit = 200, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM maitre_actions WHERE incident_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  ).all(incidentId, limit, offset);
+}
+
+export function listMaitreActions({ limit = 200, offset = 0, status = null } = {}) {
+  if (!database) return [];
+  if (status) {
+    return database.prepare('SELECT * FROM maitre_actions WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?').all(status, limit, offset);
+  }
+  return database.prepare('SELECT * FROM maitre_actions ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset);
+}
+
+// Controlled update — same allowlist-of-columns discipline as
+// updateMaitreIncident: only status/updated_at/policy_result are ever
+// mutable post-creation. target/parameters/action_type/incident_id/
+// proposal_hash are permanently fixed at proposal time (mutating any of
+// them would invalidate every approval bound to this action's hash —
+// so this function structurally cannot be used to do that).
+export function updateMaitreAction(id, fields) {
+  if (!database) return null;
+  const allowed = ['status', 'policy_result'];
+  const keys = Object.keys(fields).filter(k => allowed.includes(k));
+  if (keys.length === 0) return getMaitreActionById(id);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE maitre_actions SET ${setClause}, updated_at = @updated_at WHERE id = @id`)
+    .run({ ...fields, id, updated_at: new Date().toISOString() });
+  return getMaitreActionById(id);
+}
+
+export function insertMaitreActionApproval(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_action_approvals
+      (id, created_at, action_id, incident_id, action_type, target_hash, parameters_hash, proposal_hash, status, approved_at, consumed_at, expires_at)
+    VALUES (@id, @created_at, @action_id, @incident_id, @action_type, @target_hash, @parameters_hash, @proposal_hash, @status, @approved_at, @consumed_at, @expires_at)
+  `).run(row);
+}
+
+export function getMaitreActionApprovalById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_action_approvals WHERE id = ?').get(id) ?? null;
+}
+
+export function listMaitreActionApprovalsForAction(actionId, { limit = 50 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM maitre_action_approvals WHERE action_id = ? ORDER BY created_at DESC LIMIT ?').all(actionId, limit);
+}
+
+// Only status/approved_at/consumed_at are ever mutable — target_hash/
+// parameters_hash/proposal_hash/expires_at are fixed at request time,
+// exactly what makes the binding cryptographically meaningful.
+export function updateMaitreActionApproval(id, fields) {
+  if (!database) return null;
+  const allowed = ['status', 'approved_at', 'consumed_at'];
+  const keys = Object.keys(fields).filter(k => allowed.includes(k));
+  if (keys.length === 0) return getMaitreActionApprovalById(id);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE maitre_action_approvals SET ${setClause} WHERE id = @id`)
+    .run({ ...fields, id });
+  return getMaitreActionApprovalById(id);
+}
+
+// ── MAÎTRE — action execution audit DB access (MA-8) ──────────────────────
+
+export function insertMaitreActionRun(row) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO maitre_action_runs
+      (id, action_id, incident_id, action_type, proposal_hash, approval_id, status, started_at, finished_at, result_metadata, error_category)
+    VALUES (@id, @action_id, @incident_id, @action_type, @proposal_hash, @approval_id, @status, @started_at, @finished_at, @result_metadata, @error_category)
+  `).run(row);
+}
+
+export function getMaitreActionRunById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_action_runs WHERE id = ?').get(id) ?? null;
+}
+
+// Used by the executor's own idempotency/concurrency guard — finds any
+// run for this actionId that is currently RUNNING or already
+// SUCCEEDED, so a second execute() call can be refused before it ever
+// touches the OS.
+export function findActiveOrSucceededRunForAction(actionId) {
+  if (!database) return null;
+  return database.prepare(
+    "SELECT * FROM maitre_action_runs WHERE action_id = ? AND status IN ('RUNNING', 'SUCCEEDED') ORDER BY started_at DESC LIMIT 1"
+  ).get(actionId) ?? null;
+}
+
+export function listMaitreActionRunsForIncident(incidentId, { limit = 200, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM maitre_action_runs WHERE incident_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?'
+  ).all(incidentId, limit, offset);
+}
+
+// Only status/finished_at/result_metadata/error_category are ever
+// mutable post-creation — action_id/incident_id/action_type/
+// proposal_hash/approval_id/started_at are fixed at the moment the run
+// begins, preserving an accurate audit trail even if execution fails.
+export function updateMaitreActionRun(id, fields) {
+  if (!database) return null;
+  const allowed = ['status', 'finished_at', 'result_metadata', 'error_category'];
+  const keys = Object.keys(fields).filter(k => allowed.includes(k));
+  if (keys.length === 0) return getMaitreActionRunById(id);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE maitre_action_runs SET ${setClause} WHERE id = @id`).run({ ...fields, id });
+  return getMaitreActionRunById(id);
+}
+
+// ── MAÎTRE — host isolation rollback state DB access (MA-10) ──────────────
+//
+// insertMaitreIsolationState returns the inserted row's id on success, or
+// null if the database is unavailable — the caller (maitre-executor.js)
+// treats a null return as a hard DENY of the isolation attempt (mission
+// §7: "si rollback state ne peut pas être persisté → DENY isolation"),
+// never proceeding to touch the firewall without a persisted rollback
+// record first.
+export function insertMaitreIsolationState(row) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO maitre_isolation_state
+      (id, action_id, incident_id, created_at, updated_at, strategy, status, rules_created, verification_metadata, restored_at, restore_action_id)
+    VALUES (@id, @action_id, @incident_id, @created_at, @updated_at, @strategy, @status, @rules_created, @verification_metadata, @restored_at, @restore_action_id)
+  `).run(row);
+  return row.id;
+}
+
+export function getMaitreIsolationStateById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM maitre_isolation_state WHERE id = ?').get(id) ?? null;
+}
+
+export function getMaitreIsolationStateByActionId(actionId) {
+  if (!database) return null;
+  return database.prepare(
+    'SELECT * FROM maitre_isolation_state WHERE action_id = ? ORDER BY created_at DESC LIMIT 1'
+  ).get(actionId) ?? null;
+}
+
+// Finds any isolation state currently ACTIVE or PARTIAL_FAILURE or
+// APPLYING or PENDING (i.e. not yet cleanly RESTORED/FAILED) — used both
+// by the concurrency guard (mission §27: only one HOST_ISOLATION may be
+// RUNNING/ACTIVE at a time) and by crash-recovery detection at startup
+// (mission §17).
+export function findActiveMaitreIsolationState() {
+  if (!database) return null;
+  return database.prepare(
+    "SELECT * FROM maitre_isolation_state WHERE status IN ('PENDING', 'APPLYING', 'ACTIVE', 'PARTIAL_FAILURE', 'RESTORING') ORDER BY created_at DESC LIMIT 1"
+  ).get() ?? null;
+}
+
+export function listMaitreIsolationStatesForIncident(incidentId, { limit = 200, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare(
+    'SELECT * FROM maitre_isolation_state WHERE incident_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  ).all(incidentId, limit, offset);
+}
+
+// Only status/rules_created/verification_metadata/restored_at/
+// restore_action_id/updated_at are ever mutable post-creation —
+// action_id/incident_id/strategy/created_at are fixed at insert time,
+// preserving an accurate rollback record even under partial failure.
+export function updateMaitreIsolationState(id, fields) {
+  if (!database) return null;
+  const allowed = ['status', 'rules_created', 'verification_metadata', 'restored_at', 'restore_action_id', 'updated_at'];
+  const keys = Object.keys(fields).filter(k => allowed.includes(k));
+  if (keys.length === 0) return getMaitreIsolationStateById(id);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE maitre_isolation_state SET ${setClause} WHERE id = @id`).run({ ...fields, id });
+  return getMaitreIsolationStateById(id);
+}
+
 export function setMeta(key, value) {
   if (!database) {
     return;
@@ -1523,6 +2081,11 @@ const ROUTER_SETTINGS_DEFAULTS = {
     // "Mode conversation" model — quantized for the same 8 Go VRAM budget as
     // powerful_model above.
     chat_model:          'mistral-nemo:12b-instruct-2407-q4_K_M',
+    // Free AI Finder progressive disclosure (AI-5): when false (default),
+    // Settings shows only a small recommended subset with a "View all"
+    // expansion; when true, the full list renders on every open. Merge-onto-
+    // defaults means pre-AI-5 installs get `false` with no migration step.
+    always_show_all_free_apis: false,
 };
 
 export function getRouterSettings() {

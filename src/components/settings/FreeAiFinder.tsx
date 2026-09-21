@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, ExternalLink, Lock, Search } from 'lucide-react';
+import { RefreshCw, ExternalLink, Lock, Search, ChevronDown, ChevronRight } from 'lucide-react';
 import { cortexClient, type FreeAiProvider } from '../../lib/cortex/client';
+import { selectRecommendedFreeProviders, deriveProviderStatus, type FreeProviderStatus } from '../../lib/freeAiRecommendations';
 
 // Free AI Finder — discovery-only assistant for public free-tier / trial-credit
 // LLM API providers. This is a DISCOVERY + CONFIGURATION ASSISTANT, never an
@@ -37,6 +38,14 @@ const FRESHNESS_LABELS: Record<FreeAiProvider['verificationFreshness'], string |
   unknown: null,
 };
 
+const STATUS_LABELS: Record<FreeProviderStatus, { label: string; color: string } | null> = {
+  AVAILABLE: null, // no badge needed for the common case
+  UNKNOWN: { label: 'État inconnu', color: '#7a6c9a' },
+  STALE: { label: 'Informations anciennes', color: '#f59e0b' },
+  DEPRECATED: { label: 'Probablement obsolète', color: '#ff4d58' },
+  UNAVAILABLE: { label: 'Indisponible', color: '#ff4d58' },
+};
+
 function tristateLabel(value: boolean | null, yes: string, no: string): string {
   if (value === true) return yes;
   if (value === false) return no;
@@ -58,12 +67,18 @@ function openDocsUrl(url: string | null) {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-function ProviderCard({ p }: { p: FreeAiProvider }) {
+function ProviderCard({ p, badge }: { p: FreeAiProvider; badge?: string }) {
   const state = DOCTEUR_STATE_LABELS[p.docteurState];
   const freshnessNote = FRESHNESS_LABELS[p.verificationFreshness];
+  const status = STATUS_LABELS[deriveProviderStatus(p)];
   return (
     <div className="px-3 py-3 rounded flex flex-col gap-1.5" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
       <div className="flex items-center gap-2 flex-wrap">
+        {badge && (
+          <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, color: '#c0b0e0', border: '1px solid rgba(192,176,224,0.25)', background: 'rgba(192,176,224,0.08)' }}>
+            {badge}
+          </span>
+        )}
         <span className="font-grotesk font-semibold text-xs" style={{ color: '#f0eaff' }}>{p.name}</span>
         {p.freeType && (
           <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, background: 'rgba(61,255,170,0.1)', color: '#3dffaa', border: '1px solid rgba(61,255,170,0.2)' }}>
@@ -73,6 +88,11 @@ function ProviderCard({ p }: { p: FreeAiProvider }) {
         <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, color: state.color, border: `1px solid ${state.color}40`, background: `${state.color}14` }}>
           {state.label}
         </span>
+        {status && (
+          <span className="font-mono px-1.5 py-0.5 rounded" style={{ fontSize: 9, color: status.color, border: `1px solid ${status.color}40`, background: `${status.color}14` }}>
+            {status.label}
+          </span>
+        )}
       </div>
 
       {p.freeTier && <p className="font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>{p.freeTier}</p>}
@@ -116,7 +136,15 @@ function formatRelativeTime(iso: string | null): string {
   return `il y a ${days} j`;
 }
 
-export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean }) {
+export function FreeAiFinder({ strictLocalActive, alwaysShowAll, onAlwaysShowAllChange }: {
+  strictLocalActive: boolean;
+  // Persistent preference (router_settings.always_show_all_free_apis),
+  // owned by SettingsModal so it shares the same load/save plumbing as
+  // every other router setting — this component never touches SQLite
+  // itself. Undefined/omitted is treated as false (mission §9 default).
+  alwaysShowAll?: boolean;
+  onAlwaysShowAllChange?: (value: boolean) => void;
+}) {
   const [providers, setProviders] = useState<FreeAiProvider[] | null>(null);
   const [source, setSource] = useState<{ label: string; repo?: string } | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
@@ -130,6 +158,10 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
   const [noPhone, setNoPhone] = useState(false);
   const [openAIOnly, setOpenAIOnly] = useState(false);
   const [modalityFilter, setModalityFilter] = useState<ModalityFilter | null>(null);
+  // Temporary, session-only expansion — clicking "View all" never writes the
+  // persistent preference (mission §8/§10); it only affects this render.
+  const [expandedThisSession, setExpandedThisSession] = useState(false);
+  const showAll = alwaysShowAll === true || expandedThisSession;
 
   async function load() {
     setLoading(true);
@@ -206,10 +238,19 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
       });
   }, [providers, search, freeTypeFilter, noCard, noPhone, openAIOnly, modalityFilter]);
 
+  // AI-5 progressive disclosure: a small, deterministic recommended subset
+  // (never DEPRECATED/UNAVAILABLE, see freeAiRecommendations.ts) computed
+  // from the FULL unfiltered provider list — search/filter apply only once
+  // the user has expanded to "View all", not to the recommended subset.
+  const recommended = useMemo(() => selectRecommendedFreeProviders(providers ?? []), [providers]);
+  const recommendedIds = useMemo(() => new Set(recommended.map(p => p.id)), [recommended]);
+
   // Mission requirement: a provider already configured natively in Docteur
   // must no longer appear in "À découvrir" — it moves to its own "Déjà
   // configurés" section instead of being interleaved (previously sorted
-  // first but still mixed into the same list).
+  // first but still mixed into the same list). Only computed/rendered once
+  // expanded — see `showAll` gating in the render below (mission §23: the
+  // full list should be lazy-rendered after user interaction).
   const configuredProviders = useMemo(() => filtered.filter(p => p.docteurState === 'configured'), [filtered]);
   const discoverableProviders = useMemo(() => filtered.filter(p => p.docteurState !== 'configured'), [filtered]);
 
@@ -267,7 +308,7 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
         </p>
       )}
 
-      {providers && providers.length > 0 && (
+      {providers && providers.length > 0 && showAll && (
         <>
           <div className="flex items-center gap-2">
             <Search size={11} style={{ color: '#3d3060', flexShrink: 0 }} />
@@ -347,26 +388,74 @@ export function FreeAiFinder({ strictLocalActive }: { strictLocalActive: boolean
           </div>
         )}
 
-        {configuredProviders.length > 0 && (
+        {providers && providers.length > 0 && !showAll && (
           <div className="flex flex-col gap-2">
-            <span className="font-mono" style={{ fontSize: 10, color: '#3dffaa', letterSpacing: '0.08em' }}>
-              ✅ DÉJÀ CONFIGURÉS ({configuredProviders.length})
+            <span className="font-mono" style={{ fontSize: 10, color: '#5ee7ff', letterSpacing: '0.08em' }}>
+              RECOMMENDED ({recommended.length})
             </span>
-            {configuredProviders.map(p => <ProviderCard key={p.id} p={p} />)}
+            {recommended.length === 0 && (
+              <p className="font-mono" style={{ fontSize: 10, color: '#7a6c9a' }}>Aucun fournisseur recommandé pour le moment.</p>
+            )}
+            {recommended.map(p => <ProviderCard key={p.id} p={p} />)}
+            {providers.length > recommended.length && (
+              <button
+                type="button"
+                onClick={() => setExpandedThisSession(true)}
+                className="font-mono text-xs px-2.5 py-1.5 rounded self-start flex items-center gap-1.5"
+                style={{ background: 'rgba(94,231,255,0.08)', border: '1px solid rgba(94,231,255,0.2)', color: '#5ee7ff', cursor: 'pointer' }}
+              >
+                <ChevronRight size={11} /> View all free APIs ({providers.length})
+              </button>
+            )}
           </div>
         )}
 
-        {discoverableProviders.length > 0 && (
-          <div className="flex flex-col gap-2" style={{ marginTop: configuredProviders.length > 0 ? 8 : 0 }}>
-            {configuredProviders.length > 0 && (
-              <span className="font-mono" style={{ fontSize: 10, color: '#5a4a7a', letterSpacing: '0.08em' }}>
-                🔍 À DÉCOUVRIR ({discoverableProviders.length})
-              </span>
+        {showAll && (
+          <>
+            {!alwaysShowAll && (
+              <button
+                type="button"
+                onClick={() => setExpandedThisSession(false)}
+                className="font-mono text-xs px-2.5 py-1.5 rounded self-start flex items-center gap-1.5"
+                style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: '#7a6c9a', cursor: 'pointer' }}
+              >
+                <ChevronDown size={11} /> Show recommended only
+              </button>
             )}
-            {discoverableProviders.map(p => <ProviderCard key={p.id} p={p} />)}
-          </div>
+
+            {configuredProviders.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <span className="font-mono" style={{ fontSize: 10, color: '#3dffaa', letterSpacing: '0.08em' }}>
+                  ✅ DÉJÀ CONFIGURÉS ({configuredProviders.length})
+                </span>
+                {configuredProviders.map(p => <ProviderCard key={p.id} p={p} badge={recommendedIds.has(p.id) ? 'Recommended' : undefined} />)}
+              </div>
+            )}
+
+            {discoverableProviders.length > 0 && (
+              <div className="flex flex-col gap-2" style={{ marginTop: configuredProviders.length > 0 ? 8 : 0 }}>
+                {configuredProviders.length > 0 && (
+                  <span className="font-mono" style={{ fontSize: 10, color: '#5a4a7a', letterSpacing: '0.08em' }}>
+                    🔍 À DÉCOUVRIR ({discoverableProviders.length})
+                  </span>
+                )}
+                {discoverableProviders.map(p => <ProviderCard key={p.id} p={p} badge={recommendedIds.has(p.id) ? 'Recommended' : undefined} />)}
+              </div>
+            )}
+          </>
         )}
       </div>
+
+      {providers && providers.length > 0 && onAlwaysShowAllChange && (
+        <label className="flex items-center gap-2 font-mono" style={{ fontSize: 10, color: '#7a6c9a', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={alwaysShowAll === true}
+            onChange={e => onAlwaysShowAllChange(e.target.checked)}
+          />
+          Always show all free APIs
+        </label>
+      )}
 
       <p className="font-mono" style={{ fontSize: 9, color: '#2e2555' }}>
         Catalogue : {source?.repo ? (

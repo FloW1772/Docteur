@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { FreeAiFinder } from '../settings/FreeAiFinder';
+import { LocalModelsSettingsSection } from '../settings/LocalModelsSettingsSection';
 import { NotebookLmSettingsSection } from '../settings/NotebookLmSettingsSection';
 import { BrowserSettingsSection } from '../settings/BrowserSettingsSection';
 import { exportAllToServer } from '../../lib/storage';
@@ -1370,6 +1371,16 @@ export default function SettingsModal({
                 </div>
               </div>
 
+              {/* Local AI catalog (AI-4) — fit-based recommendations, additive to
+                  the existing Ollama model management block above. Does not
+                  replace it; see LocalModelsSettingsSection.tsx. */}
+              <div className="px-4 py-3 rounded flex flex-col gap-3" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <span className="font-mono text-xs" style={{ color: '#3d3060', letterSpacing: '0.1em' }}>
+                  LOCAL MODELS — RECOMMENDED FOR THIS MACHINE
+                </span>
+                <LocalModelsSettingsSection />
+              </div>
+
 
               {/* Cloud preference selector */}
               <div className="flex flex-col gap-2">
@@ -1754,7 +1765,19 @@ export default function SettingsModal({
                 })}
               </div>
 
-              <FreeAiFinder strictLocalActive={settings.strict_local_mode === true} />
+              <FreeAiFinder
+                strictLocalActive={settings.strict_local_mode === true}
+                alwaysShowAll={settings.always_show_all_free_apis === true}
+                onAlwaysShowAllChange={async (value) => {
+                  setSettings(s => ({ ...s, always_show_all_free_apis: value }));
+                  try {
+                    await cortexClient.updateRouterSettings({ always_show_all_free_apis: value });
+                  } catch {
+                    // Optimistic update already applied; a failed persist just
+                    // means the preference resets on next load — non-critical.
+                  }
+                }}
+              />
 
               <NotebookLmSettingsSection />
 

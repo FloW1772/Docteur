@@ -157,8 +157,12 @@ try {
   await page.goto(`${origin}/__cyber_audit_studio_test`);
 
   // ── Open Cyber Studio via Help Center search ──
+  // Searching "Observateur" alone now also matches MAÎTRE's own
+  // description text (which references Observateur as a data source) —
+  // search by a keyword unique to this entry so exactly one "Ouvrir"
+  // button exists.
   const openStudio = async () => {
-    await page.getByPlaceholder(/Rechercher/).fill('Observateur');
+    await page.getByPlaceholder(/Rechercher/).fill('sentinel');
     await page.getByRole('button', { name: 'Ouvrir', exact: true }).click();
     await page.getByRole('dialog', { name: /Audit Web/ }).waitFor();
   };

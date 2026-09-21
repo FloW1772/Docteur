@@ -25,6 +25,10 @@ import {
 interface Props {
   onClose: () => void;
   initialTab?: Tab;
+  /** Opens MAÎTRE Studio for deeper review of a REQUIRES_REVIEW anomaly
+   * (MA-11) — Observateur itself never analyzes or acts on the anomaly
+   * beyond detecting/classifying it. */
+  onOpenMaitre?: () => void;
 }
 
 type Tab = 'OVERVIEW' | 'LIVE' | 'NETWORK' | 'APPLICATIONS' | 'ANOMALIES' | 'REPORTS' | 'WEB AUDIT' | 'HISTORY' | 'SETTINGS';
@@ -44,7 +48,7 @@ const REPORT_MODE_LABEL: Record<MonitorSettings['reportMode'], string> = {
 
 const POLL_MS = 10_000; // slower than the backend's own collection interval — the UI never re-renders per packet, the backend already aggregates
 
-export default function ObservateurStudioModal({ onClose, initialTab = 'OVERVIEW' }: Props) {
+export default function ObservateurStudioModal({ onClose, initialTab = 'OVERVIEW', onOpenMaitre }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [status, setStatus] = useState<MonitorStatus | null>(null);
   const [settings, setSettings] = useState<MonitorSettings | null>(null);
@@ -152,7 +156,7 @@ export default function ObservateurStudioModal({ onClose, initialTab = 'OVERVIEW
       {tab === 'LIVE' && <LiveTab connections={connections} />}
       {tab === 'NETWORK' && <NetworkTab connections={connections} />}
       {tab === 'APPLICATIONS' && <ApplicationsTab processes={processes} />}
-      {tab === 'ANOMALIES' && <AnomaliesTab anomalies={anomalies} />}
+      {tab === 'ANOMALIES' && <AnomaliesTab anomalies={anomalies} onOpenMaitre={onOpenMaitre} />}
       {tab === 'REPORTS' && <ReportsTab reports={reports} />}
       {tab === 'WEB AUDIT' && <CyberAuditStudioModal bare onClose={onClose} />}
       {tab === 'HISTORY' && <HistoryTab connections={connections} processes={processes} />}
@@ -251,7 +255,7 @@ function ApplicationsTab({ processes }: { processes: MonitorProcess[] }) {
   );
 }
 
-function AnomaliesTab({ anomalies }: { anomalies: MonitorAnomaly[] }) {
+function AnomaliesTab({ anomalies, onOpenMaitre }: { anomalies: MonitorAnomaly[]; onOpenMaitre?: () => void }) {
   if (anomalies.length === 0) return <StudioEmptyState message="Aucune anomalie détectée." />;
   return (
     <div className="studio-list">
@@ -264,10 +268,16 @@ function AnomaliesTab({ anomalies }: { anomalies: MonitorAnomaly[] }) {
           <p>{a.description}</p>
           {a.severity === 'REQUIRES_REVIEW' && (
             <div style={{ marginTop: 6 }}>
-              <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>Analyse approfondie recommandée avec MAITRE.</p>
-              <button type="button" className="studio-button" disabled title="MAITRE n'est pas encore disponible">
-                Ouvrir dans MAITRE
-              </button>
+              <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>Analyse approfondie recommandée avec MAÎTRE.</p>
+              {onOpenMaitre ? (
+                <button type="button" className="studio-button" onClick={onOpenMaitre}>
+                  Ouvrir dans MAÎTRE
+                </button>
+              ) : (
+                <button type="button" className="studio-button" disabled title="MAÎTRE n'est pas disponible depuis cette vue">
+                  Ouvrir dans MAÎTRE
+                </button>
+              )}
             </div>
           )}
         </div>

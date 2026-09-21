@@ -55,6 +55,7 @@ const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentS
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
 const VideoSummaryModal = lazy(() => import('./components/modals/VideoSummaryModal'));
 const ObservateurStudioModal = lazy(() => import('./components/modals/ObservateurStudioModal'));
+const MaitreStudioModal = lazy(() => import('./components/modals/MaitreStudioModal'));
 import KiwixLibraryModal from './components/modals/KiwixLibraryModal';
 import CvFreeQuestionModal from './components/modals/CvFreeQuestionModal';
 import AudioPlayer from './components/layout/AudioPlayer';
@@ -2353,6 +2354,8 @@ export default function App() {
   useModalOpenTracking(sherlockStudioOpen);
   const [observateurStudioOpen, setObservateurStudioOpen] = useState(false);
   useModalOpenTracking(observateurStudioOpen);
+  const [maitreStudioOpen, setMaitreStudioOpen] = useState(false);
+  useModalOpenTracking(maitreStudioOpen);
   // HUD Command Center V2 — Focus vs Dashboard mode. Persisted locally
   // (existing localStorage convention, e.g. docteur.showHomeScreen) —
   // never a new DB table for a pure UI preference. Dashboard is
@@ -2403,6 +2406,7 @@ export default function App() {
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
       case 'cyber-audit':     setObservateurStudioOpen(true); break;
+      case 'maitre':          setMaitreStudioOpen(true); break;
       case 'kiwix':           setKiwixOpen(true); break;
       case 'todo':            setTodoOpen(true); break;
       case 'backup':          setBackupOpen(true); break;
@@ -4687,6 +4691,7 @@ export default function App() {
             setVideoSummaryMinimized(false);
           }}
           onOpenObservateur={() => setObservateurStudioOpen(true)}
+          onOpenMaitre={() => setMaitreStudioOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
           onQuickMetaGptMission={() => setMetaGptStudioOpen(true)}
           onQuickSherlockSearch={() => setSherlockStudioOpen(true)}
@@ -5148,7 +5153,16 @@ export default function App() {
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
       {sherlockStudioOpen && <Suspense fallback={null}><SherlockStudioModal onClose={() => setSherlockStudioOpen(false)} onJobUpdate={setLastSherlockJobId} /></Suspense>}
-      {observateurStudioOpen && <Suspense fallback={null}><ObservateurStudioModal onClose={() => setObservateurStudioOpen(false)} initialTab="WEB AUDIT" /></Suspense>}
+      {observateurStudioOpen && (
+        <Suspense fallback={null}>
+          <ObservateurStudioModal
+            onClose={() => setObservateurStudioOpen(false)}
+            initialTab="WEB AUDIT"
+            onOpenMaitre={() => { setObservateurStudioOpen(false); setMaitreStudioOpen(true); }}
+          />
+        </Suspense>
+      )}
+      {maitreStudioOpen && <Suspense fallback={null}><MaitreStudioModal onClose={() => setMaitreStudioOpen(false)} /></Suspense>}
 
       {kiwixOpen && (
         <KiwixLibraryModal onClose={() => setKiwixOpen(false)} />

@@ -17,7 +17,7 @@ import HudPanel from './HudPanel';
 import CortexLinks from './CortexLinks';
 import {
   useMetaGptSummary, useSherlockSummary, useInvestmentSummary, useOpenMontageSummary, useConnectorsSummary,
-  useObservateurSummary,
+  useObservateurSummary, useMaitreSummary,
 } from '../../hooks/useModuleSummaries';
 
 interface Props {
@@ -28,6 +28,7 @@ interface Props {
   onOpenInvestment: () => void;
   onOpenVideoSummary: () => void;
   onOpenObservateur: () => void;
+  onOpenMaitre: () => void;
   onOpenSettings: () => void;
   onQuickMetaGptMission: () => void;
   onQuickSherlockSearch: () => void;
@@ -37,7 +38,7 @@ interface Props {
 
 export default function Dashboard({
   lastSherlockJobId, activityEvents,
-  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenObservateur, onOpenSettings,
+  onOpenMetaGpt, onOpenSherlock, onOpenInvestment, onOpenVideoSummary, onOpenObservateur, onOpenMaitre, onOpenSettings,
   onQuickMetaGptMission, onQuickSherlockSearch, onQuickInvestmentAnalysis, onQuickVideoRender,
 }: Props) {
   const metagpt = useMetaGptSummary();
@@ -46,6 +47,7 @@ export default function Dashboard({
   const openMontage = useOpenMontageSummary();
   const connectors = useConnectorsSummary();
   const observateur = useObservateurSummary();
+  const maitre = useMaitreSummary();
 
   const modules = [
     { key: 'metagpt', active: metagpt.status !== 'unavailable' && metagpt.status !== 'idle' },
@@ -96,6 +98,11 @@ export default function Dashboard({
         <ModuleWidget
           name="Observateur" status={observateur.status} metric={observateur.metric} detail={observateur.detail}
           loading={observateur.loading} error={observateur.error ?? undefined} onOpen={onOpenObservateur} openLabel="Ouvrir Observateur"
+        />
+
+        <ModuleWidget
+          name="MAÎTRE" status={maitre.status} metric={maitre.metric} detail={maitre.detail}
+          loading={maitre.loading} error={maitre.error ?? undefined} onOpen={onOpenMaitre} openLabel="Ouvrir MAÎTRE"
         />
 
         <HudPanel title="Actions rapides" compact>

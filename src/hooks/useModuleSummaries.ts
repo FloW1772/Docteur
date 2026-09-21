@@ -9,6 +9,7 @@ import { metagptRequest, type Mission } from '../lib/metagpt-studio';
 import { investmentRequest, type PaperPortfolio } from '../lib/investment-studio';
 import { listCyberMissions } from '../lib/cyber-audit-studio';
 import { getMonitorStatus } from '../lib/monitor-studio';
+import { getMaitreOverview } from '../lib/maitre-studio';
 import type { WidgetStatus } from '../components/hud/StatusIndicator';
 
 export interface ModuleSummary {
@@ -142,6 +143,43 @@ export function useObservateurSummary(): ModuleSummary {
       loading: false,
       error: null,
     };
+  }, [data, loading, error]);
+}
+
+/**
+ * MAÎTRE widget summary (MA-11 mission §31/§32) — status/open-incident-
+ * count/highest-severity/pending-approval-count/isolation-active only,
+ * derived exclusively from GET /api/maitre/overview's real data. No
+ * destructive action is ever offered here — the widget only opens
+ * MAÎTRE Studio (mission §31: no "Kill"/"Isolate" button on the widget
+ * itself). A plain anomaly is never inflated to a CRITICAL visual state
+ * — the mapping below only ever reflects what the backend's own
+ * deterministic severity/isolation fields report.
+ */
+export function useMaitreSummary(): ModuleSummary {
+  const { data, loading, error } = useIntervalPoll(() => getMaitreOverview(), 15000);
+  return useMemo(() => {
+    if (loading) return { status: 'unavailable', loading: true, error: null };
+    if (error) return { status: 'error', loading: false, error, detail: 'MAÎTRE indisponible' };
+    const overview = data?.overview;
+    if (!overview) return { status: 'unavailable', loading: false, error: null, detail: 'Aucune donnée' };
+
+    if (overview.isolationStatus === 'ISOLATION_ACTIVE') {
+      return { status: 'error', metric: 'Isolé', detail: 'Isolation réseau active', loading: false, error: null };
+    }
+    if (overview.isolationStatus === 'PARTIAL_FAILURE' || overview.isolationStatus === 'MANUAL_REVIEW') {
+      return { status: 'error', metric: 'Révision requise', detail: 'Isolation en échec partiel', loading: false, error: null };
+    }
+    if (overview.highestActiveSeverity === 'CRITICAL' || overview.highestActiveSeverity === 'HIGH') {
+      return { status: 'error', metric: `${overview.openIncidentCount} incident(s)`, detail: overview.highestActiveSeverity, loading: false, error: null };
+    }
+    if (overview.pendingApprovalCount > 0) {
+      return { status: 'thinking', metric: `${overview.pendingApprovalCount} en attente`, detail: 'Approbation requise', loading: false, error: null };
+    }
+    if (overview.openIncidentCount > 0) {
+      return { status: 'searching', metric: `${overview.openIncidentCount} incident(s)`, detail: 'En observation', loading: false, error: null };
+    }
+    return { status: 'done', metric: 'Sain', detail: 'Aucun incident ouvert', loading: false, error: null };
   }, [data, loading, error]);
 }
 
