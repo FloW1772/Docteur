@@ -14,6 +14,13 @@ import { searchCatalog } from '../lib/kiwix-catalog.js';
 import { freeDiskSpaceBytes } from '../lib/disk-space.js';
 import { sanitizeZimHtml } from '../lib/kiwix-sanitize.js';
 import { assertSafeUrl } from '../lib/url-security.js';
+import { assertCloudAllowed } from '../lib/strict-local.js';
+import {
+  KIWIX_ERROR_CODES, KiwixError, classifyKiwixError, kiwixErrorBody,
+  assertSafeZimSegment, assertSafeSearchQuery, clampPageLength,
+} from '../lib/kiwix-policy.js';
+
+const STRICT_LOCAL_MESSAGE = 'Mode strictement local activé — le catalogue et le téléchargement Kiwix nécessitent une connexion internet et sont désactivés. Désactive le mode strict dans Paramètres pour les utiliser.';
 
 const CHUNK_MAX_CHARS = 3_500;
 
@@ -60,7 +67,19 @@ function chunkText(text, maxChars) {
   return chunks;
 }
 
-export function createKiwixRoute({ services, logger }) {
+export function createKiwixRoute({
+  services, logger,
+  // Injectable dependencies for testing — default to the real kiwix-serve
+  // sidecar wiring. Tests supply deterministic mocks instead of spawning a
+  // real kiwix-serve process, mirroring createSalesRoute({ search,
+  // fetchContent, checkUrl }).
+  kiwixSuggest = suggest,
+  kiwixSearch = search,
+  kiwixListBooks = listBooks,
+  kiwixGetContent = getContent,
+  kiwixGetRawAsset = getRawAsset,
+  kiwixSearchCatalog = searchCatalog,
+} = {}) {
   const route = new Hono();
 
   // ── Réglages ─────────────────────────────────────────────────────────────
@@ -141,7 +160,22 @@ export function createKiwixRoute({ services, logger }) {
     } else {
       insertActivityLog({ opType: 'kiwix_start', item: result.error ?? 'erreur', result: 'failure', reason: result.message });
     }
-    return c.json(result, result.ok ? 200 : 409);
+    if (!result.ok) {
+      // Map internal error tags to the normalized taxonomy without dropping
+      // the French user-facing `message` the frontend already renders
+      // (these are Docteur-authored strings, not raw kiwix-serve stderr, so
+      // they stay — only spawn/process failures below get fully normalized).
+      const codeMap = {
+        binary_not_found: KIWIX_ERROR_CODES.NOT_CONFIGURED,
+        no_archives: KIWIX_ERROR_CODES.LIBRARY_INVALID,
+        port_in_use: KIWIX_ERROR_CODES.BACKEND_UNAVAILABLE,
+        binding_not_loopback: KIWIX_ERROR_CODES.PROCESS_FAILED,
+        spawn_failed: KIWIX_ERROR_CODES.PROCESS_FAILED,
+      };
+      const code = codeMap[result.error] ?? KIWIX_ERROR_CODES.PROCESS_FAILED;
+      return c.json({ ...result, code }, 409);
+    }
+    return c.json(result, 200);
   });
 
   route.post('/kiwix/stop', (c) => {
@@ -156,10 +190,15 @@ export function createKiwixRoute({ services, logger }) {
     const term = c.req.query('term') ?? '';
     if (!term.trim()) return c.json({ suggestions: [] });
     try {
-      const suggestions = await suggest(book, term);
+      assertSafeSearchQuery(term);
+      if (book) assertSafeZimSegment(book);
+      const suggestions = await kiwixSuggest(book, term);
       return c.json({ suggestions });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
+      const classified = classifyKiwixError(err, { context: 'search' });
+      logger?.warn?.({ error: err.message }, 'kiwix suggest failed');
+      return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
 
@@ -168,19 +207,27 @@ export function createKiwixRoute({ services, logger }) {
     const pattern = c.req.query('pattern') ?? '';
     if (!pattern.trim()) return c.json({ results: [] });
     try {
-      const results = await search(book, pattern, { pageLength: 25 });
+      assertSafeSearchQuery(pattern);
+      if (book) assertSafeZimSegment(book);
+      const pageLength = clampPageLength(c.req.query('pageLength'), 25);
+      const results = await kiwixSearch(book, pattern, { pageLength });
       return c.json({ results });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
+      const classified = classifyKiwixError(err, { context: 'search' });
+      logger?.warn?.({ error: err.message }, 'kiwix search failed');
+      return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
 
   route.get('/kiwix/books', async (c) => {
     try {
-      const books = await listBooks();
+      const books = await kiwixListBooks();
       return c.json({ books });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      const classified = classifyKiwixError(err, { context: 'books' });
+      logger?.warn?.({ error: err.message }, 'kiwix books listing failed');
+      return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
 
@@ -189,11 +236,16 @@ export function createKiwixRoute({ services, logger }) {
     const book = c.req.param('book');
     const fullPath = c.req.path.replace(/^.*\/kiwix\/content\/[^/]+\//, '');
     try {
-      const { html } = await getContent(book, fullPath);
+      assertSafeZimSegment(book);
+      assertSafeZimSegment(fullPath);
+      const { html } = await kiwixGetContent(book, fullPath);
       const cleaned = sanitizeZimHtml(html, book);
       return c.json({ ...cleaned, book, path: fullPath });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
+      const classified = classifyKiwixError(err, { context: 'article' });
+      logger?.warn?.({ error: err.message }, 'kiwix content fetch failed');
+      return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
 
@@ -202,20 +254,30 @@ export function createKiwixRoute({ services, logger }) {
     const book = c.req.param('book');
     const fullPath = c.req.path.replace(/^.*\/kiwix\/raw\/[^/]+\//, '');
     try {
-      const { buffer, contentType } = await getRawAsset(book, fullPath);
+      assertSafeZimSegment(book);
+      assertSafeZimSegment(fullPath);
+      const { buffer, contentType } = await kiwixGetRawAsset(book, fullPath);
       return new Response(buffer, { headers: { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=3600' } });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
+      const classified = classifyKiwixError(err, { context: 'article' });
+      logger?.warn?.({ error: err.message }, 'kiwix raw asset fetch failed');
+      return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
 
   // ── Catalogue distant (OPDS) ──────────────────────────────────────────────
+  // Genuine outbound internet call (library.kiwix.org) — gated by Strict
+  // Local Mode, unlike local search/article retrieval above which never
+  // leaves the loopback sidecar.
 
   route.get('/kiwix/catalog', async (c) => {
+    const blocked = assertCloudAllowed(c, STRICT_LOCAL_MESSAGE);
+    if (blocked) return blocked;
     const q = c.req.query('q') ?? '';
     const lang = c.req.query('lang') ?? '';
     try {
-      const entries = await searchCatalog({ q, lang });
+      const entries = await kiwixSearchCatalog({ q, lang });
       return c.json({ entries });
     } catch (err) {
       return c.json({ error: err.message }, 502);
@@ -234,6 +296,8 @@ export function createKiwixRoute({ services, logger }) {
   // ── Téléchargement d'une archive du catalogue (SSE, annulable) ──────────────
 
   route.post('/kiwix/download', async (c) => {
+    const blocked = assertCloudAllowed(c, STRICT_LOCAL_MESSAGE);
+    if (blocked) return blocked;
     const body = await c.req.json().catch(() => ({}));
     let url = String(body?.url ?? '').trim();
     const fileName = String(body?.fileName ?? '').trim();
@@ -335,7 +399,7 @@ export function createKiwixRoute({ services, logger }) {
 
     if (!text) {
       try {
-        const { html } = await getContent(book, articlePath);
+        const { html } = await kiwixGetContent(book, articlePath);
         const cleaned = sanitizeZimHtml(html, book);
         text = cleaned.text;
       } catch (err) {

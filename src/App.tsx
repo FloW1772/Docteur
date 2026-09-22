@@ -52,7 +52,9 @@ const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
 const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
 const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioModal'));
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
+const SalesStudioModal = lazy(() => import('./components/modals/SalesStudioModal'));
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
+const CodeIntelStudioModal = lazy(() => import('./components/modals/CodeIntelStudioModal'));
 const VideoSummaryModal = lazy(() => import('./components/modals/VideoSummaryModal'));
 const ObservateurStudioModal = lazy(() => import('./components/modals/ObservateurStudioModal'));
 const MaitreStudioModal = lazy(() => import('./components/modals/MaitreStudioModal'));
@@ -2350,8 +2352,12 @@ export default function App() {
   const [activityPanelOpen, setActivityPanelOpen] = useState(false);
   const [investmentStudioOpen, setInvestmentStudioOpen] = useState(false);
   useModalOpenTracking(investmentStudioOpen);
+  const [salesStudioOpen, setSalesStudioOpen] = useState(false);
+  useModalOpenTracking(salesStudioOpen);
   const [sherlockStudioOpen, setSherlockStudioOpen] = useState(false);
   useModalOpenTracking(sherlockStudioOpen);
+  const [codeIntelStudioOpen, setCodeIntelStudioOpen] = useState(false);
+  useModalOpenTracking(codeIntelStudioOpen);
   const [observateurStudioOpen, setObservateurStudioOpen] = useState(false);
   useModalOpenTracking(observateurStudioOpen);
   const [maitreStudioOpen, setMaitreStudioOpen] = useState(false);
@@ -2404,7 +2410,9 @@ export default function App() {
       case 'images':          setImageGeneratorOpen(true); break;
       case 'metagpt':         setMetaGptStudioOpen(true); break;
       case 'investment':      setInvestmentStudioOpen(true); break;
+      case 'sales':           setSalesStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
+      case 'code-intel':      setCodeIntelStudioOpen(true); break;
       case 'cyber-audit':     setObservateurStudioOpen(true); break;
       case 'maitre':          setMaitreStudioOpen(true); break;
       case 'kiwix':           setKiwixOpen(true); break;
@@ -5152,7 +5160,9 @@ export default function App() {
       )}
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
+      {salesStudioOpen && <Suspense fallback={null}><SalesStudioModal onClose={() => setSalesStudioOpen(false)} /></Suspense>}
       {sherlockStudioOpen && <Suspense fallback={null}><SherlockStudioModal onClose={() => setSherlockStudioOpen(false)} onJobUpdate={setLastSherlockJobId} /></Suspense>}
+      {codeIntelStudioOpen && <Suspense fallback={null}><CodeIntelStudioModal onClose={() => setCodeIntelStudioOpen(false)} /></Suspense>}
       {observateurStudioOpen && (
         <Suspense fallback={null}>
           <ObservateurStudioModal

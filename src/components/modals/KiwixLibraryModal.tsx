@@ -8,6 +8,7 @@ import type {
   KiwixSettings, KiwixArchive, KiwixStatus, KiwixSearchResult,
   KiwixArticleContent, KiwixCatalogEntry, KiwixSearchScope,
 } from '../../lib/cortex/client';
+import { renderSafeZimHtml } from '../../lib/kiwix-safe-render';
 
 interface Props {
   onClose: () => void;
@@ -416,8 +417,9 @@ export default function KiwixLibraryModal({ onClose }: Props) {
                         onClick={handleArticleClick}
                         className="kiwix-article-content font-mono text-xs"
                         style={{ color: '#d8d0ea', lineHeight: 1.6, maxHeight: '48vh', overflowY: 'auto', padding: '4px 2px' }}
-                        dangerouslySetInnerHTML={{ __html: article.html }}
-                      />
+                      >
+                        {renderSafeZimHtml(article.html)}
+                      </div>
                     </div>
                   )}
                 </>

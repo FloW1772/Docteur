@@ -19,7 +19,7 @@ export type FeatureKey =
   | 'video-summary' | 'metagpt' | 'investment' | 'sherlock' | 'cyber-audit'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
-  | 'settings-external' | 'settings-connections' | 'maitre';
+  | 'settings-external' | 'settings-connections' | 'maitre' | 'code-intel' | 'sales';
 
 export type FeatureState = 'disponible' | 'local' | 'a_configurer' | 'partiel';
 
@@ -43,7 +43,9 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     title: 'IA',
     items: [
       { name: 'Studio MetaGPT', description: 'Ollama local : PRD, Design, Tasks, génération de code texte, diff et application dans un sample isolé après approbation du hash et des fichiers exacts. V1 : aucun Terminal, Bash, Browser, Git, Internet externe, cloud, exécution de code, installation de packages ou auto-apply.', feature: 'metagpt', state: 'local', keywords: ['studio', 'code', 'diff', 'approbation', 'plan'] },
+      { name: 'Code Intelligence', description: 'Recherche texte/fichier/symbole dans le dépôt Docteur et consultation Git en lecture seule (status, diff, log, show). Local, aucun réseau. Aucune édition, aucun commit/checkout/reset, aucun terminal, aucune exécution de code.', feature: 'code-intel', state: 'local', keywords: ['recherche', 'code', 'git', 'diff', 'symboles', 'read-only', 'lecture seule'] },
       { name: 'Studio Investissement', description: 'Recherche, analyse fondamentale, valorisation (multiples/DCF) et portefeuille simulé (paper trading) avec provenance systématique des données. V1 : aucun broker réel, aucun ordre réel, aucune clé broker, aucune transaction réelle — analyse et simulation uniquement.', feature: 'investment', state: 'local', keywords: ['bourse', 'action', 'etf', 'portefeuille', 'paper trading', 'dcf', 'valorisation', 'finance'] },
+      { name: 'Studio Business/Sales', description: 'Recherche de prospect (web, provenance systématique), analyse et score déterministe contre des critères définis par l\'utilisateur, puis brouillon de message ou note CRM — toujours marqué "DRAFT — NOT SENT". V1 : aucun envoi d\'email automatique, aucune écriture CRM réelle, aucune connexion navigateur, aucun formulaire soumis, aucun achat.', feature: 'sales', state: 'local', keywords: ['prospect', 'lead', 'vente', 'sales', 'business', 'crm', 'outreach', 'brouillon', 'draft'] },
       { name: 'Modèles et providers', description: 'Choisir le modèle local (Ollama) ou les clés cloud (Gemini, Groq, OpenRouter, Anthropic, OpenAI) — priorité Local rapide / Équilibré / Qualité max.', feature: 'settings-models', state: 'disponible', keywords: ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'ollama', 'router', 'providers', 'modèles', 'modeles'] },
       { name: 'Professeur', description: 'Parcours d\'apprentissage guidés avec plan, explications et révisions espacées — bascule locale automatique si le cloud échoue.', feature: 'teacher', state: 'disponible' },
       { name: 'Agents', description: 'Agents de veille automatisés : création, exécution manuelle, historique.', feature: 'agents', state: 'disponible' },

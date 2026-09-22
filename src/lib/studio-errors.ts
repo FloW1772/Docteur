@@ -46,6 +46,25 @@ const messages: Record<string, string> = {
   pid_invalid: 'Identifiant de processus invalide.',
   evidence_not_found: 'Preuve introuvable.',
   run_not_found: 'Exécution introuvable.',
+
+  // Business/Sales Agent V1 (RESEARCH → ANALYZE → SCORE → DRAFT → HUMAN REVIEW)
+  lead_not_found: 'Prospect introuvable. Actualisez la liste.',
+  lead_name_invalid: 'Nom de prospect invalide.',
+  company_invalid: 'Nom d’entreprise invalide.',
+  notes_invalid: 'Notes invalides.',
+  criteria_invalid: 'Critères de score invalides (1 à 10 requis).',
+  criteria_keyword_required: 'Chaque critère doit avoir un mot-clé.',
+  criteria_weight_invalid: 'Poids de critère invalide (doit être entre 0 et 10).',
+  forbidden_action_denied: 'Action refusée — hors du périmètre V1 (envoi, écriture CRM, connexion, formulaire, achat non disponibles).',
+  action_denied: 'Action inconnue refusée.',
+  search_unavailable: 'Recherche web indisponible pour le moment. Réessayez plus tard.',
+
+  // Hono's own app.notFound() fallback — reachable if the frontend ever
+  // talks to a Cortex instance whose build predates a given route (e.g. an
+  // old backend still listening on the expected port after a partial
+  // restart). Distinguish this from a generic failure so it points at the
+  // actual cause instead of suggesting a parameter/config problem.
+  'Route introuvable': 'Backend MAÎTRE indisponible ou version serveur incompatible. Vérifiez qu’une seule instance de cortex-server est active, puis redémarrez-la.',
 };
 
 /** Backend codes matching this prefix start with "invalid_state_for_" —

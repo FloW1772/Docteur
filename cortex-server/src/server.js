@@ -8,6 +8,7 @@ import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import dotenv from 'dotenv';
 import { createLogger } from './lib/logger.js';
+import { checkPortOwnership } from './lib/port-preflight.js';
 import { createOllamaClient, embedText, chatCompletion, chatCompletionPowerful, unloadModel, getInstalledModels, verifyModelAvailability } from './lib/ollama.js';
 import { countNeurons, deleteNeuron as deleteNeuronFromIndex, getAllNeurons, getAllNeuronsForBackup, getFragmentStats, getTableStatus, needsCompaction, optimizeTable, searchNeurons, upsertNeuron } from './lib/lancedb.js';
 import { initSqlite, logRequest, logRouterCall, getRouterSettings, setMeta, getMeta, getCloudKeys, getPageFromStore, logWhisperCall, getWhisperStats, insertActivityLog, getActivityLogRetentionDays, purgeActivityLogOlderThan, getRequestLogRetentionDays, purgeRequestLogsOlderThan, getStyleExampleSettings } from './lib/sqlite.js';
@@ -68,7 +69,9 @@ import { createNotebookRoute }     from './routes/notebook.js';
 import { createNotebookLmRoute }   from './routes/notebooklm.js';
 import { createBrowserRoute }      from './routes/browser.js';
 import { createSherlockRoute }     from './routes/sherlock.js';
+import { createCodeIntelRoute }    from './routes/code-intel.js';
 import { createInvestmentRoute }   from './routes/investment.js';
+import { createSalesRoute }        from './routes/sales.js';
 import { shutdownSherlock } from './lib/sherlock.js';
 import { createSecretScanRoute }   from './routes/secret-scan.js';
 import { createVoiceRoute }        from './routes/voice.js';
@@ -85,6 +88,7 @@ import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe } fro
 import { getKiwixSearchScope } from './lib/sqlite.js';
 import { search as kiwixSearch, getContent as kiwixGetContent } from './lib/kiwix-client.js';
 import { sanitizeZimHtml } from './lib/kiwix-sanitize.js';
+import { wrapUntrustedZimContent } from './lib/kiwix-policy.js';
 import { checkYtDlp } from './lib/ytdlp.js';
 import { scheduleDailyBackup } from './lib/backup.js';
 import { buildCaptureResult } from './lib/capture.js';
@@ -278,6 +282,11 @@ async function healthSnapshot() {
     uptime: Math.floor((Date.now() - startedAt) / 1000),
     local_network: LOCAL_NETWORK,
     local_ip: LOCAL_IP ?? null,
+    // Static markers (not probes) so a client can tell an old, pre-MAITRE
+    // Cortex instance apart from the current build without guessing from
+    // uptime/PID: absent on any server build that predates this field.
+    maitre_routes: true,
+    pid: process.pid,
   };
 }
 
@@ -478,7 +487,10 @@ function buildContextMessages(question, sources, clarificationContext = []) {
 
 function extractFallbackAnswer(sources) {
   for (const source of sources) {
-    const content = String(source.content ?? '');
+    // rawContent (clean extracted text) when present — e.g. Kiwix sources,
+    // whose `content` field carries the untrusted-data prompt wrapper and
+    // would otherwise make this regex match the wrapper's own framing text.
+    const content = String(source.rawContent ?? source.content ?? '');
     const match = content.match(/(?:est|=|:|est\s+le|est\s+la)\s+([A-Za-z0-9._\-@#]+)/i);
     if (match?.[1]) {
       return { value: match[1], title: source.title };
@@ -490,7 +502,7 @@ function extractFallbackAnswer(sources) {
     return null;
   }
 
-  const compact = String(firstSource.content ?? '').replace(/\s+/g, ' ').trim();
+  const compact = String(firstSource.rawContent ?? firstSource.content ?? '').replace(/\s+/g, ' ').trim();
   return {
     value: compact.length > 0 ? compact : 'information disponible dans le neurone',
     title: firstSource.title
@@ -566,13 +578,32 @@ async function answerQuestion(payload) {
         try {
           const { html } = await kiwixGetContent(r.bookName, r.path);
           const cleaned = sanitizeZimHtml(html, r.bookName);
+          const title = r.title || cleaned.title;
+          // Kiwix ZIM content is data the Docteur team did not author (often
+          // Wikipedia-derived, potentially containing vandalism or a crafted
+          // prompt-injection payload) — wrap it the same way sales-policy.js/
+          // investment-policy.js wrap externally-fetched web content before
+          // it ever reaches an LLM prompt. `content` here is the wrapped
+          // promptFragment (with the untrusted-data framing baked in), not
+          // the raw article text.
+          const wrapped = wrapUntrustedZimContent({
+            book: r.bookName, articlePath: r.path, title,
+            content: cleaned.text.slice(0, 4_000),
+          });
           kiwixSources.push({
             id: `kiwix:${r.bookName}:${r.path}`,
-            title: r.title || cleaned.title,
+            title,
             score: 0.5,
             kind: 'kiwix',
-            content: cleaned.text.slice(0, 4_000),
+            // `content` feeds buildContextMessages (the LLM prompt) and must
+            // carry the untrusted-data framing; `rawContent` is the clean
+            // extracted text, kept separately so extractFallbackAnswer()'s
+            // regex-based fallback still matches against real article text
+            // instead of the wrapper's framing sentences.
+            content: wrapped.promptFragment,
+            rawContent: wrapped.content,
             isKiwix: true,
+            untrusted: true,
             book: r.bookName,
             articlePath: r.path,
           });
@@ -1704,7 +1735,9 @@ app.route('/api', createNotebookRoute({ ollamaClient, env, logger }));
 app.route('/api', createNotebookLmRoute({ logger }));
 app.route('/api', createBrowserRoute({ logger }));
 app.route('/api', createSherlockRoute({ services, logger }));
+app.route('/api', createCodeIntelRoute({ logger }));
 app.route('/api', createInvestmentRoute({ services, logger }));
+app.route('/api', createSalesRoute({ services, logger }));
 app.route('/api', createSecretScanRoute({ logger }));
 app.route('/api', createVoiceRoute({ logger }));
 app.route('/api', createInboxRoute({ defaultDir: path.resolve(rootDir, 'data/inbox'), logger }));
@@ -1724,7 +1757,25 @@ app.notFound((c) => c.json({ error: 'Route introuvable' }, 404));
 
 const protocol = USE_HTTPS ? 'https' : 'http';
 
-serve({
+// Single-instance guard: identify who (if anyone) already holds env.PORT
+// before attempting to bind it. Never kills anything — a recognized second
+// Cortex instance is refused with a clear message, an unknown occupant fails
+// closed with its PID/path so the operator can decide. If ownership can't be
+// determined (non-Windows, or the check itself fails), we don't block
+// startup on that — the existing EADDRINUSE handler below still catches a
+// real collision, just without the friendlier "who owns it" detail.
+const portOwner = await checkPortOwnership(env.HOST, env.PORT);
+if (portOwner.state === 'owned_by_cortex') {
+  logger.error({ host: env.HOST, port: env.PORT, pid: portOwner.pid }, 'CORTEX_ALREADY_RUNNING');
+  logger.error('An existing cortex-server instance is already listening on this port. Stop it first (close its window / Ctrl+C) before starting another — refusing to start a second instance.');
+  process.exit(1);
+} else if (portOwner.state === 'owned_by_unknown') {
+  logger.error({ host: env.HOST, port: env.PORT, pid: portOwner.pid, name: portOwner.name, cmdLine: portOwner.cmdLine }, 'CORTEX_PORT_OWNED_BY_UNKNOWN_PROCESS');
+  logger.error('Port is occupied by a process that is not a recognized cortex-server instance. Refusing to start or kill it automatically — identify and stop it manually, then retry.');
+  process.exit(1);
+}
+
+const httpServer = serve({
   fetch: app.fetch,
   port: env.PORT,
   hostname: env.HOST,
@@ -1799,4 +1850,18 @@ serve({
     // change to that function can never produce an unhandled rejection here.
     logger.warn({ err: err?.message }, 'yt-dlp check échouée de façon inattendue — téléchargement vidéo probablement désactivé');
   });
+});
+
+// serve() returns the underlying node:http(s) Server; without this listener,
+// EADDRINUSE surfaces as Node's default unhandled-'error'-event crash (an
+// opaque stack trace) instead of a clear, actionable log line. This never
+// falls back to another port — the frontend expects env.PORT specifically —
+// it only makes the existing failure legible before exiting non-zero.
+httpServer.on('error', (error) => {
+  if (error?.code === 'EADDRINUSE') {
+    logger.error({ host: env.HOST, port: env.PORT }, 'CORTEX_PORT_IN_USE');
+    process.exit(1);
+  }
+  logger.error({ error: error?.message ?? String(error) }, 'cortex server listen error');
+  process.exit(1);
 });

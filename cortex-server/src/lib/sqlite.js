@@ -1279,6 +1279,48 @@ export function initSqlite(sqlitePath) {
       ON maitre_isolation_state(status, created_at DESC);
   `);
 
+  // ── Business/Sales Agent V1 — RESEARCH → ANALYZE → SCORE → DRAFT → HUMAN
+  // REVIEW only. No table here ever represents a sent message or a real
+  // CRM write — sales_drafts rows are local-only text, always carrying
+  // sent = 0, and there is no code path anywhere that flips it.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS sales_leads (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      company TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS sales_research_sources (
+      id TEXT PRIMARY KEY,
+      lead_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      retrieved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      untrusted INTEGER NOT NULL DEFAULT 1,
+      content_excerpt TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sales_research_sources_lead_id
+      ON sales_research_sources(lead_id, retrieved_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sales_drafts (
+      id TEXT PRIMARY KEY,
+      lead_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'DRAFT — NOT SENT',
+      sent INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sales_drafts_lead_id
+      ON sales_drafts(lead_id, created_at DESC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -4717,6 +4759,60 @@ export function getInvestmentEventsForSecurity(securityId) {
   return database.prepare('SELECT * FROM investment_events WHERE security_id = ? ORDER BY date_reliable DESC, event_date ASC')
     .all(securityId)
     .map(row => ({ ...row, date_reliable: !!row.date_reliable }));
+}
+
+// ---------------------------------------------------------------------
+// Business/Sales Agent V1 — RESEARCH → ANALYZE → SCORE → DRAFT → HUMAN
+// REVIEW. sales_drafts.sent is always written 0 here; there is no
+// exported function in this module that ever sets it to 1 — sending is
+// not a capability this module provides.
+// ---------------------------------------------------------------------
+
+export function insertSalesLead({ id, name, company = '', notes = '' }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO sales_leads (id, name, company, notes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, name, company, notes, now, now);
+}
+
+export function getSalesLeadById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM sales_leads WHERE id = ?').get(id) ?? null;
+}
+
+export function getAllSalesLeads() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM sales_leads ORDER BY updated_at DESC').all();
+}
+
+export function insertSalesResearchSource({ id, lead_id, url, title = '', untrusted = true, content_excerpt = '' }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO sales_research_sources (id, lead_id, url, title, retrieved_at, untrusted, content_excerpt)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, lead_id, url, title, new Date().toISOString(), untrusted ? 1 : 0, content_excerpt);
+}
+
+export function getSalesResearchSourcesForLead(leadId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM sales_research_sources WHERE lead_id = ? ORDER BY retrieved_at DESC')
+    .all(leadId).map(row => ({ ...row, untrusted: !!row.untrusted }));
+}
+
+export function insertSalesDraft({ id, lead_id, kind, subject = '', body = '' }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO sales_drafts (id, lead_id, kind, subject, body, status, sent, created_at)
+    VALUES (?, ?, ?, ?, ?, 'DRAFT — NOT SENT', 0, ?)
+  `).run(id, lead_id, kind, subject, body, new Date().toISOString());
+}
+
+export function getSalesDraftsForLead(leadId) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM sales_drafts WHERE lead_id = ? ORDER BY created_at DESC')
+    .all(leadId).map(row => ({ ...row, sent: !!row.sent }));
 }
 
 // ---------------------------------------------------------------------
