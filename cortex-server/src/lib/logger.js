@@ -23,6 +23,19 @@ const REDACT_PATHS = [
   'refresh_token', '*.refresh_token',
   'setup_token', '*.setup_token',
   'cookie', '*.cookie', 'headers.cookie', '*.headers.cookie',
+  // OMEGA V1 Phase 2 — device identity/pairing/session secrets. Never
+  // logged in full even at debug level: pairing codes, session tokens,
+  // and private key material must never appear in any log output
+  // (mission §28/§56/T15/T16). This is the one shared redaction
+  // choke point for every module, OMEGA included — no separate
+  // redaction mechanism.
+  'pairingCode', '*.pairingCode', '*.*.pairingCode',
+  'code', '*.code', '*.*.code',
+  'sessionToken', '*.sessionToken', '*.*.sessionToken',
+  'privateKey', '*.privateKey', '*.*.privateKey',
+  'privateKeyPem', '*.privateKeyPem', '*.*.privateKeyPem',
+  'deviceKeyPem', '*.deviceKeyPem', '*.*.deviceKeyPem',
+  'nonce', '*.nonce', '*.*.nonce',
 ];
 
 // Best-effort scrub for secrets embedded inside free-text log messages

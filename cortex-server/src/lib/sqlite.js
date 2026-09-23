@@ -1321,6 +1321,126 @@ export function initSqlite(sqlitePath) {
       ON sales_drafts(lead_id, created_at DESC);
   `);
 
+  // ── OMEGA V1 Phase 2 — device identity, pairing, sessions, audit. This
+  // is a fully separate authorization domain from MAÎTRE (omega_* tables
+  // only, never maitre_*/monitor_*/cyber_*). Private key material is
+  // NEVER stored here — only public keys and non-reversible hashes of
+  // pairing codes (see omega-identity.js / omega-pairing.js). No table
+  // here ever holds a plaintext pairing code or a session secret.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS omega_devices (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      public_key_pem TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      permission_level INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen TEXT,
+      revoked_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_devices_fingerprint
+      ON omega_devices(fingerprint);
+
+    CREATE TABLE IF NOT EXISTS omega_pairings (
+      id TEXT PRIMARY KEY,
+      initiator_device_name TEXT NOT NULL,
+      requested_permission INTEGER NOT NULL,
+      code_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      device_id TEXT,
+      public_key_pem TEXT,
+      fingerprint TEXT,
+      consumed_at TEXT,
+      decided_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_pairings_status
+      ON omega_pairings(status, expires_at);
+
+    CREATE TABLE IF NOT EXISTS omega_sessions (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      permission_level INTEGER NOT NULL,
+      nonce TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      ended_at TEXT,
+      revoked_at TEXT,
+      last_used_nonce TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_sessions_device_id
+      ON omega_sessions(device_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS omega_audit (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      event_type TEXT NOT NULL,
+      device_id TEXT,
+      session_id TEXT,
+      pairing_id TEXT,
+      result TEXT NOT NULL DEFAULT '',
+      detail TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_audit_created_at
+      ON omega_audit(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_omega_audit_device_id
+      ON omega_audit(device_id, created_at DESC);
+  `);
+
+  // ── OMEGA V1 Phase 3 — VIEW ONLY screen-viewing session state. Purely
+  // additive: one row per omega_sessions.id that has an active or
+  // previously-active VIEW stream. Tracks the explicitly-selected
+  // screenIndex (mission rule 10 — never "all screens" silently),
+  // last-frame bookkeeping for FPS bounding/backpressure, and stop
+  // state. Never stores frame bytes (screen pixels are never persisted
+  // to SQLite — mission §15's "never stores... full screen frames"
+  // carried forward from the Phase 1 audit-log rule, applied here to
+  // the whole DB, not just the audit table).
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS omega_view_sessions (
+      session_id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      screen_index INTEGER NOT NULL,
+      started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      stopped_at TEXT,
+      last_frame_at TEXT,
+      last_frame_width INTEGER,
+      last_frame_height INTEGER,
+      frame_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_view_sessions_device_id
+      ON omega_view_sessions(device_id, started_at DESC);
+  `);
+
+  // ── OMEGA V1 Phase 4 — OMEGA_INTERACTIVE session state (mouse/keyboard
+  // input injection). Purely additive: one row per omega_sessions.id
+  // that has an active or previously-active INTERACTIVE control period.
+  // Tracks event/batch bookkeeping for rate-limit enforcement and stop
+  // state. Never stores actual input content (no keystroke text, no
+  // coordinate history) — only counters, matching the audit-log
+  // discipline of "never stores raw keyboard input" carried forward from
+  // Phase 1/3 to the whole DB, not just the audit table.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS omega_interactive_sessions (
+      session_id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      stopped_at TEXT,
+      last_event_at TEXT,
+      event_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_omega_interactive_sessions_device_id
+      ON omega_interactive_sessions(device_id, started_at DESC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -4993,4 +5113,242 @@ export function getCyberAuditEventsForMission(missionId) {
   return database.prepare('SELECT * FROM cyber_audit_events WHERE mission_id = ? ORDER BY created_at ASC')
     .all(missionId)
     .map(row => ({ ...row, detail: (() => { try { return JSON.parse(row.detail || '{}'); } catch { return {}; } })() }));
+}
+
+// ---------------------------------------------------------------------
+// OMEGA V1 Phase 2 — device identity, pairing, sessions, audit. Fully
+// separate authorization domain from MAÎTRE (mission §43): omega_*
+// tables only. Display names / audit detail strings are untrusted
+// input (mission §29) — stored and returned verbatim as inert data,
+// never interpreted/executed, never written into an HTML sink here.
+// ---------------------------------------------------------------------
+
+export function insertOmegaDevice({ id, display_name, public_key_pem, fingerprint, permission_level }) {
+  if (!database) return;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO omega_devices (id, display_name, public_key_pem, fingerprint, permission_level, created_at, last_seen, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+  `).run(id, display_name, public_key_pem, fingerprint, permission_level, now, now);
+}
+
+export function getOmegaDeviceById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM omega_devices WHERE id = ?').get(id) ?? null;
+}
+
+// Fingerprint is deliberately NOT a UNIQUE column: a revoked device
+// that re-pairs with the SAME key must get a brand-new device row
+// (mission §17/§18 — no "resurrecting" a revoked identity), which can
+// leave multiple rows sharing one fingerprint (one revoked, one live).
+// This lookup always prefers the live (non-revoked) row so
+// omega-pairing.js's re-pairing logic reuses the CURRENT trusted
+// device rather than an old revoked one; if none is live, falls back
+// to the most recently created row (still useful for key-status
+// lookups even though it grants no trust by itself).
+export function getOmegaDeviceByFingerprint(fingerprint) {
+  if (!database) return null;
+  const live = database.prepare('SELECT * FROM omega_devices WHERE fingerprint = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1').get(fingerprint);
+  if (live) return live;
+  return database.prepare('SELECT * FROM omega_devices WHERE fingerprint = ? ORDER BY created_at DESC LIMIT 1').get(fingerprint) ?? null;
+}
+
+export function getAllOmegaDevices() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM omega_devices ORDER BY created_at DESC').all();
+}
+
+export function touchOmegaDeviceLastSeen(id) {
+  if (!database) return;
+  database.prepare('UPDATE omega_devices SET last_seen = ? WHERE id = ?').run(new Date().toISOString(), id);
+}
+
+export function revokeOmegaDevice(id) {
+  if (!database) return false;
+  const now = new Date().toISOString();
+  const result = database.prepare('UPDATE omega_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id);
+  return result.changes > 0;
+}
+
+export function insertOmegaPairing({ id, initiator_device_name, requested_permission, code_hash, expires_at }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO omega_pairings (id, initiator_device_name, requested_permission, code_hash, created_at, expires_at, attempt_count, status)
+    VALUES (?, ?, ?, ?, ?, ?, 0, 'PENDING')
+  `).run(id, initiator_device_name, requested_permission, code_hash, new Date().toISOString(), expires_at);
+}
+
+export function getOmegaPairingById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM omega_pairings WHERE id = ?').get(id) ?? null;
+}
+
+export function getAllOmegaPairings() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM omega_pairings ORDER BY created_at DESC').all();
+}
+
+export function incrementOmegaPairingAttempt(id) {
+  if (!database) return;
+  database.prepare('UPDATE omega_pairings SET attempt_count = attempt_count + 1 WHERE id = ?').run(id);
+}
+
+export function updateOmegaPairingStatus(id, { status, device_id = undefined, public_key_pem = undefined, fingerprint = undefined, consumed_at = undefined, decided_at = undefined }) {
+  if (!database) return false;
+  const current = getOmegaPairingById(id);
+  if (!current) return false;
+  const result = database.prepare(`
+    UPDATE omega_pairings SET
+      status = ?,
+      device_id = ?,
+      public_key_pem = ?,
+      fingerprint = ?,
+      consumed_at = ?,
+      decided_at = ?
+    WHERE id = ?
+  `).run(
+    status,
+    device_id !== undefined ? device_id : current.device_id,
+    public_key_pem !== undefined ? public_key_pem : current.public_key_pem,
+    fingerprint !== undefined ? fingerprint : current.fingerprint,
+    consumed_at !== undefined ? consumed_at : current.consumed_at,
+    decided_at !== undefined ? decided_at : current.decided_at,
+    id,
+  );
+  return result.changes > 0;
+}
+
+export function expireStaleOmegaPairings(nowIso) {
+  if (!database) return 0;
+  const result = database.prepare(`
+    UPDATE omega_pairings SET status = 'EXPIRED'
+    WHERE status = 'PENDING' AND expires_at < ?
+  `).run(nowIso);
+  return result.changes;
+}
+
+export function insertOmegaSession({ id, device_id, permission_level, nonce, expires_at }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO omega_sessions (id, device_id, permission_level, nonce, created_at, expires_at, ended_at, revoked_at, last_used_nonce)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+  `).run(id, device_id, permission_level, nonce, new Date().toISOString(), expires_at);
+}
+
+export function getOmegaSessionById(id) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM omega_sessions WHERE id = ?').get(id) ?? null;
+}
+
+export function getActiveOmegaSessionsForDevice(deviceId) {
+  if (!database) return [];
+  return database.prepare(`
+    SELECT * FROM omega_sessions WHERE device_id = ? AND ended_at IS NULL AND revoked_at IS NULL
+  `).all(deviceId);
+}
+
+export function endOmegaSession(id) {
+  if (!database) return false;
+  const result = database.prepare('UPDATE omega_sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL').run(new Date().toISOString(), id);
+  return result.changes > 0;
+}
+
+export function revokeOmegaSessionsForDevice(deviceId) {
+  if (!database) return 0;
+  const now = new Date().toISOString();
+  const result = database.prepare(`
+    UPDATE omega_sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL AND ended_at IS NULL
+  `).run(now, deviceId);
+  return result.changes;
+}
+
+export function updateOmegaSessionLastNonce(id, nonce) {
+  if (!database) return;
+  database.prepare('UPDATE omega_sessions SET last_used_nonce = ? WHERE id = ?').run(nonce, id);
+}
+
+export function insertOmegaAudit({ id, event_type, device_id = null, session_id = null, pairing_id = null, result = '', detail = {} }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO omega_audit (id, created_at, event_type, device_id, session_id, pairing_id, result, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, new Date().toISOString(), event_type, device_id, session_id, pairing_id, result, JSON.stringify(detail ?? {}));
+}
+
+export function listOmegaAudit({ limit = 200 } = {}) {
+  if (!database) return [];
+  const n = Math.min(Math.max(Number(limit) || 200, 1), 1000);
+  return database.prepare('SELECT * FROM omega_audit ORDER BY created_at DESC LIMIT ?').all(n)
+    .map(row => ({ ...row, detail: (() => { try { return JSON.parse(row.detail || '{}'); } catch { return {}; } })() }));
+}
+
+// ---------------------------------------------------------------------
+// OMEGA V1 Phase 3 — VIEW ONLY session state (screen selection, frame
+// bookkeeping). See schema comment above for scope/rationale.
+// ---------------------------------------------------------------------
+
+export function insertOmegaViewSession({ session_id, device_id, screen_index }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO omega_view_sessions (session_id, device_id, screen_index, started_at, stopped_at, last_frame_at, frame_count)
+    VALUES (?, ?, ?, ?, NULL, NULL, 0)
+  `).run(session_id, device_id, screen_index, new Date().toISOString());
+}
+
+export function getOmegaViewSession(sessionId) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM omega_view_sessions WHERE session_id = ?').get(sessionId) ?? null;
+}
+
+export function recordOmegaViewFrame(sessionId, { width, height }) {
+  if (!database) return;
+  database.prepare(`
+    UPDATE omega_view_sessions
+    SET last_frame_at = ?, last_frame_width = ?, last_frame_height = ?, frame_count = frame_count + 1
+    WHERE session_id = ?
+  `).run(new Date().toISOString(), width, height, sessionId);
+}
+
+export function stopOmegaViewSession(sessionId) {
+  if (!database) return false;
+  const result = database.prepare(`
+    UPDATE omega_view_sessions SET stopped_at = ? WHERE session_id = ? AND stopped_at IS NULL
+  `).run(new Date().toISOString(), sessionId);
+  return result.changes > 0;
+}
+
+// ---------------------------------------------------------------------
+// OMEGA V1 Phase 4 — OMEGA_INTERACTIVE session state (event bookkeeping
+// only, never actual input content). See schema comment above for
+// scope/rationale.
+// ---------------------------------------------------------------------
+
+export function insertOmegaInteractiveSession({ session_id, device_id }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO omega_interactive_sessions (session_id, device_id, started_at, stopped_at, last_event_at, event_count)
+    VALUES (?, ?, ?, NULL, NULL, 0)
+  `).run(session_id, device_id, new Date().toISOString());
+}
+
+export function getOmegaInteractiveSession(sessionId) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM omega_interactive_sessions WHERE session_id = ?').get(sessionId) ?? null;
+}
+
+export function recordOmegaInteractiveEvents(sessionId, count) {
+  if (!database) return;
+  database.prepare(`
+    UPDATE omega_interactive_sessions
+    SET last_event_at = ?, event_count = event_count + ?
+    WHERE session_id = ?
+  `).run(new Date().toISOString(), count, sessionId);
+}
+
+export function stopOmegaInteractiveSession(sessionId) {
+  if (!database) return false;
+  const result = database.prepare(`
+    UPDATE omega_interactive_sessions SET stopped_at = ? WHERE session_id = ? AND stopped_at IS NULL
+  `).run(new Date().toISOString(), sessionId);
+  return result.changes > 0;
 }

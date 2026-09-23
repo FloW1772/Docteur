@@ -1,5 +1,6 @@
 ﻿import fs from 'node:fs';
 import https from 'node:https';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +85,10 @@ import { createTeacherRoute }       from './routes/teacher.js';
 import { createTodoRoute }         from './routes/todo.js';
 import { createKiwixRoute }        from './routes/kiwix.js';
 import { createAudioPlayerRoute }  from './routes/audio-player.js';
+import { createOmegaRoute }        from './routes/omega.js';
+import { createOmegaViewRoute }    from './routes/omega-view.js';
+import { createOmegaInteractiveRoute } from './routes/omega-interactive.js';
+import { createOmegaAdminRoute }   from './routes/omega-admin.js';
 import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe } from './lib/kiwix.js';
 import { getKiwixSearchScope } from './lib/sqlite.js';
 import { search as kiwixSearch, getContent as kiwixGetContent } from './lib/kiwix-client.js';
@@ -126,6 +131,19 @@ const CERT_DIR = path.resolve(rootDir, '..', 'certs');
 const CERT_KEY = path.join(CERT_DIR, 'key.pem');
 const CERT_PEM = path.join(CERT_DIR, 'cert.pem');
 const USE_HTTPS = LOCAL_NETWORK && fs.existsSync(CERT_KEY) && fs.existsSync(CERT_PEM);
+if (LOCAL_NETWORK && !USE_HTTPS) {
+  throw new Error(`LOCAL_NETWORK=true requires TLS certificate files at ${CERT_KEY} and ${CERT_PEM}; refusing cleartext LAN startup`);
+}
+let TLS_CERTIFICATE_FINGERPRINT = null;
+if (USE_HTTPS) {
+  try {
+    // Public certificate metadata only. The private key is never returned,
+    // logged or included in any API response.
+    TLS_CERTIFICATE_FINGERPRINT = new crypto.X509Certificate(fs.readFileSync(CERT_PEM)).fingerprint256;
+  } catch (error) {
+    throw new Error(`TLS certificate invalid: ${error.message}`);
+  }
+}
 
 const env = {
   PORT: Number(process.env.PORT ?? 3001),
@@ -282,6 +300,8 @@ async function healthSnapshot() {
     uptime: Math.floor((Date.now() - startedAt) / 1000),
     local_network: LOCAL_NETWORK,
     local_ip: LOCAL_IP ?? null,
+    tls_enabled: USE_HTTPS,
+    tls_certificate_fingerprint: TLS_CERTIFICATE_FINGERPRINT,
     // Static markers (not probes) so a client can tell an old, pre-MAITRE
     // Cortex instance apart from the current build without guessing from
     // uptime/PID: absent on any server build that predates this field.
@@ -1744,6 +1764,29 @@ app.route('/api', createInboxRoute({ defaultDir: path.resolve(rootDir, 'data/inb
 app.route('/api', createKiwixRoute({ services, logger }));
 app.route('/api', createAudioPlayerRoute({ logger }));
 app.route('/api', createStyleExamplesRoute({ services, logger }));
+app.route('/api', createOmegaRoute({ logger }));
+// OMEGA V1 Phase 3 — VIEW ONLY screen-streaming data path. Deliberately
+// registered as its own route group (NOT createOmegaRoute's loopback-
+// only /omega/* middleware) because this specific surface must be
+// reachable from a second physical device on the LAN, by design — see
+// routes/omega-view.js's header comment for the full auth-model
+// rationale (session-token/nonce authentication instead of a loopback
+// guard). No new listener/port: rides the same existing HTTP server and
+// the same existing LOCAL_NETWORK/CORS LAN-exposure decision as every
+// other route in this file.
+app.route('/api', createOmegaViewRoute({ logger }));
+// OMEGA V1 Phase 4 — OMEGA_INTERACTIVE mouse/keyboard input-injection
+// data path. Same rationale as the VIEW route group above: no new
+// listener/port, session-token/nonce authentication instead of a
+// loopback guard (must be LAN-reachable by the controller device), PLUS
+// an additional server-side permission check (permissionLevel >=
+// OMEGA_INTERACTIVE) on every single route — see
+// routes/omega-interactive.js's header comment.
+app.route('/api', createOmegaInteractiveRoute({ logger }));
+// OMEGA V1 Phase 5 — semantic ADMIN actions only. This rides the same
+// existing listener/port and inherits the Phase 4.1 TLS boundary; high-impact
+// requests still require a visible local approval before any native API call.
+app.route('/api', createOmegaAdminRoute({ logger }));
 
 app.onError((error, c) => {
   const status = services.isOllamaError(error) ? 503 : 500;
