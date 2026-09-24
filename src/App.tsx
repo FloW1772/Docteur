@@ -4763,6 +4763,7 @@ export default function App() {
           onActivityPanelOpen={() => setActivityPanelOpen(open => !open)}
           activityCount={activityEntries.length}
           onSettingsOpen={() => setSettingsOpen(true)}
+          onRassilonOpen={() => { setSettingsInitialTab('rassilon'); setSettingsOpen(true); }}
           onHelpOpen={() => setHelpOpen(true)}
           onRoadmapOpen={() => setRoadmapOpen(true)}
           onAgentsOpen={() => setAgentsOpen(true)}

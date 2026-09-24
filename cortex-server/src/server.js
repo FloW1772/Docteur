@@ -55,6 +55,10 @@ import { createMetaGptRoute } from './routes/metagpt.js';
 import { createCyberAuditRoute } from './routes/cyber-audit.js';
 import { createMonitorRoute } from './routes/monitor.js';
 import { createMaitreRoute } from './routes/maitre.js';
+import { createRassilonRoute } from './routes/rassilon.js';
+import { initRassilonWorker } from './lib/rassilon-worker.js';
+import { initRassilonScratch } from './lib/rassilon-scratch.js';
+import { configureRassilonLanServer, restoreRassilonLanServer, stopRassilonLanServer } from './lib/rassilon-lan-server.js';
 import { startMonitorServiceIfAutostart } from './lib/monitor-service.js';
 import { startAgentScheduler }    from './lib/agent-runner.js';
 import { createInboxRoute }       from './routes/inbox.js';
@@ -157,6 +161,9 @@ const env = {
   LOG_FILE: path.resolve(rootDir, process.env.LOG_FILE ?? './data/cortex.log')
 };
 
+const RASSILON_LAN_TLS_KEY_PATH = path.resolve(rootDir, process.env.RASSILON_LAN_TLS_KEY_PATH ?? '../certs/rassilon-lan-key.pem');
+const RASSILON_LAN_TLS_CERT_PATH = path.resolve(rootDir, process.env.RASSILON_LAN_TLS_CERT_PATH ?? '../certs/rassilon-lan-cert.pem');
+
 fs.mkdirSync(path.dirname(env.LANCEDB_PATH), { recursive: true });
 fs.mkdirSync(path.dirname(env.SQLITE_PATH), { recursive: true });
 fs.mkdirSync(path.dirname(env.LOG_FILE), { recursive: true });
@@ -189,6 +196,16 @@ process.on('uncaughtException', (err) => {
 initSqlite(env.SQLITE_PATH);
 setMeta('boot_at', new Date().toISOString());
 
+// RASSILON V1 — DISABLED by default; this only restores whatever
+// enabled/disabled state was last explicitly persisted, performs crash
+// recovery (RUNNING jobs -> INTERRUPTED, queued jobs cancelled), and
+// sweeps the scratch workspace. Never starts accepting jobs unless
+// settings.enabled was already true from a prior explicit /enable call
+// ("aucun worker ne doit tourner si RASSILON disabled"). The actual
+// initRassilonWorker() call is below, after ollamaClient exists, since
+// Phase 3's EMBEDDING_BATCH executor needs it injected as a provider.
+initRassilonScratch(path.resolve(rootDir, 'data/rassilon/scratch'));
+
 // Reload PAIR endpoint from persisted settings (survives restart) before any
 // request can reach the router — see lib/providers/pair.js for priority order.
 loadPairEndpointFromStorage(getMeta, logger);
@@ -210,6 +227,23 @@ loadPairEndpointFromStorage(getMeta, logger);
 }
 
 const ollamaClient = createOllamaClient(env.OLLAMA_URL);
+
+// RASSILON's EMBEDDING_BATCH executor reuses this SAME ollamaClient/
+// env.EMBEDDING_MODEL pair every other embedding call site in this file
+// already uses (mission §3 Phase 3 — "ne pas écrire un nouveau moteur
+// d'embedding si un adapter local propre existe déjà"). No new client,
+// no new config surface.
+initRassilonWorker({ logger, providers: { ollamaClient, embeddingModel: env.EMBEDDING_MODEL } });
+configureRassilonLanServer({
+  logger,
+  providers: { ollamaClient, embeddingModel: env.EMBEDDING_MODEL },
+  tlsKeyPath: RASSILON_LAN_TLS_KEY_PATH,
+  tlsCertPath: RASSILON_LAN_TLS_CERT_PATH,
+});
+// Restores only an earlier explicit local LAN enable. Invalid/missing TLS
+// refuses this dedicated listener and never falls back to HTTP.
+await restoreRassilonLanServer();
+
 const startedAt = Date.now();
 
 // ── Installed-model cache (30s TTL) to avoid double Ollama round trips ────────
@@ -1736,7 +1770,9 @@ const externalAgents = new ExternalAgents({
 });
 app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
-  void Promise.allSettled([externalAgents.shutdown(), shutdownSherlock()]).finally(() => process.exit(0));
+  void Promise.allSettled([
+    externalAgents.shutdown(), shutdownSherlock(), stopRassilonLanServer({ persist: false, audit: false }),
+  ]).finally(() => process.exit(0));
 });
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
 app.route('/api', createOpenMontageRoute());
@@ -1744,6 +1780,7 @@ app.route('/api', createMetaGptRoute({ logger }));
 app.route('/api', createCyberAuditRoute({ logger }));
 app.route('/api', createMonitorRoute({ logger, ollamaClient, ollamaModel: env.ANSWER_MODEL }));
 app.route('/api', createMaitreRoute({ logger, ollamaClient, ollamaModel: env.ANSWER_MODEL }));
+app.route('/api', createRassilonRoute({ logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));

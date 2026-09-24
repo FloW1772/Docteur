@@ -4,6 +4,7 @@ import type { VoiceState } from '../../hooks/useVoiceActivation';
 import type { GestureState } from '../../hooks/useGestureCamera';
 import type { ScreenShareState } from '../../hooks/useScreenShare';
 import type { BatchProgressState } from '../modals/BatchProgressModal';
+import RassilonStatusBadge from '../rassilon/RassilonStatusBadge';
 
 interface Props {
   readonly pageCount:        number;
@@ -20,6 +21,7 @@ interface Props {
   readonly onActivityPanelOpen?: () => void;
   readonly activityCount?: number;
   readonly onSettingsOpen:   () => void;
+  readonly onRassilonOpen?:  () => void;
   readonly onHelpOpen:       () => void;
   readonly onRoadmapOpen:    () => void;
   readonly onAgentsOpen:     () => void;
@@ -61,6 +63,7 @@ export default function TopBar({
   onActivityPanelOpen,
   activityCount = 0,
   onSettingsOpen,
+  onRassilonOpen,
   onHelpOpen,
   onRoadmapOpen,
   onAgentsOpen,
@@ -211,6 +214,7 @@ export default function TopBar({
           <span className="topbar-page-count font-mono text-xs tracking-[0.2em]" style={{ color: '#9daebb' }}>
             {pageCount} NEURONES
           </span>
+          {onRassilonOpen && <RassilonStatusBadge onOpen={onRassilonOpen} />}
         </div>
 
         {/* Mini batch indicator — shown when a batch is running and modal is minimized */}

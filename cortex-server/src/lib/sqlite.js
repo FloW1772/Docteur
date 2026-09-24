@@ -1441,6 +1441,197 @@ export function initSqlite(sqlitePath) {
       ON omega_interactive_sessions(device_id, started_at DESC);
   `);
 
+  // ── RASSILON V1 Phase 2 — local single-machine safe worker. Separate
+  // module identity/tables per the Phase 1 architecture report
+  // (reports/RASSILON_ARCHITECTURE_2026-09.md §3/§39): rassilon_* only,
+  // never reads/writes omega_*/maitre_*/monitor_*/cyber_* tables, and no
+  // other module reads/writes rassilon_* either.
+  //
+  // rassilon_settings: single-row consent/quota configuration. enabled
+  // starts at 0 (mission §3 — DISABLED by default) and can only flip to 1
+  // through the explicit /enable endpoint, never a migration default.
+  //
+  // rassilon_identity: PUBLIC key material only (mission §39 — "si
+  // identity secret est déjà DPAPI secret-store : ne pas dupliquer secret
+  // en DB"). The Ed25519 private key lives exclusively in secret-store.js
+  // under the rassilon-device-key:<deviceId> namespace; this table never
+  // sees it.
+  //
+  // rassilon_jobs: one row per submitted job, full lifecycle
+  // (RECEIVED..INTERRUPTED, mission §30). processed_job_id is UNIQUE so a
+  // replayed jobId is rejected by the anti-replay check before it can ever
+  // collide here (mission §17).
+  //
+  // rassilon_audit: closed-enum event log (mission §38), bounded
+  // result_summary only — never raw job payload/output/secret material.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS rassilon_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      max_cpu_percent INTEGER NOT NULL DEFAULT 25,
+      max_ram_mb INTEGER NOT NULL DEFAULT 2048,
+      max_concurrent_jobs INTEGER NOT NULL DEFAULT 1,
+      max_job_duration_sec INTEGER NOT NULL DEFAULT 300,
+      max_scratch_mb INTEGER NOT NULL DEFAULT 1024,
+      pause_on_battery INTEGER NOT NULL DEFAULT 1,
+      minimum_battery_percent INTEGER NOT NULL DEFAULT 30,
+      pause_when_user_active INTEGER NOT NULL DEFAULT 1,
+      accepted_job_types TEXT NOT NULL DEFAULT '[]',
+      approval_mode TEXT NOT NULL DEFAULT 'ASK_EACH_JOB',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS rassilon_identity (
+      device_id TEXT PRIMARY KEY,
+      public_key_pem TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      revoked_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rassilon_jobs (
+      job_id TEXT PRIMARY KEY,
+      job_type TEXT NOT NULL,
+      issuer_device_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'RECEIVED',
+      resource_budget TEXT NOT NULL DEFAULT '{}',
+      payload_summary TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      error_reason TEXT,
+      result_summary TEXT NOT NULL DEFAULT '{}',
+      policy_version TEXT NOT NULL DEFAULT 'v1'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_jobs_status
+      ON rassilon_jobs(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_rassilon_jobs_created_at
+      ON rassilon_jobs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS rassilon_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      event_type TEXT NOT NULL,
+      job_id TEXT,
+      issuer_device_id TEXT,
+      result_summary TEXT NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_audit_created_at
+      ON rassilon_audit(created_at DESC);
+
+    -- RASSILON Phase 4 LAN state. Kept in dedicated rassilon_* tables so
+    -- enabling LAN compute cannot inherit any OMEGA/MAITRE trust or session.
+    CREATE TABLE IF NOT EXISTS rassilon_local_device (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      device_id TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS rassilon_lan_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0,
+      bind_address TEXT,
+      port INTEGER NOT NULL DEFAULT 3443,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS rassilon_devices (
+      device_id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      public_key_pem TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      role TEXT NOT NULL,
+      permission_set TEXT NOT NULL DEFAULT '[]',
+      endpoint_host TEXT,
+      endpoint_port INTEGER,
+      tls_certificate_pem TEXT,
+      tls_certificate_fingerprint TEXT,
+      capabilities TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'OFFLINE',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT,
+      revoked_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_devices_status
+      ON rassilon_devices(status, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS rassilon_pairings (
+      pairing_id TEXT PRIMARY KEY,
+      state TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      worker_nonce TEXT NOT NULL,
+      controller_nonce TEXT,
+      controller_device_id TEXT,
+      controller_public_key_pem TEXT,
+      controller_fingerprint TEXT,
+      controller_display_name TEXT,
+      requested_permissions TEXT NOT NULL DEFAULT '[]',
+      approved_permissions TEXT NOT NULL DEFAULT '[]',
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      confirmed_at TEXT,
+      used_at TEXT,
+      cancelled_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_pairings_state_expiry
+      ON rassilon_pairings(state, expires_at);
+
+    CREATE TABLE IF NOT EXISTS rassilon_sessions (
+      session_id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      last_seen_at TEXT,
+      FOREIGN KEY(device_id) REFERENCES rassilon_devices(device_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_sessions_device
+      ON rassilon_sessions(device_id, expires_at);
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_sessions_expiry
+      ON rassilon_sessions(expires_at, revoked_at);
+
+    CREATE TABLE IF NOT EXISTS rassilon_outbound_sessions (
+      worker_device_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rassilon_request_nonces (
+      session_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      PRIMARY KEY(session_id, nonce)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_request_nonces_expiry
+      ON rassilon_request_nonces(expires_at);
+
+    CREATE TABLE IF NOT EXISTS rassilon_remote_jobs (
+      job_id TEXT PRIMARY KEY,
+      worker_device_id TEXT NOT NULL,
+      controller_device_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      result_envelope TEXT,
+      error_reason TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rassilon_remote_jobs_status
+      ON rassilon_remote_jobs(status, updated_at DESC);
+  `);
+
   statements = {
     upsertPage: database.prepare(`
       INSERT INTO pages (id, data, updated_at)
@@ -5351,4 +5542,484 @@ export function stopOmegaInteractiveSession(sessionId) {
     UPDATE omega_interactive_sessions SET stopped_at = ? WHERE session_id = ? AND stopped_at IS NULL
   `).run(new Date().toISOString(), sessionId);
   return result.changes > 0;
+}
+
+// ── RASSILON V1 Phase 2 — local single-machine safe worker DB access ──────
+// rassilon_* only (see table comment above). Never touches omega_*/
+// maitre_*/monitor_*/cyber_* tables or vice versa.
+
+const RASSILON_SETTINGS_DEFAULTS = Object.freeze({
+  id: 1,
+  enabled: 0,
+  max_cpu_percent: 25,
+  max_ram_mb: 2048,
+  max_concurrent_jobs: 1,
+  max_job_duration_sec: 300,
+  max_scratch_mb: 1024,
+  pause_on_battery: 1,
+  minimum_battery_percent: 30,
+  pause_when_user_active: 1,
+  accepted_job_types: '[]',
+  approval_mode: 'ASK_EACH_JOB',
+});
+
+function parseRassilonSettingsRow(row) {
+  if (!row) return null;
+  return {
+    enabled: !!row.enabled,
+    maxCpuPercent: row.max_cpu_percent,
+    maxRamMb: row.max_ram_mb,
+    maxConcurrentJobs: row.max_concurrent_jobs,
+    maxJobDurationSec: row.max_job_duration_sec,
+    maxScratchMb: row.max_scratch_mb,
+    pauseOnBattery: !!row.pause_on_battery,
+    minimumBatteryPercent: row.minimum_battery_percent,
+    pauseWhenUserActive: !!row.pause_when_user_active,
+    acceptedJobTypes: (() => { try { return JSON.parse(row.accepted_job_types || '[]'); } catch { return []; } })(),
+    approvalMode: row.approval_mode,
+    updatedAt: row.updated_at,
+  };
+}
+
+// Ensures the single settings row (id=1) exists with hard-coded
+// conservative defaults (mission §5/§6) — never created with enabled=1.
+export function getRassilonSettings() {
+  if (!database) return parseRassilonSettingsRow(RASSILON_SETTINGS_DEFAULTS);
+  let row = database.prepare('SELECT * FROM rassilon_settings WHERE id = 1').get();
+  if (!row) {
+    database.prepare(`
+      INSERT INTO rassilon_settings (id, enabled, max_cpu_percent, max_ram_mb, max_concurrent_jobs, max_job_duration_sec, max_scratch_mb, pause_on_battery, minimum_battery_percent, pause_when_user_active, accepted_job_types, approval_mode)
+      VALUES (1, 0, @max_cpu_percent, @max_ram_mb, @max_concurrent_jobs, @max_job_duration_sec, @max_scratch_mb, @pause_on_battery, @minimum_battery_percent, @pause_when_user_active, @accepted_job_types, @approval_mode)
+    `).run(RASSILON_SETTINGS_DEFAULTS);
+    row = database.prepare('SELECT * FROM rassilon_settings WHERE id = 1').get();
+  }
+  return parseRassilonSettingsRow(row);
+}
+
+// Only these fields are ever mutable — `enabled` is intentionally excluded
+// here: it is flipped exclusively by setRassilonEnabled() below so every
+// enable/disable transition goes through one single, auditable choke
+// point rather than being a side effect of a generic settings PATCH
+// (mission §3/§31 — "ENABLE : action utilisateur explicite").
+const RASSILON_SETTINGS_MUTABLE_FIELDS = [
+  'max_cpu_percent', 'max_ram_mb', 'max_concurrent_jobs', 'max_job_duration_sec',
+  'max_scratch_mb', 'pause_on_battery', 'minimum_battery_percent', 'pause_when_user_active',
+  'accepted_job_types', 'approval_mode',
+];
+
+export function updateRassilonSettings(fields) {
+  if (!database) return null;
+  getRassilonSettings(); // ensure row exists
+  const keys = Object.keys(fields).filter(k => RASSILON_SETTINGS_MUTABLE_FIELDS.includes(k));
+  if (keys.length === 0) return getRassilonSettings();
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE rassilon_settings SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = 1`).run(fields);
+  return getRassilonSettings();
+}
+
+export function setRassilonEnabled(enabled) {
+  if (!database) return null;
+  getRassilonSettings(); // ensure row exists
+  database.prepare('UPDATE rassilon_settings SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1').run(enabled ? 1 : 0);
+  return getRassilonSettings();
+}
+
+export function upsertRassilonIdentity({ deviceId, publicKeyPem, fingerprint }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO rassilon_identity (device_id, public_key_pem, fingerprint, created_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(device_id) DO UPDATE SET public_key_pem = excluded.public_key_pem, fingerprint = excluded.fingerprint
+  `).run(deviceId, publicKeyPem, fingerprint);
+}
+
+export function getRassilonIdentity(deviceId) {
+  if (!database) return null;
+  return database.prepare('SELECT * FROM rassilon_identity WHERE device_id = ? AND revoked_at IS NULL').get(deviceId) ?? null;
+}
+
+export function listRassilonIdentities() {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM rassilon_identity ORDER BY created_at ASC').all();
+}
+
+export function revokeRassilonIdentity(deviceId) {
+  if (!database) return false;
+  const result = database.prepare('UPDATE rassilon_identity SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL')
+    .run(new Date().toISOString(), deviceId);
+  return result.changes > 0;
+}
+
+function parseRassilonJobRow(row) {
+  if (!row) return null;
+  return {
+    jobId: row.job_id,
+    jobType: row.job_type,
+    issuerDeviceId: row.issuer_device_id,
+    status: row.status,
+    resourceBudget: (() => { try { return JSON.parse(row.resource_budget || '{}'); } catch { return {}; } })(),
+    payloadSummary: (() => { try { return JSON.parse(row.payload_summary || '{}'); } catch { return {}; } })(),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    errorReason: row.error_reason,
+    resultSummary: (() => { try { return JSON.parse(row.result_summary || '{}'); } catch { return {}; } })(),
+    policyVersion: row.policy_version,
+  };
+}
+
+// Inserted at RECEIVED with a UNIQUE PRIMARY KEY on job_id — a duplicate
+// jobId throws (SQLITE_CONSTRAINT), which insertRassilonJob's caller (the
+// anti-replay check in rassilon-worker.js) treats as "already processed,
+// reject" rather than silently overwriting the prior row (mission §17).
+export function insertRassilonJob(row) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO rassilon_jobs (job_id, job_type, issuer_device_id, status, resource_budget, payload_summary, created_at, expires_at, policy_version)
+    VALUES (@job_id, @job_type, @issuer_device_id, @status, @resource_budget, @payload_summary, CURRENT_TIMESTAMP, @expires_at, @policy_version)
+  `).run(row);
+  return getRassilonJobById(row.job_id);
+}
+
+export function getRassilonJobById(jobId) {
+  if (!database) return null;
+  return parseRassilonJobRow(database.prepare('SELECT * FROM rassilon_jobs WHERE job_id = ?').get(jobId));
+}
+
+export function listRassilonJobs({ limit = 50, offset = 0, status = null } = {}) {
+  if (!database) return [];
+  const rows = status
+    ? database.prepare('SELECT * FROM rassilon_jobs WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?').all(status, limit, offset)
+    : database.prepare('SELECT * FROM rassilon_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset);
+  return rows.map(parseRassilonJobRow);
+}
+
+export function listRassilonJobsByStatuses(statuses) {
+  if (!database || !Array.isArray(statuses) || statuses.length === 0) return [];
+  const placeholders = statuses.map(() => '?').join(',');
+  return database.prepare(`SELECT * FROM rassilon_jobs WHERE status IN (${placeholders}) ORDER BY created_at ASC`)
+    .all(...statuses).map(parseRassilonJobRow);
+}
+
+const RASSILON_JOB_MUTABLE_FIELDS = ['status', 'started_at', 'completed_at', 'error_reason', 'result_summary'];
+
+export function updateRassilonJob(jobId, fields) {
+  if (!database) return null;
+  const keys = Object.keys(fields).filter(k => RASSILON_JOB_MUTABLE_FIELDS.includes(k));
+  if (keys.length === 0) return getRassilonJobById(jobId);
+  const setClause = keys.map(k => `${k} = @${k}`).join(', ');
+  database.prepare(`UPDATE rassilon_jobs SET ${setClause} WHERE job_id = @job_id`).run({ ...fields, job_id: jobId });
+  return getRassilonJobById(jobId);
+}
+
+export function insertRassilonAudit({ eventType, jobId = null, issuerDeviceId = null, resultSummary = {} }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO rassilon_audit (created_at, event_type, job_id, issuer_device_id, result_summary)
+    VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?)
+  `).run(eventType, jobId, issuerDeviceId, JSON.stringify(resultSummary ?? {}));
+}
+
+export function listRassilonAudit({ limit = 200, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM rassilon_audit ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?').all(limit, offset);
+}
+
+// -- RASSILON Phase 4: LAN device trust, pairing, sessions and controller jobs.
+
+export function getRassilonLocalDevice() {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM rassilon_local_device WHERE id = 1').get();
+  return row ? { deviceId: row.device_id, displayName: row.display_name, createdAt: row.created_at } : null;
+}
+
+export function setRassilonLocalDevice({ deviceId, displayName }) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO rassilon_local_device (id, device_id, display_name)
+    VALUES (1, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name
+  `).run(deviceId, displayName);
+  return getRassilonLocalDevice();
+}
+
+export function getRassilonLanSettings() {
+  if (!database) return { enabled: false, bindAddress: null, port: 3443, updatedAt: null };
+  database.prepare('INSERT OR IGNORE INTO rassilon_lan_settings (id) VALUES (1)').run();
+  const row = database.prepare('SELECT * FROM rassilon_lan_settings WHERE id = 1').get();
+  return { enabled: !!row.enabled, bindAddress: row.bind_address, port: row.port, updatedAt: row.updated_at };
+}
+
+export function setRassilonLanSettings({ enabled, bindAddress = null, port = 3443 }) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO rassilon_lan_settings (id, enabled, bind_address, port, updated_at)
+    VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, bind_address = excluded.bind_address,
+      port = excluded.port, updated_at = CURRENT_TIMESTAMP
+  `).run(enabled ? 1 : 0, bindAddress, port);
+  return getRassilonLanSettings();
+}
+
+function parseRassilonDeviceRow(row) {
+  if (!row) return null;
+  const parse = (value, fallback) => { try { return JSON.parse(value || ''); } catch { return fallback; } };
+  return {
+    deviceId: row.device_id,
+    displayName: row.display_name,
+    publicKeyPem: row.public_key_pem,
+    fingerprint: row.fingerprint,
+    role: row.role,
+    permissionSet: parse(row.permission_set, []),
+    endpointHost: row.endpoint_host,
+    endpointPort: row.endpoint_port,
+    tlsCertificatePem: row.tls_certificate_pem,
+    tlsCertificateFingerprint: row.tls_certificate_fingerprint,
+    capabilities: parse(row.capabilities, {}),
+    status: row.revoked_at ? 'REVOKED' : row.status,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+export function upsertRassilonDevice(device) {
+  if (!database) return null;
+  database.prepare(`
+    INSERT INTO rassilon_devices (
+      device_id, display_name, public_key_pem, fingerprint, role, permission_set,
+      endpoint_host, endpoint_port, tls_certificate_pem, tls_certificate_fingerprint,
+      capabilities, status, created_at, last_seen_at, revoked_at
+    ) VALUES (
+      @deviceId, @displayName, @publicKeyPem, @fingerprint, @role, @permissionSet,
+      @endpointHost, @endpointPort, @tlsCertificatePem, @tlsCertificateFingerprint,
+      @capabilities, @status, CURRENT_TIMESTAMP, @lastSeenAt, NULL
+    ) ON CONFLICT(device_id) DO UPDATE SET
+      display_name = excluded.display_name,
+      public_key_pem = excluded.public_key_pem,
+      fingerprint = excluded.fingerprint,
+      role = excluded.role,
+      permission_set = excluded.permission_set,
+      endpoint_host = excluded.endpoint_host,
+      endpoint_port = excluded.endpoint_port,
+      tls_certificate_pem = excluded.tls_certificate_pem,
+      tls_certificate_fingerprint = excluded.tls_certificate_fingerprint,
+      capabilities = excluded.capabilities,
+      status = excluded.status,
+      last_seen_at = excluded.last_seen_at,
+      revoked_at = NULL
+  `).run({
+    ...device,
+    permissionSet: JSON.stringify(device.permissionSet ?? []),
+    capabilities: JSON.stringify(device.capabilities ?? {}),
+    endpointHost: device.endpointHost ?? null,
+    endpointPort: device.endpointPort ?? null,
+    tlsCertificatePem: device.tlsCertificatePem ?? null,
+    tlsCertificateFingerprint: device.tlsCertificateFingerprint ?? null,
+    status: device.status ?? 'OFFLINE',
+    lastSeenAt: device.lastSeenAt ?? null,
+  });
+  return getRassilonDevice(device.deviceId, { includeRevoked: true });
+}
+
+export function getRassilonDevice(deviceId, { includeRevoked = false } = {}) {
+  if (!database) return null;
+  const sql = `SELECT * FROM rassilon_devices WHERE device_id = ?${includeRevoked ? '' : ' AND revoked_at IS NULL'}`;
+  return parseRassilonDeviceRow(database.prepare(sql).get(deviceId));
+}
+
+export function listRassilonDevices({ includeRevoked = true } = {}) {
+  if (!database) return [];
+  const sql = `SELECT * FROM rassilon_devices${includeRevoked ? '' : ' WHERE revoked_at IS NULL'} ORDER BY created_at ASC`;
+  return database.prepare(sql).all().map(parseRassilonDeviceRow);
+}
+
+export function updateRassilonDevicePresence(deviceId, { status, capabilities, lastSeenAt = new Date().toISOString() }) {
+  if (!database) return null;
+  database.prepare(`UPDATE rassilon_devices SET status = ?, capabilities = ?, last_seen_at = ?
+    WHERE device_id = ? AND revoked_at IS NULL`).run(status, JSON.stringify(capabilities ?? {}), lastSeenAt, deviceId);
+  return getRassilonDevice(deviceId);
+}
+
+export function revokeRassilonDevice(deviceId) {
+  if (!database) return false;
+  const now = new Date().toISOString();
+  const transaction = database.transaction(() => {
+    const result = database.prepare(`UPDATE rassilon_devices SET revoked_at = ?, status = 'REVOKED'
+      WHERE device_id = ? AND revoked_at IS NULL`).run(now, deviceId);
+    database.prepare('UPDATE rassilon_sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL').run(now, deviceId);
+    database.prepare('UPDATE rassilon_outbound_sessions SET revoked_at = ? WHERE worker_device_id = ? AND revoked_at IS NULL').run(now, deviceId);
+    return result.changes > 0;
+  });
+  return transaction();
+}
+
+function parseRassilonPairingRow(row) {
+  if (!row) return null;
+  const parse = value => { try { return JSON.parse(value || '[]'); } catch { return []; } };
+  return {
+    pairingId: row.pairing_id, state: row.state, codeHash: row.code_hash,
+    workerNonce: row.worker_nonce, controllerNonce: row.controller_nonce,
+    controllerDeviceId: row.controller_device_id, controllerPublicKeyPem: row.controller_public_key_pem,
+    controllerFingerprint: row.controller_fingerprint, controllerDisplayName: row.controller_display_name,
+    requestedPermissions: parse(row.requested_permissions), approvedPermissions: parse(row.approved_permissions),
+    expiresAt: row.expires_at, createdAt: row.created_at, confirmedAt: row.confirmed_at,
+    usedAt: row.used_at, cancelledAt: row.cancelled_at,
+  };
+}
+
+export function insertRassilonPairing(pairing) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO rassilon_pairings (
+    pairing_id, state, code_hash, worker_nonce, requested_permissions, approved_permissions, expires_at
+  ) VALUES (?, 'STARTED', ?, ?, '[]', '[]', ?)`)
+    .run(pairing.pairingId, pairing.codeHash, pairing.workerNonce, pairing.expiresAt);
+  return getRassilonPairing(pairing.pairingId);
+}
+
+export function getRassilonPairing(pairingId) {
+  if (!database) return null;
+  return parseRassilonPairingRow(database.prepare('SELECT * FROM rassilon_pairings WHERE pairing_id = ?').get(pairingId));
+}
+
+const RASSILON_PAIRING_FIELDS = new Set([
+  'state', 'controller_nonce', 'controller_device_id', 'controller_public_key_pem',
+  'controller_fingerprint', 'controller_display_name', 'requested_permissions',
+  'approved_permissions', 'confirmed_at', 'used_at', 'cancelled_at',
+]);
+
+export function updateRassilonPairing(pairingId, fields) {
+  if (!database) return null;
+  const keys = Object.keys(fields).filter(key => RASSILON_PAIRING_FIELDS.has(key));
+  if (keys.length === 0) return getRassilonPairing(pairingId);
+  database.prepare(`UPDATE rassilon_pairings SET ${keys.map(key => `${key} = @${key}`).join(', ')} WHERE pairing_id = @pairing_id`)
+    .run({ ...fields, pairing_id: pairingId });
+  return getRassilonPairing(pairingId);
+}
+
+export function createRassilonSession({ sessionId, deviceId, expiresAt }) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO rassilon_sessions (session_id, device_id, expires_at) VALUES (?, ?, ?)`)
+    .run(sessionId, deviceId, expiresAt);
+  return getRassilonSession(sessionId);
+}
+
+export function getRassilonSession(sessionId) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM rassilon_sessions WHERE session_id = ?').get(sessionId);
+  return row ? {
+    sessionId: row.session_id, deviceId: row.device_id, createdAt: row.created_at,
+    expiresAt: row.expires_at, revokedAt: row.revoked_at, lastSeenAt: row.last_seen_at,
+  } : null;
+}
+
+/**
+ * UI-safe session metadata for the local control plane. Session IDs are
+ * deliberately omitted: the UI only needs age/expiry/last-seen state and
+ * must never receive authentication material.
+ */
+export function getRassilonDeviceSessionView(deviceId) {
+  if (!database) return null;
+  const inbound = database.prepare(`SELECT created_at, expires_at, revoked_at, last_seen_at
+    FROM rassilon_sessions WHERE device_id = ? ORDER BY created_at DESC LIMIT 1`).get(deviceId);
+  const outbound = database.prepare(`SELECT created_at, expires_at, revoked_at, NULL AS last_seen_at
+    FROM rassilon_outbound_sessions WHERE worker_device_id = ? ORDER BY created_at DESC LIMIT 1`).get(deviceId);
+  const row = inbound ?? outbound;
+  if (!row) return null;
+  const now = Date.now();
+  return {
+    direction: inbound ? 'INBOUND' : 'OUTBOUND',
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    lastSeenAt: row.last_seen_at,
+    active: !row.revoked_at && Date.parse(row.expires_at) > now,
+    revokedAt: row.revoked_at,
+  };
+}
+
+export function touchRassilonSession(sessionId, at = new Date().toISOString()) {
+  if (!database) return;
+  const transaction = database.transaction(() => {
+    database.prepare('UPDATE rassilon_sessions SET last_seen_at = ? WHERE session_id = ? AND revoked_at IS NULL').run(at, sessionId);
+    database.prepare(`UPDATE rassilon_devices SET last_seen_at = ?, status = 'ONLINE'
+      WHERE device_id = (SELECT device_id FROM rassilon_sessions WHERE session_id = ?) AND revoked_at IS NULL`).run(at, sessionId);
+  });
+  transaction();
+}
+
+export function revokeRassilonSessionsForDevice(deviceId) {
+  if (!database) return 0;
+  return database.prepare('UPDATE rassilon_sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL')
+    .run(new Date().toISOString(), deviceId).changes;
+}
+
+export function revokeAllRassilonSessions() {
+  if (!database) return 0;
+  const now = new Date().toISOString();
+  const transaction = database.transaction(() => {
+    const inbound = database.prepare('UPDATE rassilon_sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(now).changes;
+    const outbound = database.prepare('UPDATE rassilon_outbound_sessions SET revoked_at = ? WHERE revoked_at IS NULL').run(now).changes;
+    return inbound + outbound;
+  });
+  return transaction();
+}
+
+export function upsertRassilonOutboundSession({ workerDeviceId, sessionId, expiresAt }) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO rassilon_outbound_sessions (worker_device_id, session_id, expires_at, revoked_at)
+    VALUES (?, ?, ?, NULL)
+    ON CONFLICT(worker_device_id) DO UPDATE SET session_id = excluded.session_id,
+      created_at = CURRENT_TIMESTAMP, expires_at = excluded.expires_at, revoked_at = NULL`)
+    .run(workerDeviceId, sessionId, expiresAt);
+  return getRassilonOutboundSession(workerDeviceId);
+}
+
+export function getRassilonOutboundSession(workerDeviceId) {
+  if (!database) return null;
+  const row = database.prepare(`SELECT * FROM rassilon_outbound_sessions
+    WHERE worker_device_id = ? AND revoked_at IS NULL`).get(workerDeviceId);
+  return row ? { workerDeviceId: row.worker_device_id, sessionId: row.session_id, createdAt: row.created_at, expiresAt: row.expires_at, revokedAt: row.revoked_at } : null;
+}
+
+export function revokeRassilonOutboundSession(workerDeviceId) {
+  if (!database) return false;
+  return database.prepare('UPDATE rassilon_outbound_sessions SET revoked_at = ? WHERE worker_device_id = ? AND revoked_at IS NULL')
+    .run(new Date().toISOString(), workerDeviceId).changes > 0;
+}
+
+export function consumeRassilonRequestNonce({ sessionId, nonce, expiresAt }) {
+  if (!database) return false;
+  const transaction = database.transaction(() => {
+    database.prepare('DELETE FROM rassilon_request_nonces WHERE expires_at <= ?').run(new Date().toISOString());
+    try {
+      database.prepare('INSERT INTO rassilon_request_nonces (session_id, nonce, expires_at) VALUES (?, ?, ?)')
+        .run(sessionId, nonce, expiresAt);
+      return true;
+    } catch { return false; }
+  });
+  return transaction();
+}
+
+export function upsertRassilonRemoteJob({ jobId, workerDeviceId, controllerDeviceId, status, resultEnvelope = null, errorReason = null }) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO rassilon_remote_jobs (
+    job_id, worker_device_id, controller_device_id, status, result_envelope, error_reason
+  ) VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(job_id) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP,
+    result_envelope = excluded.result_envelope, error_reason = excluded.error_reason`)
+    .run(jobId, workerDeviceId, controllerDeviceId, status, resultEnvelope ? JSON.stringify(resultEnvelope) : null, errorReason);
+  return getRassilonRemoteJob(jobId);
+}
+
+export function getRassilonRemoteJob(jobId) {
+  if (!database) return null;
+  const row = database.prepare('SELECT * FROM rassilon_remote_jobs WHERE job_id = ?').get(jobId);
+  if (!row) return null;
+  return {
+    jobId: row.job_id, workerDeviceId: row.worker_device_id, controllerDeviceId: row.controller_device_id,
+    status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
+    resultEnvelope: (() => { try { return JSON.parse(row.result_envelope); } catch { return null; } })(),
+    errorReason: row.error_reason,
+  };
 }

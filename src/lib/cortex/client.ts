@@ -1907,11 +1907,182 @@ export interface TeacherStats {
   paths_abandoned: number;
 }
 
+export type RassilonWorkerState = 'DISABLED' | 'IDLE' | 'WORKING' | 'PAUSED' | 'AUTO_PAUSED' | 'ERROR';
+
+export interface RassilonSettings {
+  enabled: boolean;
+  maxCpuPercent: number;
+  maxRamMb: number;
+  maxConcurrentJobs: number;
+  maxJobDurationSec: number;
+  maxScratchMb: number;
+  pauseOnBattery: boolean;
+  minimumBatteryPercent: number;
+  pauseWhenUserActive: boolean;
+  acceptedJobTypes: Array<'SAFE_CPU_TASK' | 'EMBEDDING_BATCH'>;
+  approvalMode: 'ASK_EACH_JOB' | 'AUTO_ACCEPT_ALLOWED_TYPES';
+  updatedAt: string | null;
+}
+
+export interface RassilonStatus {
+  ok: boolean;
+  state: RassilonWorkerState;
+  enabled: boolean;
+  queueDepth: number;
+  activeJob: { jobId: string; jobType: string | null; startedAt: string } | null;
+  remoteController: { deviceId: string; displayName: string; fingerprint: string } | null;
+  settings: RassilonSettings;
+  error: { code: string; message: string; timestamp: string } | null;
+}
+
+export interface RassilonLanStatus {
+  state: 'DISABLED' | 'STARTING' | 'LISTENING' | 'ERROR';
+  error: string | null;
+  bindAddress: string | null;
+  port: number | null;
+  certificateFingerprint: string | null;
+}
+
+export interface RassilonDevice {
+  deviceId: string;
+  displayName: string;
+  fingerprint: string;
+  role: 'CONTROLLER' | 'WORKER' | 'BOTH';
+  permissions: string[];
+  status: string;
+  presence: 'ONLINE' | 'STALE' | 'OFFLINE' | 'REVOKED';
+  createdAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+  session: {
+    direction: 'INBOUND' | 'OUTBOUND';
+    createdAt: string;
+    expiresAt: string;
+    lastSeenAt: string | null;
+    active: boolean;
+    revokedAt: string | null;
+  } | null;
+}
+
+export interface RassilonPairingOffer {
+  pairingId: string;
+  code: string;
+  expiresAt: string;
+  workerNonce: string;
+  worker: { deviceId: string; displayName: string; fingerprint: string };
+}
+
+export interface RassilonPairingView {
+  pairingId: string;
+  state: string;
+  controllerDeviceId: string | null;
+  controllerDisplayName: string | null;
+  controllerFingerprint: string | null;
+  requestedPermissions: string[];
+  approvedPermissions: string[];
+  createdAt: string;
+  expiresAt: string;
+  confirmedAt: string | null;
+  usedAt: string | null;
+  cancelledAt: string | null;
+}
+
+export interface RassilonAuditEvent {
+  id: number;
+  eventType: string;
+  deviceId: string | null;
+  jobId: string | null;
+  jobType: string | null;
+  timestamp: string;
+  status: 'OK' | 'INFO' | 'ERROR';
+}
+
+async function rassilonJson<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await apiFetch(`/api/rassilon${path}`, {
+    method,
+    ...(body === undefined ? {} : {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  }, 15_000);
+  const data = await res.json().catch(() => ({ error: `HTTP_${res.status}` })) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `RASSILON HTTP ${res.status}`);
+  return data;
+}
+
 // ── Singleton client ───────────────────────────────────────────────────────
 
 export const cortexClient = {
   get isAvailable(): boolean { return _available; },
   get lastCheck(): Date | null { return _lastCheck; },
+
+  rassilonStatus(): Promise<RassilonStatus> {
+    return rassilonJson<RassilonStatus>('/status');
+  },
+
+  rassilonLanStatus(): Promise<{ ok: boolean; lan: RassilonLanStatus }> {
+    return rassilonJson('/lan/status');
+  },
+
+  rassilonDevices(): Promise<{ ok: boolean; devices: RassilonDevice[] }> {
+    return rassilonJson('/devices');
+  },
+
+  rassilonAudit(limit = 50): Promise<{ ok: boolean; events: RassilonAuditEvent[] }> {
+    return rassilonJson(`/audit?limit=${Math.max(1, Math.min(200, Math.trunc(limit)))}`);
+  },
+
+  rassilonEnable(settings: Omit<RassilonSettings, 'enabled' | 'updatedAt'>): Promise<RassilonStatus> {
+    return rassilonJson('/enable', 'POST', settings);
+  },
+
+  rassilonDisable(): Promise<RassilonStatus> {
+    return rassilonJson('/disable', 'POST', {});
+  },
+
+  rassilonPause(): Promise<RassilonStatus> {
+    return rassilonJson('/pause', 'POST', {});
+  },
+
+  rassilonResume(): Promise<RassilonStatus> {
+    return rassilonJson('/resume', 'POST', {});
+  },
+
+  rassilonStop(): Promise<RassilonStatus> {
+    return rassilonJson('/stop', 'POST', {});
+  },
+
+  rassilonUpdateSettings(settings: Partial<Omit<RassilonSettings, 'enabled' | 'updatedAt'>>): Promise<{ ok: boolean; settings: RassilonSettings }> {
+    return rassilonJson('/settings', 'PUT', settings);
+  },
+
+  rassilonLanEnable(input: { bindAddress: string; port: number; networkProfile: 'Private' | 'Unknown'; allowUnknownNetworkProfile: boolean }): Promise<{ ok: boolean; lan: RassilonLanStatus }> {
+    return rassilonJson('/lan/enable', 'POST', input);
+  },
+
+  rassilonLanDisable(): Promise<{ ok: boolean; lan: RassilonLanStatus }> {
+    return rassilonJson('/lan/disable', 'POST', {});
+  },
+
+  rassilonStartPairing(): Promise<{ ok: boolean; pairing: RassilonPairingOffer }> {
+    return rassilonJson('/pairing/start', 'POST', {});
+  },
+
+  rassilonPairing(pairingId: string): Promise<{ ok: boolean; pairing: RassilonPairingView }> {
+    return rassilonJson(`/pairing/${encodeURIComponent(pairingId)}`);
+  },
+
+  rassilonConfirmPairing(pairingId: string, approvedPermissions: string[]): Promise<{ ok: boolean; pairing: RassilonPairingView }> {
+    return rassilonJson(`/pairing/${encodeURIComponent(pairingId)}/confirm`, 'POST', { approvedPermissions });
+  },
+
+  rassilonRejectPairing(pairingId: string): Promise<{ ok: boolean; pairing: RassilonPairingView }> {
+    return rassilonJson(`/pairing/${encodeURIComponent(pairingId)}/reject`, 'POST', {});
+  },
+
+  rassilonRevokeDevice(deviceId: string): Promise<{ ok: boolean; revoked: boolean; cancelledJobs: number }> {
+    return rassilonJson(`/devices/${encodeURIComponent(deviceId)}/revoke`, 'POST', {});
+  },
 
   async health(): Promise<HealthStatus> {
     try {

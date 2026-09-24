@@ -26,6 +26,21 @@ data-test-*/
 # ── TLS certificates (mobile/HTTPS dev mode) ─────────────────────────────────
 certs/
 
+# ── Private key / TLS material and SQLite files anywhere ─────────────────────
+# RASSILON_LAN_TLS_KEY_PATH / RASSILON_LAN_TLS_CERT_PATH and SQLITE_PATH can
+# point outside certs/ and cortex-server/data/; no such file is tracked.
+*.key
+*.pem
+*.pfx
+*.p12
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
 # ── Dependencies ──────────────────────────────────────────────────────────
 node_modules/
 cortex-server/bin/*.exe

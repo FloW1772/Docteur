@@ -10,6 +10,7 @@ import { ImagesSettingsTab } from '../settings/ImagesSettingsTab';
 import { MemorySettingsTab } from '../settings/MemorySettingsTab';
 import { ConnectionsSettingsTab } from '../settings/ConnectionsSettingsTab';
 import { OpenMontageSettingsTab } from '../settings/OpenMontageSettingsTab';
+import { RassilonSettingsTab } from '../settings/RassilonSettingsTab';
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
 import VoiceSettingsSection, { type VoiceRuntime } from '../settings/VoiceSettingsSection';
@@ -47,7 +48,7 @@ function formatCooldown(ms: number): string {
 }
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-export type Tab = 'models' | 'stats' | 'privacy' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections' | 'video';
+export type Tab = 'models' | 'stats' | 'privacy' | 'rassilon' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections' | 'video';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -770,10 +771,10 @@ export default function SettingsModal({
           <Cpu size={15} style={{ color: '#3dffaa', flexShrink: 0 }} />
           <div className="flex-1">
             <h3 className="font-grotesk font-semibold text-base" style={{ color: '#f0eaff' }}>
-              {tab === 'vocal' ? 'Paramètres — Voix & microphone' : 'Paramètres — Router intelligent'}
+              {tab === 'vocal' ? 'Paramètres — Voix & microphone' : tab === 'rassilon' ? 'RASSILON — Calcul local & LAN sécurisé' : 'Paramètres — Router intelligent'}
             </h3>
             <p className="font-mono text-xs mt-0.5" style={{ color: '#7a6c9a' }}>
-              {tab === 'vocal' ? 'Alt+M · Dictée, commandes et lecture' : 'Ctrl+, · Sélection automatique du LLM selon la complexité'}
+              {tab === 'vocal' ? 'Alt+M · Dictée, commandes et lecture' : tab === 'rassilon' ? 'Autorité locale · consentement visible · STOP prioritaire' : 'Ctrl+, · Sélection automatique du LLM selon la complexité'}
             </p>
           </div>
           <button type="button" aria-label="Fermer les paramètres" style={{ color: '#5a4a7a' }} onClick={onClose}>
@@ -783,7 +784,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'images', 'video', 'connections', 'stats', 'privacy', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
+          {(['models', 'images', 'video', 'connections', 'stats', 'privacy', 'rassilon', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -795,7 +796,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOIX & MICRO' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'rassilon' ? 'RASSILON' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOIX & MICRO' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -807,13 +808,14 @@ export default function SettingsModal({
           {tab === 'memory' && <MemorySettingsTab />}
           {tab === 'connections' && <ConnectionsSettingsTab />}
           {tab === 'video' && <OpenMontageSettingsTab />}
-          {loading && (
+          {tab === 'rassilon' && <RassilonSettingsTab />}
+          {tab !== 'rassilon' && loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />
             </div>
           )}
 
-          {!loading && error && (
+          {tab !== 'rassilon' && !loading && error && (
             <div className="flex flex-col items-center gap-3 py-10">
               <AlertTriangle size={18} style={{ color: '#ff4d58' }} />
               <p className="font-mono text-xs" style={{ color: '#ff4d58' }}>{error}</p>
