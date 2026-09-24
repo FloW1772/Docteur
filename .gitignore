@@ -122,3 +122,5 @@ Desktop.ini
 
 # Sherlock dedicated environment: dependencies and temporary setup HOME.
 external/Sherlock-runtime/
+/external/MetaGPT/
+/external/OpenMontage/
