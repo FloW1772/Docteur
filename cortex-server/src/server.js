@@ -56,6 +56,8 @@ import { createCyberAuditRoute } from './routes/cyber-audit.js';
 import { createMonitorRoute } from './routes/monitor.js';
 import { createMaitreRoute } from './routes/maitre.js';
 import { createRassilonRoute } from './routes/rassilon.js';
+import { createDeviceFabricRoute } from './routes/device-fabric.js';
+import { recoverInterruptedFabricOperations } from './lib/device-fabric-routing.js';
 import { initRassilonWorker } from './lib/rassilon-worker.js';
 import { initRassilonScratch } from './lib/rassilon-scratch.js';
 import { configureRassilonLanServer, restoreRassilonLanServer, stopRassilonLanServer } from './lib/rassilon-lan-server.js';
@@ -1781,6 +1783,10 @@ app.route('/api', createCyberAuditRoute({ logger }));
 app.route('/api', createMonitorRoute({ logger, ollamaClient, ollamaModel: env.ANSWER_MODEL }));
 app.route('/api', createMaitreRoute({ logger, ollamaClient, ollamaModel: env.ANSWER_MODEL }));
 app.route('/api', createRassilonRoute({ logger }));
+// Device Fabric operations left running by a previous process are closed as
+// FAILED (interrupted); their RASSILON jobs are never resumed or re-sent.
+recoverInterruptedFabricOperations();
+app.route('/api', createDeviceFabricRoute({ logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));

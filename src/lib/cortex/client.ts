@@ -1997,6 +1997,143 @@ export interface RassilonAuditEvent {
   status: 'OK' | 'INFO' | 'ERROR';
 }
 
+// ── Device Fabric (Phase 2: inventory + explicit linking, no routing) ───────
+
+export type FabricAgentType = 'OMEGA' | 'RASSILON';
+export type FabricTri = 'YES' | 'NO' | 'UNKNOWN';
+export type FabricTrust = 'TRUSTED' | 'REVOKED' | 'UNKNOWN';
+export type FabricAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'UNKNOWN' | 'ERROR';
+export type FabricDeviceState = 'ONLINE' | 'PARTIAL' | 'OFFLINE' | 'UNKNOWN' | 'ERROR';
+export type FabricDirection = 'REMOTE_ACTS_ON_THIS_PC' | 'THIS_PC_SENDS_COMPUTE' | 'DEVICE_SENDS_COMPUTE' | 'LOCAL_WORKER';
+export type FabricLinkState = 'OK' | 'MISSING' | 'FINGERPRINT_MISMATCH' | 'CROSS_AGENT_KEY_REUSE' | 'AGENT_ERROR';
+
+// RASSILON presence as last verified by an authenticated exchange, and the
+// outbound session state (no identifier, only state + expiry).
+export interface FabricPresence {
+  state: 'VERIFIED' | 'STALE' | 'NOT_VERIFIED' | 'REVOKED';
+  lastVerifiedAt: string | null;
+  ageMs: number | null;
+  freshnessWindowMs: number;
+}
+
+export interface FabricSession {
+  state: 'VALID' | 'EXPIRING' | 'EXPIRED' | 'REVOKED' | 'NONE' | 'UNKNOWN';
+  expiresAt: string | null;
+  expiresInMs: number | null;
+}
+
+export interface FabricCapability {
+  name: string;
+  supported: FabricTri;
+  authorized: FabricTri;
+  available: FabricTri;
+  routable: boolean;
+}
+
+export interface FabricAgentIdentity {
+  agentType: FabricAgentType;
+  agentDeviceId: string;
+  displayName: string;
+  fingerprint: string | null;
+  role: string;
+  trust: FabricTrust;
+  revokedAt: string | null;
+  lastSessionAt?: string | null;
+  lastSeenAt?: string | null;
+  permissionLevel?: number | null;
+  linkedFabricDeviceId?: string | null;
+}
+
+export interface FabricAgentLink {
+  agentType: FabricAgentType;
+  agentDeviceId: string;
+  linkedFingerprint: string;
+  linkedAt: string;
+  linkState: FabricLinkState;
+  trust: FabricTrust;
+  availability: FabricAvailability;
+  routable: boolean;
+  routingStatus: 'READY' | 'NOT_AVAILABLE' | 'NOT_ROUTABLE';
+  routingReason: string | null;
+  identity: FabricAgentIdentity | null;
+  directions: Array<{ direction: FabricDirection; availability?: FabricAvailability; capabilities: FabricCapability[]; presence?: FabricPresence; session?: FabricSession }>;
+}
+
+export interface FabricDevice {
+  fabricDeviceId: string;
+  displayName: string;
+  createdAt: string;
+  updatedAt: string;
+  state: FabricDeviceState;
+  agents: { OMEGA: FabricAgentLink | null; RASSILON: FabricAgentLink | null };
+}
+
+export interface FabricAuditEvent {
+  id: number;
+  createdAt: string;
+  eventType: string;
+  fabricDeviceId: string | null;
+  agentType: FabricAgentType | null;
+  agentDeviceId: string | null;
+  reason: string | null;
+  operationId?: string | null;
+  correlationId?: string | null;
+}
+
+export type FabricActionType = 'RASSILON_SAFE_CPU' | 'RASSILON_EMBEDDING';
+export type FabricOperationStatus = 'PENDING' | 'ROUTING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'NOT_AVAILABLE';
+
+export interface FabricOperation {
+  operationId: string;
+  correlationId: string;
+  fabricDeviceId: string;
+  agentType: 'RASSILON';
+  agentDeviceId: string;
+  actionType: FabricActionType;
+  jobType: 'SAFE_CPU_TASK' | 'EMBEDDING_BATCH';
+  agentOperationId: string | null;
+  status: FabricOperationStatus;
+  inputSummary: Record<string, unknown>;
+  resultSummary: Record<string, unknown> | null;
+  safeError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  updatedAt: string;
+}
+
+export interface FabricRouteRequest {
+  fabricDeviceId: string;
+  actionType: FabricActionType;
+  semanticPayload: Record<string, unknown>;
+}
+
+async function deviceFabricJson<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await apiFetch(`/api/device-fabric${path}`, {
+    method,
+    ...(body === undefined ? {} : {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  }, 15_000);
+  const data = await res.json().catch(() => ({ error: `HTTP_${res.status}` })) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `DEVICE_FABRIC HTTP ${res.status}`);
+  return data;
+}
+
+// Routing and probe must never be sent twice: a single attempt, no network
+// retry (apiFetch retries on network errors, which could duplicate a job).
+async function deviceFabricPostOnce<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchTimeout(`${BASE}/api/device-fabric${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, 30_000);
+  const data = await res.json().catch(() => ({ error: `HTTP_${res.status}` })) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `DEVICE_FABRIC HTTP ${res.status}`);
+  return data;
+}
+
 async function rassilonJson<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const res = await apiFetch(`/api/rassilon${path}`, {
     method,
@@ -2082,6 +2219,52 @@ export const cortexClient = {
 
   rassilonRevokeDevice(deviceId: string): Promise<{ ok: boolean; revoked: boolean; cancelledJobs: number }> {
     return rassilonJson(`/devices/${encodeURIComponent(deviceId)}/revoke`, 'POST', {});
+  },
+
+  deviceFabricDevices(): Promise<{ ok: boolean; devices: FabricDevice[] }> {
+    return deviceFabricJson('/devices');
+  },
+
+  deviceFabricAgents(): Promise<{ ok: boolean; agents: Record<FabricAgentType, FabricAgentIdentity[]>; agentErrors?: Partial<Record<FabricAgentType, string>> }> {
+    return deviceFabricJson('/agents');
+  },
+
+  deviceFabricAudit(limit = 30): Promise<{ ok: boolean; events: FabricAuditEvent[] }> {
+    return deviceFabricJson(`/audit?limit=${Math.max(1, Math.min(500, Math.trunc(limit)))}`);
+  },
+
+  deviceFabricCreate(displayName: string): Promise<{ ok: boolean; device: FabricDevice }> {
+    return deviceFabricJson('/devices', 'POST', { displayName });
+  },
+
+  deviceFabricRename(fabricDeviceId: string, displayName: string): Promise<{ ok: boolean; device: FabricDevice }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}`, 'PATCH', { displayName });
+  },
+
+  deviceFabricRemove(fabricDeviceId: string, confirmLinks: boolean): Promise<{ ok: boolean; removed: boolean }> {
+    const query = confirmLinks ? '?confirm=REMOVE_LINKS' : '';
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}${query}`, 'DELETE');
+  },
+
+  deviceFabricLink(fabricDeviceId: string, agentType: FabricAgentType, agentDeviceId: string, confirmFingerprint: string): Promise<{ ok: boolean; device: FabricDevice }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/link`, 'POST', { agentType, agentDeviceId, confirmFingerprint });
+  },
+
+  deviceFabricUnlink(fabricDeviceId: string, agentType: FabricAgentType): Promise<{ ok: boolean; device: FabricDevice }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/link/${agentType}`, 'DELETE');
+  },
+
+  // Explicit, user-triggered routing to the exact RASSILON worker of a device.
+  deviceFabricRoute(request: FabricRouteRequest): Promise<{ ok: boolean; operation: FabricOperation }> {
+    return deviceFabricPostOnce('/route', request);
+  },
+
+  deviceFabricOperations(limit = 20): Promise<{ ok: boolean; operations: FabricOperation[] }> {
+    return deviceFabricJson(`/operations?limit=${Math.max(1, Math.min(100, Math.trunc(limit)))}`);
+  },
+
+  deviceFabricProbe(fabricDeviceId: string): Promise<{ ok: boolean; device: FabricDevice }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/rassilon/probe`, {});
   },
 
   async health(): Promise<HealthStatus> {

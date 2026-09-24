@@ -55,12 +55,16 @@ coverage/
 
 # ── Logs ────────────────────────────────────────────────────────────────────
 *.log
+logs/
 
 # ── Temp / cache ────────────────────────────────────────────────────────────
 tmp/
+temp/
 .tmp/
 .cache/
 *.tmp
+*.pid
+*.lock
 
 # ── Ad hoc E2E/manual-QA artifacts (neurons, agents, scripts created and
 # cleaned up during a testing pass are prefixed this way — guards against one

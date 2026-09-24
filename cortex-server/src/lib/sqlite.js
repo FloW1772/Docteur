@@ -13,6 +13,40 @@ function ensureParentDir(filePath) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+// DEVICE FABRIC audit columns, shared by the CREATE statement and the
+// Phase 2 -> Phase 3 migration below (the closed event enum grew).
+const FABRIC_AUDIT_EVENT_TYPES_SQL = `'FABRIC_DEVICE_CREATED', 'FABRIC_DEVICE_RENAMED', 'FABRIC_DEVICE_REMOVED',
+        'FABRIC_AGENT_LINKED', 'FABRIC_AGENT_UNLINKED', 'FABRIC_LINK_REJECTED',
+        'FABRIC_ROUTE_REQUESTED', 'FABRIC_ROUTE_STARTED', 'FABRIC_ROUTE_COMPLETED',
+        'FABRIC_ROUTE_FAILED', 'FABRIC_ROUTE_CANCELLED', 'FABRIC_ROUTE_REJECTED'`;
+const FABRIC_AUDIT_COLUMNS_SQL = `
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK (event_type IN (${FABRIC_AUDIT_EVENT_TYPES_SQL})),
+      fabric_device_id TEXT,
+      agent_type TEXT CHECK (agent_type IS NULL OR agent_type IN ('OMEGA', 'RASSILON')),
+      agent_device_id TEXT,
+      reason TEXT CHECK (reason IS NULL OR length(reason) <= 64),
+      operation_id TEXT,
+      correlation_id TEXT
+    `;
+
+// A Phase 2 database has fabric_audit with the smaller event enum and no
+// operation/correlation columns. SQLite cannot alter a CHECK, so the table
+// is rebuilt once, keeping every existing row. Touches fabric_audit only.
+function migrateFabricAuditTable() {
+  const existing = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fabric_audit'").get();
+  if (!existing || existing.sql.includes('FABRIC_ROUTE_REQUESTED')) return;
+  database.transaction(() => {
+    database.exec(`CREATE TABLE fabric_audit_v3 (${FABRIC_AUDIT_COLUMNS_SQL})`);
+    database.exec(`INSERT INTO fabric_audit_v3 (id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason)
+      SELECT id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason FROM fabric_audit`);
+    database.exec('DROP TABLE fabric_audit');
+    database.exec('ALTER TABLE fabric_audit_v3 RENAME TO fabric_audit');
+    database.exec('CREATE INDEX IF NOT EXISTS idx_fabric_audit_created_at ON fabric_audit(created_at DESC, id DESC)');
+  })();
+}
+
 export function initSqlite(sqlitePath) {
   if (database) {
     return database;
@@ -1631,6 +1665,74 @@ export function initSqlite(sqlitePath) {
     CREATE INDEX IF NOT EXISTS idx_rassilon_remote_jobs_status
       ON rassilon_remote_jobs(status, updated_at DESC);
   `);
+
+  // ── DEVICE FABRIC Phase 2 — inventory + explicit linking only
+  // (reports/DEVICE_FABRIC_ARCHITECTURE_2026-09.md §15). A third namespace:
+  // fabric_* never references omega_*/rassilon_* by foreign key and holds no
+  // key, session, token or pairing material. A link is an inventory label,
+  // never a permission. Online/availability state is computed at read time
+  // and deliberately never stored here.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS fabric_devices (
+      fabric_device_id TEXT PRIMARY KEY CHECK (fabric_device_id GLOB 'fdev-*'),
+      display_name TEXT NOT NULL CHECK (length(display_name) BETWEEN 1 AND 64),
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'REMOVED')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      removed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS fabric_agent_links (
+      link_id TEXT PRIMARY KEY,
+      fabric_device_id TEXT NOT NULL REFERENCES fabric_devices(fabric_device_id),
+      agent_type TEXT NOT NULL CHECK (agent_type IN ('OMEGA', 'RASSILON')),
+      agent_device_id TEXT NOT NULL CHECK (length(agent_device_id) BETWEEN 1 AND 128),
+      agent_fingerprint TEXT NOT NULL CHECK (length(agent_fingerprint) = 64),
+      link_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (link_status IN ('ACTIVE', 'UNLINKED')),
+      linked_at TEXT NOT NULL,
+      unlinked_at TEXT
+    );
+
+    -- One agent identity -> at most one active Fabric device; one Fabric
+    -- device -> at most one active link per agent type.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fabric_link_identity
+      ON fabric_agent_links(agent_type, agent_device_id) WHERE link_status = 'ACTIVE';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fabric_link_per_agent
+      ON fabric_agent_links(fabric_device_id, agent_type) WHERE link_status = 'ACTIVE';
+
+    CREATE TABLE IF NOT EXISTS fabric_audit (${FABRIC_AUDIT_COLUMNS_SQL});
+
+    CREATE INDEX IF NOT EXISTS idx_fabric_audit_created_at
+      ON fabric_audit(created_at DESC, id DESC);
+
+    -- DEVICE FABRIC Phase 3: one row per explicit RASSILON routing request.
+    -- Holds counts/sizes and a bounded safe result summary only: never the
+    -- submitted texts/buffers, never embedding vectors, never a session id.
+    CREATE TABLE IF NOT EXISTS fabric_operations (
+      operation_id TEXT PRIMARY KEY CHECK (operation_id GLOB 'fop-*'),
+      correlation_id TEXT NOT NULL UNIQUE CHECK (correlation_id GLOB 'fcor-*'),
+      fabric_device_id TEXT NOT NULL REFERENCES fabric_devices(fabric_device_id),
+      agent_type TEXT NOT NULL CHECK (agent_type = 'RASSILON'),
+      agent_device_id TEXT NOT NULL CHECK (length(agent_device_id) BETWEEN 1 AND 128),
+      action_type TEXT NOT NULL CHECK (action_type IN ('RASSILON_SAFE_CPU', 'RASSILON_EMBEDDING')),
+      job_type TEXT NOT NULL CHECK (job_type IN ('SAFE_CPU_TASK', 'EMBEDDING_BATCH')),
+      agent_operation_id TEXT,
+      status TEXT NOT NULL CHECK (status IN ('PENDING', 'ROUTING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'NOT_AVAILABLE')),
+      input_summary TEXT NOT NULL DEFAULT '{}' CHECK (length(input_summary) <= 1000),
+      result_summary TEXT CHECK (result_summary IS NULL OR length(result_summary) <= 4000),
+      safe_error TEXT CHECK (safe_error IS NULL OR length(safe_error) <= 64),
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fabric_operations_created_at
+      ON fabric_operations(created_at DESC, operation_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_fabric_operations_status
+      ON fabric_operations(status);
+  `);
+  migrateFabricAuditTable();
 
   statements = {
     upsertPage: database.prepare(`
@@ -6023,3 +6125,189 @@ export function getRassilonRemoteJob(jobId) {
     errorReason: row.error_reason,
   };
 }
+
+// ── DEVICE FABRIC Phase 2 store ─────────────────────────────────────────────
+// Every statement below touches fabric_* tables only (enforced by
+// test-device-fabric-static-audit.mjs). Agent identities are read by
+// device-fabric-agents.js through the existing omega/rassilon read helpers,
+// never through SQL written here.
+
+function parseFabricDeviceRow(row) {
+  if (!row) return null;
+  return {
+    fabricDeviceId: row.fabric_device_id, displayName: row.display_name, status: row.status,
+    createdAt: row.created_at, updatedAt: row.updated_at, removedAt: row.removed_at,
+  };
+}
+
+function parseFabricLinkRow(row) {
+  if (!row) return null;
+  return {
+    linkId: row.link_id, fabricDeviceId: row.fabric_device_id, agentType: row.agent_type,
+    agentDeviceId: row.agent_device_id, agentFingerprint: row.agent_fingerprint,
+    linkStatus: row.link_status, linkedAt: row.linked_at, unlinkedAt: row.unlinked_at,
+  };
+}
+
+export function insertFabricDevice({ fabricDeviceId, displayName, at = new Date().toISOString() }) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO fabric_devices (fabric_device_id, display_name, status, created_at, updated_at)
+    VALUES (?, ?, 'ACTIVE', ?, ?)`).run(fabricDeviceId, displayName, at, at);
+  return getFabricDevice(fabricDeviceId);
+}
+
+export function getFabricDevice(fabricDeviceId) {
+  if (!database) return null;
+  return parseFabricDeviceRow(database.prepare(
+    "SELECT * FROM fabric_devices WHERE fabric_device_id = ? AND status = 'ACTIVE'",
+  ).get(fabricDeviceId));
+}
+
+export function listFabricDevices() {
+  if (!database) return [];
+  return database.prepare("SELECT * FROM fabric_devices WHERE status = 'ACTIVE' ORDER BY created_at ASC, fabric_device_id ASC")
+    .all().map(parseFabricDeviceRow);
+}
+
+export function countFabricDevices() {
+  if (!database) return 0;
+  return database.prepare("SELECT COUNT(*) AS c FROM fabric_devices WHERE status = 'ACTIVE'").get().c;
+}
+
+export function renameFabricDevice(fabricDeviceId, displayName, at = new Date().toISOString()) {
+  if (!database) return null;
+  database.prepare("UPDATE fabric_devices SET display_name = ?, updated_at = ? WHERE fabric_device_id = ? AND status = 'ACTIVE'")
+    .run(displayName, at, fabricDeviceId);
+  return getFabricDevice(fabricDeviceId);
+}
+
+// Logical removal: the device and its active links are closed in one
+// transaction. Nothing outside fabric_* is touched.
+export function removeFabricDeviceAndLinks(fabricDeviceId, at = new Date().toISOString()) {
+  if (!database) return false;
+  return database.transaction(() => {
+    database.prepare("UPDATE fabric_agent_links SET link_status = 'UNLINKED', unlinked_at = ? WHERE fabric_device_id = ? AND link_status = 'ACTIVE'")
+      .run(at, fabricDeviceId);
+    return database.prepare("UPDATE fabric_devices SET status = 'REMOVED', removed_at = ?, updated_at = ? WHERE fabric_device_id = ? AND status = 'ACTIVE'")
+      .run(at, at, fabricDeviceId).changes === 1;
+  })();
+}
+
+export function insertFabricAgentLink({ linkId, fabricDeviceId, agentType, agentDeviceId, agentFingerprint, at = new Date().toISOString() }) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO fabric_agent_links
+    (link_id, fabric_device_id, agent_type, agent_device_id, agent_fingerprint, link_status, linked_at)
+    VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`).run(linkId, fabricDeviceId, agentType, agentDeviceId, agentFingerprint, at);
+  return parseFabricLinkRow(database.prepare('SELECT * FROM fabric_agent_links WHERE link_id = ?').get(linkId));
+}
+
+export function listActiveFabricAgentLinks({ fabricDeviceId = null } = {}) {
+  if (!database) return [];
+  const rows = fabricDeviceId
+    ? database.prepare("SELECT * FROM fabric_agent_links WHERE link_status = 'ACTIVE' AND fabric_device_id = ? ORDER BY agent_type ASC").all(fabricDeviceId)
+    : database.prepare("SELECT * FROM fabric_agent_links WHERE link_status = 'ACTIVE' ORDER BY agent_type ASC").all();
+  return rows.map(parseFabricLinkRow);
+}
+
+export function unlinkFabricAgentLink(fabricDeviceId, agentType, at = new Date().toISOString()) {
+  if (!database) return false;
+  return database.prepare("UPDATE fabric_agent_links SET link_status = 'UNLINKED', unlinked_at = ? WHERE fabric_device_id = ? AND agent_type = ? AND link_status = 'ACTIVE'")
+    .run(at, fabricDeviceId, agentType).changes === 1;
+}
+
+export function insertFabricAudit({
+  eventType, fabricDeviceId = null, agentType = null, agentDeviceId = null, reason = null,
+  operationId = null, correlationId = null, at = new Date().toISOString(),
+}) {
+  if (!database) return;
+  database.prepare(`INSERT INTO fabric_audit (created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason, operation_id, correlation_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(at, eventType, fabricDeviceId, agentType, agentDeviceId, reason, operationId, correlationId);
+}
+
+export function listFabricAudit({ limit = 100 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM fabric_audit ORDER BY created_at DESC, id DESC LIMIT ?').all(limit).map(row => ({
+    id: row.id, createdAt: row.created_at, eventType: row.event_type, fabricDeviceId: row.fabric_device_id,
+    agentType: row.agent_type, agentDeviceId: row.agent_device_id, reason: row.reason,
+    operationId: row.operation_id, correlationId: row.correlation_id,
+  }));
+}
+
+function parseFabricOperationRow(row) {
+  if (!row) return null;
+  const parse = (value, fallback) => { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } };
+  return {
+    operationId: row.operation_id, correlationId: row.correlation_id, fabricDeviceId: row.fabric_device_id,
+    agentType: row.agent_type, agentDeviceId: row.agent_device_id, actionType: row.action_type, jobType: row.job_type,
+    agentOperationId: row.agent_operation_id, status: row.status, inputSummary: parse(row.input_summary, {}),
+    resultSummary: parse(row.result_summary, null), safeError: row.safe_error, createdAt: row.created_at,
+    startedAt: row.started_at, completedAt: row.completed_at, updatedAt: row.updated_at,
+  };
+}
+
+export function insertFabricOperation({
+  operationId, correlationId, fabricDeviceId, agentDeviceId, actionType, jobType, status, inputSummary,
+  at = new Date().toISOString(),
+}) {
+  if (!database) return null;
+  database.prepare(`INSERT INTO fabric_operations (operation_id, correlation_id, fabric_device_id, agent_type, agent_device_id,
+    action_type, job_type, status, input_summary, created_at, updated_at)
+    VALUES (?, ?, ?, 'RASSILON', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(operationId, correlationId, fabricDeviceId, agentDeviceId, actionType, jobType, status, JSON.stringify(inputSummary ?? {}), at, at);
+  return getFabricOperation(operationId);
+}
+
+const FABRIC_OPERATION_MUTABLE = Object.freeze({
+  status: 'status', agentOperationId: 'agent_operation_id', resultSummary: 'result_summary',
+  safeError: 'safe_error', startedAt: 'started_at', completedAt: 'completed_at',
+});
+
+export function updateFabricOperation(operationId, fields, at = new Date().toISOString()) {
+  if (!database) return null;
+  const sets = [];
+  const values = [];
+  for (const [key, column] of Object.entries(FABRIC_OPERATION_MUTABLE)) {
+    if (!(key in fields)) continue;
+    sets.push(`${column} = ?`);
+    values.push(key === 'resultSummary' && fields[key] !== null ? JSON.stringify(fields[key]) : fields[key]);
+  }
+  if (sets.length === 0) return getFabricOperation(operationId);
+  database.prepare(`UPDATE fabric_operations SET ${sets.join(', ')}, updated_at = ? WHERE operation_id = ?`).run(...values, at, operationId);
+  return getFabricOperation(operationId);
+}
+
+// Guarded state transition: applied only if the row is currently in one of
+// `fromStatuses` (the Fabric operation state machine). A terminal operation
+// can never be moved again, so a result cannot complete it twice.
+export function transitionFabricOperation(operationId, fromStatuses, fields, at = new Date().toISOString()) {
+  if (!database || !Array.isArray(fromStatuses) || fromStatuses.length === 0) return { applied: false, operation: null };
+  const sets = [];
+  const values = [];
+  for (const [key, column] of Object.entries(FABRIC_OPERATION_MUTABLE)) {
+    if (!(key in fields)) continue;
+    sets.push(`${column} = ?`);
+    values.push(key === 'resultSummary' && fields[key] !== null ? JSON.stringify(fields[key]) : fields[key]);
+  }
+  const placeholders = fromStatuses.map(() => '?').join(', ');
+  const changes = database.prepare(`UPDATE fabric_operations SET ${sets.join(', ')}, updated_at = ?
+    WHERE operation_id = ? AND status IN (${placeholders})`).run(...values, at, operationId, ...fromStatuses).changes;
+  return { applied: changes === 1, operation: getFabricOperation(operationId) };
+}
+
+export function getFabricOperation(operationId) {
+  if (!database) return null;
+  return parseFabricOperationRow(database.prepare('SELECT * FROM fabric_operations WHERE operation_id = ?').get(operationId));
+}
+
+export function listFabricOperations({ limit = 50, offset = 0 } = {}) {
+  if (!database) return [];
+  return database.prepare('SELECT * FROM fabric_operations ORDER BY created_at DESC, operation_id DESC LIMIT ? OFFSET ?')
+    .all(limit, offset).map(parseFabricOperationRow);
+}
+
+export function listFabricOperationsByStatus(statuses) {
+  if (!database || !Array.isArray(statuses) || statuses.length === 0) return [];
+  const placeholders = statuses.map(() => '?').join(', ');
+  return database.prepare(`SELECT * FROM fabric_operations WHERE status IN (${placeholders})`).all(...statuses).map(parseFabricOperationRow);
+}
+// ── END DEVICE FABRIC Phase 2 store ─────────────────────────────────────────
