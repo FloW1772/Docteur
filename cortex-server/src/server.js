@@ -95,6 +95,7 @@ import { createOmegaRoute }        from './routes/omega.js';
 import { createOmegaViewRoute }    from './routes/omega-view.js';
 import { createOmegaInteractiveRoute } from './routes/omega-interactive.js';
 import { createOmegaAdminRoute }   from './routes/omega-admin.js';
+import { createOmegaOutboundRoute } from './routes/omega-outbound.js';
 import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe } from './lib/kiwix.js';
 import { getKiwixSearchScope } from './lib/sqlite.js';
 import { search as kiwixSearch, getContent as kiwixGetContent } from './lib/kiwix-client.js';
@@ -1705,25 +1706,30 @@ app.use('*', async (c, next) => {
     const modelUsed = c.get('modelUsed') ?? null;
     const ok = response?.status ? response.status < 400 : true;
     const payloadSize = storedPayload !== null ? sanitizePayloadSize(storedPayload) : Number(c.req.header('content-length') ?? 0);
+    // OMEGA V2 remote input is never logged per event (no keystroke timing
+    // trail); the INTERACTIVE audit keeps aggregated counts only.
+    const omegaInput = /^\/api\/(omega-v2|omega\/outbound)\/sessions\/[^/]+\/input\//.test(new URL(c.req.url).pathname);
 
-    logger.info({
-      endpoint,
-      latency_ms: latencyMs,
-      model_used: modelUsed,
-      payload_size: payloadSize,
-      status_code: response?.status ?? 200,
-      ok
-    }, 'request completed');
+    if (!omegaInput) {
+      logger.info({
+        endpoint,
+        latency_ms: latencyMs,
+        model_used: modelUsed,
+        payload_size: payloadSize,
+        status_code: response?.status ?? 200,
+        ok
+      }, 'request completed');
 
-    logRequest({
-      endpoint,
-      latencyMs,
-      modelUsed,
-      payloadSize,
-      statusCode: response?.status ?? 200,
-      ok,
-      message: ok ? null : 'request failed'
-    });
+      logRequest({
+        endpoint,
+        latencyMs,
+        modelUsed,
+        payloadSize,
+        statusCode: response?.status ?? 200,
+        ok,
+        message: ok ? null : 'request failed'
+      });
+    }
   }
 });
 
@@ -1830,6 +1836,7 @@ app.route('/api', createOmegaInteractiveRoute({ logger }));
 // existing listener/port and inherits the Phase 4.1 TLS boundary; high-impact
 // requests still require a visible local approval before any native API call.
 app.route('/api', createOmegaAdminRoute({ logger }));
+app.route('/api', createOmegaOutboundRoute({ logger, certificateFingerprint: TLS_CERTIFICATE_FINGERPRINT }));
 
 app.onError((error, c) => {
   const status = services.isOllamaError(error) ? 503 : 500;

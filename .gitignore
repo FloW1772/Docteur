@@ -33,6 +33,8 @@ certs/
 *.pem
 *.pfx
 *.p12
+*.crt
+*.cer
 *.db
 *.db-wal
 *.db-shm
@@ -105,6 +107,12 @@ reports/studios-evidence/
 # any script here, but the default Playwright config would write to these.
 playwright-report/
 test-results/
+# Playwright's own default video/trace output, not currently produced by any
+# script here (no playwright.config.* exists; the OMEGA V2 browser harnesses
+# drive Chromium programmatically with no video/trace recording enabled) —
+# guards against either being generated and committed if that ever changes.
+videos/
+traces/
 
 # ── OS junk ─────────────────────────────────────────────────────────────────
 Thumbs.db
