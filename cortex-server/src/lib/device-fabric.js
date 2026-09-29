@@ -20,6 +20,7 @@ import {
 import {
   AVAILABILITY, TRUST, describeAgentState, getAgentIdentity, listAgentIdentities, publicIdentity,
 } from './device-fabric-agents.js';
+import { listOmegaV2HostFingerprints } from './device-fabric-omega-v2.js';
 
 export const FABRIC_AGENT_TYPES = Object.freeze(['OMEGA', 'RASSILON']);
 export const FABRIC_AUDIT_EVENTS = Object.freeze([
@@ -318,12 +319,17 @@ export function linkAgent(fabricDeviceId, { agentType, agentDeviceId, confirmFin
   if (!identity.fingerprint) reject('agent_fingerprint_unavailable', 409, fields);
   if (identity.fingerprint !== confirmed) reject('fingerprint_confirmation_mismatch', 409, fields);
 
-  // The same key in both trust domains is a key-reuse violation, never a
-  // proof that two identities are the same machine (architecture F3).
+  // The same key in another trust domain is a key-reuse violation, never a
+  // proof that two identities are the same machine (architecture F3). Three
+  // domains now exist (OMEGA V1, RASSILON, OMEGA V2 outbound); this link
+  // must not silently reuse a key already trusted in either of the other two.
   const otherType = agentType === 'OMEGA' ? 'RASSILON' : 'OMEGA';
   let otherIdentities;
   try { otherIdentities = listAgentIdentities(otherType); } catch { reject('agent_projection_error', 503, fields); }
   if (otherIdentities.some(other => other.fingerprint === identity.fingerprint)) {
+    reject('cross_agent_key_reuse', 409, fields);
+  }
+  if (listOmegaV2HostFingerprints().includes(identity.fingerprint)) {
     reject('cross_agent_key_reuse', 409, fields);
   }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle, Cpu, Link2, MonitorSmartphone, Pencil, Plus, RefreshCw, Send, Sparkles, Trash2, Unlink } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle, Cpu, Link2, MonitorSmartphone, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, Unlink } from 'lucide-react';
 import {
   cortexClient,
   type FabricActionType,
@@ -11,7 +11,11 @@ import {
   type FabricDirection,
   type FabricOperation,
   type FabricTri,
+  type OmegaV2HostListing,
+  type OmegaV2Link,
 } from '../../lib/cortex/client';
+import { FabricOmegaV2ViewPanel } from './FabricOmegaV2ViewPanel';
+import { FabricOmegaV2AdminPanel } from './FabricOmegaV2AdminPanel';
 
 const STATE_COLORS: Record<string, string> = {
   ONLINE: '#3dffaa', AVAILABLE: '#3dffaa', TRUSTED: '#3dffaa', YES: '#3dffaa',
@@ -192,6 +196,14 @@ const ERROR_LABELS: Record<string, string> = {
   agent_projection_error: 'Refusé : l’état de l’agent est illisible (projection en erreur).',
   rassilon_link_unsafe: 'Routage refusé : le lien RASSILON n’est pas sûr.',
   probe_failed: 'Vérification échouée : le worker exact n’a pas répondu (aucun autre worker contacté).',
+  omega_v2_host_not_found: 'Lien refusé : hôte OMEGA V2 introuvable.',
+  omega_v2_host_revoked: 'Lien refusé : la confiance de cet hôte OMEGA V2 est révoquée.',
+  omega_v2_host_already_linked: 'Lien refusé : cet hôte OMEGA V2 est déjà lié à un autre appareil Fabric.',
+  omega_v2_already_linked_on_device: 'Lien refusé : cet appareil possède déjà un lien OMEGA V2 outbound.',
+  omega_v2_link_conflict: 'Lien refusé : conflit de lien OMEGA V2.',
+  omega_v2_link_not_found: 'Aucun lien OMEGA V2 outbound à supprimer.',
+  omega_v2_host_id_invalid: 'Identité OMEGA V2 invalide.',
+  confirm_fingerprint_invalid: 'Empreinte de confirmation OMEGA V2 invalide.',
 };
 
 const cardStyle = {
@@ -268,6 +280,144 @@ function TriCell({ value, unreachable }: { value: FabricTri; unreachable: boolea
   return <td style={{ color: STATE_COLORS[shown], padding: '2px 8px 2px 0' }}>{shown}</td>;
 }
 
+const OMEGA_V2_LINK_STATE_LABELS: Record<string, string> = {
+  MISSING: 'hôte OMEGA V2 introuvable (lien périmé).',
+  FINGERPRINT_MISMATCH: 'la clé OMEGA V2 a changé depuis le lien.',
+  REVOKED: 'confiance OMEGA V2 révoquée.',
+};
+
+/**
+ * OMEGA V2 — outbound: a section fully distinct from OMEGA (V1 inbound) and
+ * RASSILON. Displays link status, safe host identity, AUTHORIZED/AVAILABLE
+ * per capability and the closed Phase 3 VIEW-only control. INTERACTIVE and
+ * ADMIN remain absent.
+ */
+function OmegaV2Section({ device, link, hosts, unreachable, actionsDisabled, busy, run, refresh, dialogOpen, onOpenDialog, onCloseDialog }: {
+  device: FabricDevice;
+  link: OmegaV2Link | null;
+  hosts: OmegaV2HostListing[];
+  unreachable: boolean;
+  actionsDisabled: boolean;
+  busy: boolean;
+  run: (task: () => Promise<unknown>, success: string) => Promise<boolean>;
+  refresh: () => Promise<void>;
+  dialogOpen: boolean;
+  onOpenDialog: () => void;
+  onCloseDialog: () => void;
+}) {
+  const [selectedHostId, setSelectedHostId] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const candidates = hosts.filter(host => !host.linkedFabricDeviceId && !host.revokedAt);
+  const selected = candidates.find(host => host.omegaV2HostId === selectedHostId) ?? null;
+  // Keep a previously known link visible if Cortex becomes unreachable, but
+  // mask every live/trust conclusion as UNKNOWN. A transport error must never
+  // make an existing link look absent or positive.
+  const shownLink = link;
+  const availability = unreachable ? 'UNKNOWN' : (shownLink?.availability ?? 'UNKNOWN');
+  const trustLabel = !shownLink ? 'UNLINKED'
+    : unreachable ? 'UNKNOWN'
+      : shownLink.linkState === 'REVOKED' || shownLink.trust?.revokedAt ? 'REVOKED'
+        : shownLink.linkState === 'OK' ? 'TRUSTED' : 'UNKNOWN';
+  const viewAuthorized = shownLink?.capabilities.find(capability => capability.name === 'VIEW')?.authorized === 'YES';
+  const adminAuthorized = shownLink?.capabilities.find(capability => capability.name === 'ADMIN')?.authorized === 'YES';
+
+  return (
+    <div data-testid="omega-v2-section" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }} aria-label={`OMEGA V2 — outbound ${safeText(device.displayName)}`}>
+      <p className="font-mono text-xs mb-1" style={{ color: '#c084fc', letterSpacing: '0.12em' }}>OMEGA V2 — OUTBOUND</p>
+      {!shownLink ? (
+        <div className="flex flex-col gap-1">
+          <p className="font-mono text-xs" style={{ color: '#817697' }}>Non lié. Distinct d’OMEGA (V1, entrant) : ce lien désigne un hôte OMEGA V2 que <em>ce PC</em> peut contrôler.</p>
+          <ActionButton disabled={actionsDisabled} onClick={onOpenDialog}><Link2 size={12} /> LIER UN HÔTE OMEGA V2</ActionButton>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-1 font-mono text-xs" style={{ color: '#aaa0bf' }}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge value={trustLabel} />
+            <Badge value={availability} label="Disponibilité" />
+          </div>
+          <p>
+            Hôte : {safeText(shownLink.trust?.host, 96)}{shownLink.trust?.port ? `:${shownLink.trust.port}` : ''}
+            {' · '}{safeText(shownLink.omegaV2HostId, 48)} · {shortFingerprint(shownLink.linkedFingerprint)}
+          </p>
+          {!unreachable && shownLink.linkState !== 'OK' && OMEGA_V2_LINK_STATE_LABELS[shownLink.linkState] && (
+            <p style={{ color: '#f59e0b' }}><AlertTriangle size={11} style={{ display: 'inline', marginRight: 4 }} />{OMEGA_V2_LINK_STATE_LABELS[shownLink.linkState]}</p>
+          )}
+          {unreachable && <p style={{ color: '#f59e0b' }}><AlertTriangle size={11} style={{ display: 'inline', marginRight: 4 }} />Statut OMEGA V2 indisponible : aucune disponibilité n’est supposée.</p>}
+          {shownLink.linkState === 'OK' && shownLink.capabilities.length > 0 && (
+            <table className="font-mono" style={{ fontSize: 11 }}>
+              <thead><tr style={{ color: '#5a4f70' }}><th style={{ textAlign: 'left', paddingRight: 8 }}>Niveau</th><th style={{ textAlign: 'left', paddingRight: 8 }}>SUPPORTED</th><th style={{ textAlign: 'left', paddingRight: 8 }}>AUTHORIZED</th><th style={{ textAlign: 'left' }}>AVAILABLE</th></tr></thead>
+              <tbody>
+                {shownLink.capabilities.map(cap => (
+                  <tr key={cap.name}>
+                    <td style={{ paddingRight: 8 }}>{cap.name}</td>
+                    <TriCell value={cap.supported} unreachable={unreachable} />
+                    <TriCell value={cap.authorized} unreachable={unreachable} />
+                    <TriCell value={cap.available} unreachable={unreachable} />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!unreachable && shownLink.linkState === 'OK' && viewAuthorized && (
+            <FabricOmegaV2ViewPanel device={device} link={shownLink} disabled={actionsDisabled} onChanged={refresh} />
+          )}
+          {!unreachable && shownLink.linkState === 'OK' && adminAuthorized && (
+            <FabricOmegaV2AdminPanel device={device} disabled={actionsDisabled} />
+          )}
+          <ActionButton danger disabled={actionsDisabled}
+            onClick={() => void run(() => cortexClient.deviceFabricOmegaV2Unlink(device.fabricDeviceId), 'Lien OMEGA V2 supprimé. La confiance OMEGA V2 est inchangée.')}>
+            <Unlink size={12} /> DÉLIER
+          </ActionButton>
+        </div>
+      )}
+      {dialogOpen && (
+        <section role="dialog" aria-label={`Lier un hôte OMEGA V2 ${safeText(device.displayName)}`}
+          style={{ marginTop: 8, padding: 10, border: '1px solid rgba(192,132,252,0.35)', borderRadius: 6 }}>
+          <p className="font-mono text-xs mb-2" style={{ color: '#c084fc' }}>LIER UN HÔTE OMEGA V2 (OUTBOUND)</p>
+          {candidates.length === 0 ? (
+            <p className="font-mono text-xs" style={{ color: '#817697' }}>Aucun hôte OMEGA V2 disponible (déjà liés ou révoqués exclus). L’enregistrement de confiance se fait dans OMEGA V2, jamais ici.</p>
+          ) : (
+            <div className="flex flex-col gap-1 font-mono text-xs" style={{ color: '#aaa0bf' }}>
+              {candidates.map(host => (
+                <label key={host.omegaV2HostId}>
+                  <input type="radio" name={`omega-v2-candidate-${device.fabricDeviceId}`} checked={selectedHostId === host.omegaV2HostId}
+                    onChange={() => { setSelectedHostId(host.omegaV2HostId); setConfirmed(false); }} />
+                  {' '}{safeText(host.host, 72)}:{host.port} · {safeText(host.omegaV2HostId, 48)} · {host.maxPermission} · {shortFingerprint(host.identityFingerprint)}
+                </label>
+              ))}
+            </div>
+          )}
+          {selected && (
+            <>
+              <dl className="font-mono text-xs mt-3 grid" style={{ color: '#d8d0ee', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px' }}>
+                <dt style={{ color: '#817697' }}>Appareil Fabric</dt><dd>{safeText(device.displayName, 64)}</dd>
+                <dt style={{ color: '#817697' }}>Hôte OMEGA V2</dt><dd style={{ overflowWrap: 'anywhere' }}>{safeText(selected.omegaV2HostId, 64)}</dd>
+                <dt style={{ color: '#817697' }}>Adresse</dt><dd style={{ overflowWrap: 'anywhere' }}>{safeText(selected.host, 96)}:{selected.port}</dd>
+                <dt style={{ color: '#817697' }}>Empreinte</dt><dd data-testid="omega-v2-link-fingerprint" style={{ overflowWrap: 'anywhere' }}>{safeText(selected.identityFingerprint, 128)}</dd>
+              </dl>
+              <label className="font-mono text-xs block mt-3" style={{ color: '#f59e0b' }}>
+                <input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />
+                {' '}J’ai vérifié cette empreinte sur l’hôte OMEGA V2. Ce lien n’accorde aucun droit.
+              </label>
+            </>
+          )}
+          <div className="flex gap-2 mt-3">
+            <ActionButton disabled={busy || !selected || !confirmed}
+              onClick={() => {
+                if (!selected) return;
+                void run(() => cortexClient.deviceFabricOmegaV2Link(device.fabricDeviceId, selected.omegaV2HostId, selected.identityFingerprint), 'Hôte OMEGA V2 lié.')
+                  .then(ok => { if (ok) { onCloseDialog(); setSelectedHostId(''); setConfirmed(false); } });
+              }}>
+              <Link2 size={12} /> CONFIRMER LE LIEN
+            </ActionButton>
+            <ActionButton onClick={() => { onCloseDialog(); setSelectedHostId(''); setConfirmed(false); }}>ANNULER</ActionButton>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 interface LinkDialogState {
   fabricDeviceId: string;
   agentType: FabricAgentType;
@@ -291,16 +441,25 @@ export function DeviceFabricSettingsTab() {
   const [operations, setOperations] = useState<FabricOperation[]>([]);
   const [embedDraft, setEmbedDraft] = useState<{ fabricDeviceId: string; text: string; model: string } | null>(null);
   const [agentErrors, setAgentErrors] = useState<Partial<Record<FabricAgentType, string>>>({});
+  const [omegaV2Hosts, setOmegaV2Hosts] = useState<OmegaV2HostListing[]>([]);
+  const [omegaV2Links, setOmegaV2Links] = useState<Record<string, OmegaV2Link | null>>({});
+  const [omegaV2Dialog, setOmegaV2Dialog] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState(() => Date.now());
   const [clock, setClock] = useState(() => Date.now());
 
   // Read-only: listing devices/operations never routes anything.
   const refresh = useCallback(async () => {
     try {
-      const [nextDevices, nextAgents, nextAudit, nextOperations] = await Promise.all([
+      const [nextDevices, nextAgents, nextAudit, nextOperations, nextOmegaV2Hosts] = await Promise.all([
         cortexClient.deviceFabricDevices(), cortexClient.deviceFabricAgents(), cortexClient.deviceFabricAudit(20),
-        cortexClient.deviceFabricOperations(10),
+        cortexClient.deviceFabricOperations(10), cortexClient.deviceFabricOmegaV2Hosts(),
       ]);
+      // These GETs only read Cortex-local DB/session state. They never contact
+      // an OMEGA host and cannot create or reconnect a session.
+      const nextOmegaV2Statuses = await Promise.all(nextDevices.devices.map(async device => ({
+        fabricDeviceId: device.fabricDeviceId,
+        link: (await cortexClient.deviceFabricOmegaV2Status(device.fabricDeviceId)).link,
+      })));
       const now = Date.now();
       setFetchedAt(now);
       setClock(now);
@@ -309,6 +468,8 @@ export function DeviceFabricSettingsTab() {
       setAgentErrors(nextAgents.agentErrors ?? {});
       setAudit(nextAudit.events);
       setOperations(nextOperations.operations);
+      setOmegaV2Hosts(nextOmegaV2Hosts.hosts);
+      setOmegaV2Links(Object.fromEntries(nextOmegaV2Statuses.map(status => [status.fabricDeviceId, status.link])));
       setUnreachable(false);
       setError(null);
     } catch (nextError) {
@@ -551,7 +712,7 @@ export function DeviceFabricSettingsTab() {
           <div>
             <p className="font-grotesk font-semibold text-sm" style={{ color: '#e9fff6' }}>DEVICES — INVENTAIRE LOCAL</p>
             <p className="font-mono text-xs mt-1" style={{ color: '#87a89b', lineHeight: 1.55 }}>
-              Un lien est une étiquette d’inventaire : il n’accorde aucun droit OMEGA ni RASSILON. OMEGA et RASSILON gardent chacun leur confiance, leurs permissions et leur STOP. Aucun routage d’action dans cette version.
+              Un lien est une étiquette d’inventaire : il n’accorde aucun droit OMEGA ni RASSILON. OMEGA et RASSILON gardent chacun leur confiance, leurs permissions et leur STOP. OMEGA V2 VIEW exige toujours un clic explicite.
             </p>
           </div>
         </div>
@@ -582,6 +743,12 @@ export function DeviceFabricSettingsTab() {
             <Plus size={12} /> CREATE DEVICE
           </ActionButton>
           <ActionButton disabled={busy} onClick={() => void refresh()}><RefreshCw size={12} /> REFRESH</ActionButton>
+          {Object.values(omegaV2Links).some(link => link?.capabilities.some(cap => cap.name === 'ADMIN' && cap.authorized === 'YES')) && (
+            <ActionButton danger disabled={actionsDisabled}
+              onClick={() => void run(() => cortexClient.deviceFabricOmegaV2AdminStopAll(), 'Toutes les sessions OMEGA ouvertes par Fabric ont été arrêtées.')}>
+              <Square size={12} /> STOP ALL OMEGA FABRIC SESSIONS
+            </ActionButton>
+          )}
         </div>
       </section>
 
@@ -593,7 +760,12 @@ export function DeviceFabricSettingsTab() {
       {devices.map(device => {
         const renameActive = renaming?.id === device.fabricDeviceId;
         const removeKey = `remove:${device.fabricDeviceId}`;
-        const linkCount = Number(Boolean(device.agents.OMEGA)) + Number(Boolean(device.agents.RASSILON));
+        const omegaV2Link = omegaV2Links[device.fabricDeviceId] ?? null;
+        const linkCount = Number(Boolean(device.agents.OMEGA)) + Number(Boolean(device.agents.RASSILON)) + Number(Boolean(omegaV2Link));
+        const overallAvailabilities = [
+          ...Object.values(device.agents).filter((link): link is FabricAgentLink => !!link).map(link => ageLinkForDisplay(link, elapsedMs).availability),
+          ...(omegaV2Link ? [unreachable ? 'UNKNOWN' : omegaV2Link.availability] : []),
+        ];
         return (
           <section key={device.fabricDeviceId} style={cardStyle} aria-label={`Appareil ${safeText(device.displayName)}`} data-testid="fabric-device-card">
             <div className="flex flex-wrap items-center gap-3">
@@ -610,7 +782,7 @@ export function DeviceFabricSettingsTab() {
               ) : (
                 <strong className="font-grotesk text-sm" style={{ color: '#f0eaff' }}>{safeText(device.displayName, 64)}</strong>
               )}
-              <Badge value={unreachable ? 'UNKNOWN' : deviceStateFrom(Object.values(device.agents).filter((l): l is FabricAgentLink => !!l).map(l => ageLinkForDisplay(l, elapsedMs).availability))} label="Overall" />
+              <Badge value={unreachable ? 'UNKNOWN' : deviceStateFrom(overallAvailabilities)} label="Overall" />
               {!renameActive && (
                 <ActionButton disabled={actionsDisabled} onClick={() => setRenaming({ id: device.fabricDeviceId, name: device.displayName })}>
                   <Pencil size={12} /> RENAME
@@ -618,23 +790,36 @@ export function DeviceFabricSettingsTab() {
               )}
               <ActionButton danger disabled={actionsDisabled}
                 onClick={() => pendingConfirm === removeKey
-                  ? void run(() => cortexClient.deviceFabricRemove(device.fabricDeviceId, linkCount > 0), 'Appareil Fabric supprimé. OMEGA et RASSILON inchangés.')
+                  ? void run(() => cortexClient.deviceFabricRemove(device.fabricDeviceId, linkCount > 0), 'Appareil Fabric supprimé. Les confiances OMEGA V1, OMEGA V2 et RASSILON sont inchangées.')
                   : setPendingConfirm(removeKey)}>
                 <Trash2 size={12} /> {pendingConfirm === removeKey ? 'CONFIRMER DELETE' : 'DELETE'}
               </ActionButton>
             </div>
             {pendingConfirm === removeKey && (
               <p className="font-mono text-xs mt-2" style={{ color: '#f59e0b' }}>
-                {linkCount > 0 ? `Supprime l’appareil et ses ${linkCount} lien(s). ` : 'Supprime l’appareil. '}Cela ne révoque ni OMEGA ni RASSILON et ne touche à aucune clé ni session.
+                {linkCount > 0 ? `Supprime l’appareil et ses ${linkCount} lien(s). ` : 'Supprime l’appareil. '}Cela ne révoque ni OMEGA V1, ni la confiance OMEGA V2, ni RASSILON et ne touche à aucune clé ni session.
               </p>
             )}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mt-3">
               {(['OMEGA', 'RASSILON'] as const).map(agentType => (
-                <div key={agentType} style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }} aria-label={`${agentType} ${safeText(device.displayName)}`}>
-                  <p className="font-mono text-xs mb-1" style={{ color: '#5ee7ff', letterSpacing: '0.12em' }}>{agentType}</p>
+                <div key={agentType} style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }} aria-label={`${agentType === 'OMEGA' ? 'OMEGA V1 — inbound' : 'RASSILON'} ${safeText(device.displayName)}`}>
+                  <p className="font-mono text-xs mb-1" style={{ color: '#5ee7ff', letterSpacing: '0.12em' }}>{agentType === 'OMEGA' ? 'OMEGA V1 — INBOUND' : 'RASSILON'}</p>
                   {renderAgent(device, agentType)}
                 </div>
               ))}
+              <OmegaV2Section
+                device={device}
+                link={omegaV2Link}
+                hosts={omegaV2Hosts}
+                unreachable={unreachable}
+                actionsDisabled={actionsDisabled}
+                busy={busy}
+                run={run}
+                refresh={refresh}
+                dialogOpen={omegaV2Dialog === device.fabricDeviceId}
+                onOpenDialog={() => setOmegaV2Dialog(device.fabricDeviceId)}
+                onCloseDialog={() => setOmegaV2Dialog(null)}
+              />
             </div>
           </section>
         );

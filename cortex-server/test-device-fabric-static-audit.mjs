@@ -14,11 +14,16 @@ const FILES = {
   service: path.join(here, 'src/lib/device-fabric.js'),
   agents: path.join(here, 'src/lib/device-fabric-agents.js'),
   routing: path.join(here, 'src/lib/device-fabric-routing.js'),
+  omegaV2: path.join(here, 'src/lib/device-fabric-omega-v2.js'),
+  omegaV2View: path.join(here, 'src/lib/device-fabric-omega-v2-routing.js'),
+  omegaV2Admin: path.join(here, 'src/lib/device-fabric-omega-v2-admin.js'),
   route: path.join(here, 'src/routes/device-fabric.js'),
 };
 const BACKEND = Object.values(FILES);
 const INVENTORY = [FILES.service, FILES.agents];
-const FRONTEND = [path.join(repo, 'src/components/settings/DeviceFabricSettingsTab.tsx')];
+const FRONTEND = [path.join(repo, 'src/components/settings/DeviceFabricSettingsTab.tsx'),
+  path.join(repo, 'src/components/settings/FabricOmegaV2AdminPanel.tsx'),
+  path.join(repo, 'src/components/settings/FabricOmegaV2ViewPanel.tsx')];
 
 function stripComments(source) {
   return source
@@ -98,10 +103,19 @@ test('no network of its own: no HTTP/WebSocket client, socket, listener, discove
 });
 
 test('imports are limited to the documented allowlist per module', () => {
-  assert.deepEqual(importSpecifiers(FILES.service), ['./device-fabric-agents.js', './sqlite.js', 'node:crypto']);
+  assert.deepEqual(importSpecifiers(FILES.service), ['./device-fabric-agents.js', './device-fabric-omega-v2.js', './sqlite.js', 'node:crypto']);
   assert.deepEqual(importSpecifiers(FILES.agents), ['./rassilon-scheduler.js', './rassilon-worker.js', './sqlite.js']);
   assert.deepEqual(importSpecifiers(FILES.routing), ['./device-fabric.js', './rassilon-controller.js', './rassilon-remote-result.js', './sqlite.js', 'node:crypto']);
-  assert.deepEqual(importSpecifiers(FILES.route), ['../lib/device-fabric-routing.js', '../lib/device-fabric.js', '@hono/node-server/conninfo', 'hono', 'hono/body-limit']);
+  // OMEGA V2 outbound link + exact resolution + read-only status only: no
+  // identity, signing, connect, VIEW/INTERACTIVE/ADMIN or network module.
+  assert.deepEqual(importSpecifiers(FILES.omegaV2), ['./device-fabric-agents.js', './omega-outbound-client.js', './omega-outbound-store.js', './sqlite.js', 'node:crypto']);
+  assert.deepEqual(importSpecifiers(FILES.omegaV2View), ['./device-fabric-omega-v2.js', './omega-outbound-client.js', './sqlite.js']);
+  // Phase 5 ADMIN: the closed 9-action allowlist + STOP functions only, plus
+  // the same link/status read and audit primitives every other Fabric OMEGA
+  // V2 module already uses. No identity, signing, VIEW/INTERACTIVE, input or
+  // frame module.
+  assert.deepEqual(importSpecifiers(FILES.omegaV2Admin), ['./device-fabric-omega-v2.js', './omega-outbound-client.js', './sqlite.js']);
+  assert.deepEqual(importSpecifiers(FILES.route), ['../lib/device-fabric-omega-v2-admin.js', '../lib/device-fabric-omega-v2-routing.js', '../lib/device-fabric-omega-v2.js', '../lib/device-fabric-routing.js', '../lib/device-fabric.js', '@hono/node-server/conninfo', 'hono', 'hono/body-limit']);
 });
 
 test('agent-owned functions imported by Fabric are exactly the whitelisted ones', () => {
@@ -118,6 +132,26 @@ test('agent-owned functions imported by Fabric are exactly the whitelisted ones'
   for (const name of routingSqlite) {
     assert.match(name, /^(getRassilonDevice|getRassilonLocalDevice|getRassilonOutboundSession|getFabricDevice|\w*FabricOperation\w*|insertFabricAudit)$/, name);
   }
+  // OMEGA V2: exactly the two pure-read trust functions, one pure-read
+  // session-list function, and the Fabric link store — no identity, no
+  // signing, no connect, no VIEW/INTERACTIVE/ADMIN entry point.
+  assert.deepEqual(namedImports(FILES.omegaV2, './omega-outbound-store.js'), ['getOutboundTrust', 'listOutboundTrust']);
+  assert.deepEqual(namedImports(FILES.omegaV2, './omega-outbound-client.js'), ['listOmegaOutboundSessions']);
+  assert.deepEqual(namedImports(FILES.omegaV2, './device-fabric-agents.js'), ['listAgentIdentities']);
+  const omegaV2Sqlite = namedImports(FILES.omegaV2, './sqlite.js');
+  for (const name of omegaV2Sqlite) {
+    assert.match(name, /^(getFabricDevice|\w*FabricAgentLink\w*|insertFabricAudit)$/, name);
+  }
+  // Phase 4 adds INTERACTIVE start/stop only — no input/pointer/keyboard
+  // primitive, no ADMIN entry point, no status poll (that one performs a
+  // real network round-trip; Fabric's own status read stays local-only).
+  assert.deepEqual(namedImports(FILES.omegaV2View, './omega-outbound-client.js'), [
+    'connectOmegaDevice', 'getOmegaOutboundSession', 'startOmegaOutboundInteractive', 'startOmegaOutboundView',
+    'stopOmegaOutboundInteractive', 'stopOmegaOutboundSession', 'stopOmegaOutboundView',
+  ]);
+  assert.deepEqual(namedImports(FILES.omegaV2View, './device-fabric-omega-v2.js'), [
+    'OMEGA_V2_AGENT_TYPE', 'getOmegaV2LinkView', 'resolveFabricOmegaV2Target',
+  ]);
 });
 
 test('no key, secret-store, DPAPI, signing, pairing access anywhere in Fabric', () => {
@@ -177,6 +211,106 @@ test('no OMEGA action, stop-all, cancel, enable, revoke or settings mutation', (
   }
 });
 
+test('OMEGA V2 module: no connect, VIEW, INTERACTIVE, ADMIN, execute, rpc, raw, shell, clipboard, file transfer, credential or auto-connect surface', () => {
+  const source = read(FILES.omegaV2);
+  const forbidden = [
+    /connectOmegaDevice\s*\(/, /startOmegaOutboundView|startOmegaOutboundInteractive|sendOmegaOutboundInput/i,
+    /requestOmegaOutboundAdmin\w*|getOmegaOutboundAdmin\w*|cancelOmegaOutboundAdmin\w*/,
+    /stopOmegaOutbound\w*|refreshOmegaOutboundSession/, /ensureOmegaV2Identity|signWithOmegaV2Identity/,
+    /['"`]\/(execute|run|action|command|dispatch|shell|tool|rpc|raw|view|interactive|admin|stop|connect)\b/,
+    /clipboard/i, /file\s*transfer|sendFile|uploadFile|downloadFile/i, /credential|password|bearerToken|apiKey/i,
+    /auto[-_ ]?connect|autoConnect/i, /setInterval|setTimeout/,
+  ];
+  for (const pattern of forbidden) assert.doesNotMatch(source, pattern, pattern.toString());
+});
+
+test('OMEGA V2 VIEW+INTERACTIVE routing is closed, exact, frame/input-free and has no ADMIN/fallback surface', () => {
+  const source = read(FILES.omegaV2View);
+  assert.equal([...source.matchAll(/connectOmegaDevice\(/g)].length, 1, 'one exact connect call site (VIEW only; INTERACTIVE never connects)');
+  assert.equal([...source.matchAll(/\bstartOmegaOutboundView\b/g)].length, 2, 'one import plus one dependency binding');
+  assert.equal([...source.matchAll(/\bstartOmegaOutboundInteractive\b/g)].length, 2, 'one import plus one dependency binding');
+  assert.equal([...source.matchAll(/\bstopOmegaOutboundInteractive\b/g)].length, 2, 'one import plus one dependency binding');
+  // The connect call forwards a permission computed from the trust's own
+  // ceiling (never a Fabric-invented value; OMEGA re-verifies independently)
+  // rather than a hardcoded 'VIEW' literal — otherwise INTERACTIVE could
+  // never be reachable on that same session.
+  assert.match(source, /connectOmegaDevice\(hostId, permission, options\)/);
+  assert.match(source, /connectPermission:\s*fabricDeviceId\s*=>\s*getOmegaV2LinkView\(fabricDeviceId\)\?\.trust\?\.maxPermission\s*\?\?\s*'VIEW'/);
+  // Phase 4 legitimately calls start/stop INTERACTIVE; it must never touch a
+  // raw input primitive, ADMIN, or any generic execution/routing surface.
+  assert.doesNotMatch(source, /sendOmegaOutboundInput|requestOmegaOutboundAdmin\w*|getOmegaOutboundAdmin\w*|cancelOmegaOutboundAdmin\w*/);
+  // 'ADMIN' appears exactly once: a read-only accept-list entry acknowledging
+  // that a session locked at the ADMIN ceiling still satisfies a VIEW/
+  // INTERACTIVE request (OMEGA's permission order is VIEW < INTERACTIVE <
+  // ADMIN). Fabric never requests, starts, or routes to ADMIN itself — there
+  // is no ADMIN route, dependency, or call site anywhere in this module.
+  assert.equal([...source.matchAll(/\bADMIN\b/g)].length, 1, 'ADMIN appears only once, in the session-permission accept-list');
+  assert.match(source, /!\['VIEW', 'INTERACTIVE', 'ADMIN'\]\.includes\(session\.permission\)/);
+  assert.doesNotMatch(source, /requestAdmin|startAdmin|enterAdmin|admin[-_]?mode|ADMIN_MODE|adminSession/i);
+  // "key" alone is a legitimate local variable (rate-limit map, allowed
+  // input-field allowlist entries) — only actual input-primitive identifiers
+  // and pointer/keyboard/mouse/wheel/clipboard concepts are forbidden here.
+  assert.doesNotMatch(source, /pointerEvent|keyboardEvent|mouseEvent|wheelDelta|keyCode|virtualKey|clipboard/i);
+  assert.doesNotMatch(source, /fetchOmegaOutboundViewFrame|\bframe(?:s|Bytes|Buffer)?\b|image\/png/i);
+  assert.doesNotMatch(source, /fallback|bestAvailable|nearest|selectHost|listOmegaOutboundHosts/);
+  assert.doesNotMatch(source, /routeToOmega|executeOnDevice|invokeAgent|sendRaw|genericRpc|proxyRequest/);
+  assert.doesNotMatch(source, /setInterval|setTimeout|voice|scheduler|agent-runner/i);
+  assert.match(source, /const revalidated = deps\.resolveTarget\(fabricDeviceId\)/);
+  assert.match(source, /if \(!sameBinding\(revalidated, resolved\)\) fail\('OMEGA_V2_LINK_CHANGED'\)/);
+  // INTERACTIVE start re-validates against the binding, exactly like VIEW start.
+  assert.match(source, /const revalidated = deps\.resolveTarget\(fabricDeviceId\);\s*\n\s*if \(!sameBinding\(revalidated, binding\)\) fail\('OMEGA_V2_LINK_CHANGED'\)/);
+  // STOP VIEW/STOP SESSION always clear the local interactive flag; Fabric
+  // itself never releases held keys/buttons (that is OMEGA's job).
+  assert.doesNotMatch(source, /heldKeys|heldButtons|releaseSemanticInput|releaseHeldInput/i);
+});
+
+test('OMEGA V2 ADMIN module is closed to exactly the 9-action allowlist + STOP, with no generic executor, approval authority or raw surface', () => {
+  const source = read(FILES.omegaV2Admin);
+  // Exactly the 5 read + 4 high-impact typed OMEGA V2 client functions, plus
+  // status/cancel/session/stop primitives. No sendOmegaOutboundInput, no
+  // VIEW/INTERACTIVE start, no identity/signing.
+  for (const name of ['getOmegaOutboundAdminSystemInfo', 'listOmegaOutboundAdminProcesses', 'getOmegaOutboundAdminServiceStatus',
+    'getOmegaOutboundAdminNetworkStatus', 'getOmegaOutboundAdminDiskStatus', 'requestOmegaOutboundAdminLock',
+    'requestOmegaOutboundAdminLogoff', 'requestOmegaOutboundAdminRestart', 'requestOmegaOutboundAdminShutdown',
+    'getOmegaOutboundAdminOperation', 'cancelOmegaOutboundAdminOperation']) {
+    assert.equal([...source.matchAll(new RegExp(`\\b${name}\\b`, 'g'))].length, 2, `${name}: one import plus one dependency binding`);
+  }
+  assert.doesNotMatch(source, /sendOmegaOutboundInput|startOmegaOutboundView|startOmegaOutboundInteractive|stopOmegaOutboundView|stopOmegaOutboundInteractive/);
+  assert.doesNotMatch(source, /ensureOmegaV2Identity|signWithOmegaV2Identity|fetchOmegaOutboundViewFrame/);
+  // Fabric's own STOP uses only the exact-session primitive, never the
+  // global stop-all (which would reach non-Fabric-owned sessions).
+  assert.equal([...source.matchAll(/\bstopOmegaOutboundSession\b/g)].length, 2, 'one import plus one dependency binding');
+  assert.doesNotMatch(source, /stopAllOmegaOutboundSessions/);
+  // No generic executor, no action-string entry point, no command/script/
+  // executable/argument list anywhere (mission §12, §14, §34).
+  assert.doesNotMatch(source, /runFabricOmegaV2AdminOperation|executeAdmin\w*|runCommand|runPowerShell|executeRaw|invokeRpc|runExecutable|sendShell|proxyAdminRequest/i);
+  assert.doesNotMatch(source, /\bcommand\b|\bscript\b|\bexecutable\b|\bargs\b|powershell|rpcMethod/i);
+  // No approval authority in Fabric: no token, no decision entry point, no
+  // self-approval, no credential/secret storage.
+  assert.doesNotMatch(source, /approvalToken|approveOperation|selfApprove|admin\/approve|admin\/allow|admin\/decision/i);
+  assert.doesNotMatch(source, /credential|password|bearerToken|apiKey|private[-_]?key/i);
+  // No clipboard, file transfer, registry, service mutation or process kill.
+  assert.doesNotMatch(source, /clipboard/i);
+  assert.doesNotMatch(source, /file\s*transfer|sendFile|uploadFile|downloadFile|readFile|writeFile/i);
+  assert.doesNotMatch(source, /registry|regedit|HKEY/i);
+  assert.doesNotMatch(source, /serviceStart|serviceStop|installService|StartService|StopService/i);
+  assert.doesNotMatch(source, /killProcess|processKill|TerminateProcess/i);
+  // No autonomous trigger: no timer, no voice, no scheduler, no agent runner.
+  assert.doesNotMatch(source, /setInterval|setTimeout|voice|scheduler|agent-runner/i);
+  // TOCTOU: every action path resolves twice (once directly, once inside
+  // revalidate()) before ever reaching a network call.
+  assert.match(source, /function revalidate\(fabricDeviceId, against\) \{\s*\n\s*const resolved = deps\.resolveTarget\(fabricDeviceId\);\s*\n\s*if \(!sameBinding\(resolved, against\)\) fail\('OMEGA_V2_LINK_CHANGED'\);/);
+  assert.equal([...source.matchAll(/deps\.resolveTarget\(fabricDeviceId\)/g)].length >= 4, true, 'resolveTarget is called at least once per read/high-impact path plus once inside revalidate');
+  // ADMIN permission is requested from the trust's own ceiling, never invented.
+  assert.match(source, /connectPermission:\s*fabricDeviceId\s*=>\s*getOmegaV2LinkView\(fabricDeviceId\)\?\.trust\?\.maxPermission\s*\?\?\s*'VIEW'/);
+  assert.match(source, /session\.permission !== 'ADMIN'/);
+  // High-impact requires the exact typed confirmation naming the action.
+  assert.match(source, /rawInput\.confirm !== expected/);
+  // STOP ALL iterates only this module's own bindings.
+  assert.match(source, /const bindings = \[\.\.\.activeByFabricDevice\.entries\(\)\]/);
+  assert.doesNotMatch(source, /rassilon/i);
+});
+
 test('Fabric SQL (schema, migration, store) only references fabric_* tables and has no FK into agent tables', () => {
   const { schema, migration, store } = fabricSqlBlocks();
   for (const block of [schema, migration, store]) {
@@ -232,7 +366,8 @@ test('route and probe are single-attempt in the client: never the retrying apiFe
     assert.ok(start > 0, name);
     return client.slice(start, client.indexOf('\n  },', start));
   };
-  for (const method of ['deviceFabricRoute', 'deviceFabricProbe']) {
+  for (const method of ['deviceFabricRoute', 'deviceFabricProbe', 'deviceFabricOmegaV2ViewStart',
+    'deviceFabricOmegaV2ViewStop', 'deviceFabricOmegaV2SessionStop']) {
     assert.match(body(method), /deviceFabricPostOnce\(/, method);
     assert.doesNotMatch(body(method), /apiFetch|deviceFabricJson/, method);
   }
@@ -271,6 +406,37 @@ test('frontend: timers never probe or route; probe and route only from explicit 
   assert.doesNotMatch(tab, /FULL CONTROL|CONTROL PC|RUN ANYTHING|EXECUTE COMMAND|\bTERMINAL\b/i);
 });
 
+test('frontend OMEGA VIEW starts only from an explicit click and timers only read status/frames', () => {
+  const panel = read(path.join(repo, 'src/components/settings/FabricOmegaV2ViewPanel.tsx'));
+  assert.equal(panel.split('deviceFabricOmegaV2ViewStart(').length - 1, 1);
+  const startIndex = panel.indexOf('deviceFabricOmegaV2ViewStart(');
+  assert.match(panel.slice(Math.max(0, startIndex - 1_000), startIndex), /async function start\(\)/);
+  assert.match(panel, /onClick=\{\(\) => void start\(\)\}/);
+  for (const match of panel.matchAll(/setInterval\(([^;]*[\s\S]*?)\n\s*\},\s*[0-9_]+\)/g)) {
+    assert.doesNotMatch(match[1], /deviceFabricOmegaV2ViewStart|deviceFabricOmegaV2ViewStop|deviceFabricOmegaV2SessionStop|deviceFabricOmegaV2InteractiveStart|deviceFabricOmegaV2InteractiveStop/);
+  }
+  assert.doesNotMatch(panel, /upload|clipboard/i);
+  assert.doesNotMatch(panel, /\bADMIN\b/);
+  assert.doesNotMatch(panel, /FULL CONTROL|SUPER ADMIN|TOTAL CONTROL/i);
+});
+
+test('frontend INTERACTIVE elevates only from an explicit click; input goes straight to OMEGA, never through a Fabric route', () => {
+  const panel = read(path.join(repo, 'src/components/settings/FabricOmegaV2ViewPanel.tsx'));
+  for (const call of ['deviceFabricOmegaV2InteractiveStart(', 'deviceFabricOmegaV2InteractiveStop(']) {
+    assert.equal(panel.split(call).length - 1, 1, `${call} has one call site`);
+  }
+  const startIndex = panel.indexOf('deviceFabricOmegaV2InteractiveStart(');
+  assert.match(panel.slice(Math.max(0, startIndex - 1_000), startIndex), /async function startInteractive\(\)/);
+  assert.match(panel, /onClick=\{\(\) => void startInteractive\(\)\}/);
+  assert.match(panel, /onClick=\{\(\) => void stopInteractive\(\)\}/);
+  // Raw pointer/keyboard/wheel input is sent directly to OMEGA V2's own
+  // certified route with fetch — never to any Fabric endpoint, never with
+  // cortexClient's deviceFabric* helpers, never a generic/raw primitive.
+  assert.match(panel, /\/api\/omega\/outbound\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/input\/\$\{category\}/);
+  assert.doesNotMatch(panel, /\/api\/device-fabric[^`'"]*\/input/);
+  assert.doesNotMatch(panel, /sendRaw|genericRpc|proxyRequest|executeOnDevice/);
+});
+
 test('no CommandBar, voice, MetaGPT, business agent or scheduler path reaches Device Fabric', () => {
   const frontendHits = [];
   const walk = dir => {
@@ -281,7 +447,8 @@ test('no CommandBar, voice, MetaGPT, business agent or scheduler path reaches De
     }
   };
   walk(path.join(repo, 'src'));
-  assert.deepEqual(frontendHits.sort(), ['src/components/modals/SettingsModal.tsx', 'src/components/settings/DeviceFabricSettingsTab.tsx', 'src/lib/cortex/client.ts']);
+  assert.deepEqual(frontendHits.sort(), ['src/components/modals/SettingsModal.tsx', 'src/components/settings/DeviceFabricSettingsTab.tsx',
+    'src/components/settings/FabricOmegaV2AdminPanel.tsx', 'src/components/settings/FabricOmegaV2ViewPanel.tsx', 'src/lib/cortex/client.ts']);
   const backendHits = [];
   const walkBackend = dir => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -291,5 +458,8 @@ test('no CommandBar, voice, MetaGPT, business agent or scheduler path reaches De
     }
   };
   walkBackend(path.join(here, 'src'));
-  assert.deepEqual(backendHits.sort(), ['src/lib/device-fabric-agents.js', 'src/lib/device-fabric-routing.js', 'src/lib/device-fabric.js', 'src/lib/sqlite.js', 'src/routes/device-fabric.js', 'src/server.js']);
+  assert.deepEqual(backendHits.sort(), ['src/lib/device-fabric-agents.js', 'src/lib/device-fabric-omega-v2-admin.js',
+    'src/lib/device-fabric-omega-v2-routing.js',
+    'src/lib/device-fabric-omega-v2.js', 'src/lib/device-fabric-routing.js', 'src/lib/device-fabric.js',
+    'src/lib/sqlite.js', 'src/routes/device-fabric.js', 'src/server.js']);
 });

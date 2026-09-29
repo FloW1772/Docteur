@@ -14,17 +14,28 @@ function ensureParentDir(filePath) {
 }
 
 // DEVICE FABRIC audit columns, shared by the CREATE statement and the
-// Phase 2 -> Phase 3 migration below (the closed event enum grew).
+// Phase 2 -> Phase 3 -> Phase 2 (V2) -> Phase 4 (V2 INTERACTIVE) migrations
+// below (the closed event enum grew three times, and agent_type gained a
+// third value).
 const FABRIC_AUDIT_EVENT_TYPES_SQL = `'FABRIC_DEVICE_CREATED', 'FABRIC_DEVICE_RENAMED', 'FABRIC_DEVICE_REMOVED',
         'FABRIC_AGENT_LINKED', 'FABRIC_AGENT_UNLINKED', 'FABRIC_LINK_REJECTED',
         'FABRIC_ROUTE_REQUESTED', 'FABRIC_ROUTE_STARTED', 'FABRIC_ROUTE_COMPLETED',
-        'FABRIC_ROUTE_FAILED', 'FABRIC_ROUTE_CANCELLED', 'FABRIC_ROUTE_REJECTED'`;
+        'FABRIC_ROUTE_FAILED', 'FABRIC_ROUTE_CANCELLED', 'FABRIC_ROUTE_REJECTED',
+        'FABRIC_OMEGA_V2_VIEW_REQUESTED', 'FABRIC_OMEGA_V2_VIEW_STARTED',
+        'FABRIC_OMEGA_V2_VIEW_FAILED', 'FABRIC_OMEGA_V2_VIEW_STOPPED',
+        'FABRIC_OMEGA_V2_INTERACTIVE_REQUESTED', 'FABRIC_OMEGA_V2_INTERACTIVE_STARTED',
+        'FABRIC_OMEGA_V2_INTERACTIVE_DENIED', 'FABRIC_OMEGA_V2_INTERACTIVE_STOPPED',
+        'FABRIC_OMEGA_V2_ADMIN_REQUESTED', 'FABRIC_OMEGA_V2_ADMIN_WAITING_APPROVAL',
+        'FABRIC_OMEGA_V2_ADMIN_COMPLETED', 'FABRIC_OMEGA_V2_ADMIN_DENIED',
+        'FABRIC_OMEGA_V2_ADMIN_FAILED', 'FABRIC_OMEGA_V2_ADMIN_CANCELLED',
+        'FABRIC_OMEGA_V2_ADMIN_STOP_COMPLETED'`;
+const FABRIC_AUDIT_AGENT_TYPES_SQL = `'OMEGA', 'RASSILON', 'OMEGA_V2_OUTBOUND'`;
 const FABRIC_AUDIT_COLUMNS_SQL = `
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT NOT NULL,
       event_type TEXT NOT NULL CHECK (event_type IN (${FABRIC_AUDIT_EVENT_TYPES_SQL})),
       fabric_device_id TEXT,
-      agent_type TEXT CHECK (agent_type IS NULL OR agent_type IN ('OMEGA', 'RASSILON')),
+      agent_type TEXT CHECK (agent_type IS NULL OR agent_type IN (${FABRIC_AUDIT_AGENT_TYPES_SQL})),
       agent_device_id TEXT,
       reason TEXT CHECK (reason IS NULL OR length(reason) <= 64),
       operation_id TEXT,
@@ -32,18 +43,60 @@ const FABRIC_AUDIT_COLUMNS_SQL = `
     `;
 
 // A Phase 2 database has fabric_audit with the smaller event enum and no
-// operation/correlation columns. SQLite cannot alter a CHECK, so the table
-// is rebuilt once, keeping every existing row. Touches fabric_audit only.
+// operation/correlation columns. A Phase 3 database has those columns but
+// agent_type still CHECKs only ('OMEGA', 'RASSILON'). A Phase 3 V2 database
+// (VIEW routing) has OMEGA_V2_OUTBOUND but not yet the INTERACTIVE event
+// names, and a Phase 4 database (this mission's own baseline) has those but
+// not yet the Phase 5 ADMIN/STOP event names. SQLite cannot alter a CHECK,
+// so the table is rebuilt once per missing feature, keeping every existing
+// row. Touches fabric_audit only.
 function migrateFabricAuditTable() {
   const existing = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fabric_audit'").get();
-  if (!existing || existing.sql.includes('FABRIC_ROUTE_REQUESTED')) return;
+  if (!existing || (existing.sql.includes('OMEGA_V2_OUTBOUND') && existing.sql.includes('FABRIC_OMEGA_V2_ADMIN_STOP_COMPLETED'))) return;
   database.transaction(() => {
-    database.exec(`CREATE TABLE fabric_audit_v3 (${FABRIC_AUDIT_COLUMNS_SQL})`);
-    database.exec(`INSERT INTO fabric_audit_v3 (id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason)
-      SELECT id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason FROM fabric_audit`);
+    database.exec(`CREATE TABLE fabric_audit_v6 (${FABRIC_AUDIT_COLUMNS_SQL})`);
+    if (existing.sql.includes('FABRIC_ROUTE_REQUESTED')) {
+      database.exec(`INSERT INTO fabric_audit_v6 (id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason, operation_id, correlation_id)
+        SELECT id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason, operation_id, correlation_id FROM fabric_audit`);
+    } else {
+      database.exec(`INSERT INTO fabric_audit_v6 (id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason)
+        SELECT id, created_at, event_type, fabric_device_id, agent_type, agent_device_id, reason FROM fabric_audit`);
+    }
     database.exec('DROP TABLE fabric_audit');
-    database.exec('ALTER TABLE fabric_audit_v3 RENAME TO fabric_audit');
+    database.exec('ALTER TABLE fabric_audit_v6 RENAME TO fabric_audit');
     database.exec('CREATE INDEX IF NOT EXISTS idx_fabric_audit_created_at ON fabric_audit(created_at DESC, id DESC)');
+  })();
+}
+
+// A pre-V2 fabric_agent_links CHECKs agent_type IN ('OMEGA', 'RASSILON')
+// only. Same non-destructive rebuild-and-copy as fabric_audit above; every
+// existing link row (link_id, status, timestamps) is preserved verbatim,
+// with link_version defaulted to 1 for pre-existing rows. Touches
+// fabric_agent_links only.
+function migrateFabricAgentLinksTable() {
+  const existing = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'fabric_agent_links'").get();
+  if (!existing || existing.sql.includes('OMEGA_V2_OUTBOUND')) return;
+  database.transaction(() => {
+    database.exec(`CREATE TABLE fabric_agent_links_v2 (
+      link_id TEXT PRIMARY KEY,
+      fabric_device_id TEXT NOT NULL REFERENCES fabric_devices(fabric_device_id),
+      agent_type TEXT NOT NULL CHECK (agent_type IN ('OMEGA', 'RASSILON', 'OMEGA_V2_OUTBOUND')),
+      agent_device_id TEXT NOT NULL CHECK (length(agent_device_id) BETWEEN 1 AND 128),
+      agent_fingerprint TEXT NOT NULL CHECK (length(agent_fingerprint) = 64),
+      link_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (link_status IN ('ACTIVE', 'UNLINKED')),
+      link_version INTEGER NOT NULL DEFAULT 1 CHECK (link_version >= 1),
+      linked_at TEXT NOT NULL,
+      unlinked_at TEXT
+    )`);
+    database.exec(`INSERT INTO fabric_agent_links_v2
+      (link_id, fabric_device_id, agent_type, agent_device_id, agent_fingerprint, link_status, link_version, linked_at, unlinked_at)
+      SELECT link_id, fabric_device_id, agent_type, agent_device_id, agent_fingerprint, link_status, 1, linked_at, unlinked_at FROM fabric_agent_links`);
+    database.exec('DROP TABLE fabric_agent_links');
+    database.exec('ALTER TABLE fabric_agent_links_v2 RENAME TO fabric_agent_links');
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_fabric_link_identity
+      ON fabric_agent_links(agent_type, agent_device_id) WHERE link_status = 'ACTIVE'`);
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_fabric_link_per_agent
+      ON fabric_agent_links(fabric_device_id, agent_type) WHERE link_status = 'ACTIVE'`);
   })();
 }
 
@@ -1685,10 +1738,16 @@ export function initSqlite(sqlitePath) {
     CREATE TABLE IF NOT EXISTS fabric_agent_links (
       link_id TEXT PRIMARY KEY,
       fabric_device_id TEXT NOT NULL REFERENCES fabric_devices(fabric_device_id),
-      agent_type TEXT NOT NULL CHECK (agent_type IN ('OMEGA', 'RASSILON')),
+      agent_type TEXT NOT NULL CHECK (agent_type IN ('OMEGA', 'RASSILON', 'OMEGA_V2_OUTBOUND')),
       agent_device_id TEXT NOT NULL CHECK (length(agent_device_id) BETWEEN 1 AND 128),
       agent_fingerprint TEXT NOT NULL CHECK (length(agent_fingerprint) = 64),
       link_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (link_status IN ('ACTIVE', 'UNLINKED')),
+      -- Bumped on every state-affecting change to this row (currently only at
+      -- creation, always 1); read immediately before an OMEGA V2 call and
+      -- compared to the value read at resolution time, so a link that changed
+      -- between resolve and use is detected rather than silently followed
+      -- (architecture report §6.3, TOCTOU).
+      link_version INTEGER NOT NULL DEFAULT 1 CHECK (link_version >= 1),
       linked_at TEXT NOT NULL,
       unlinked_at TEXT
     );
@@ -1733,6 +1792,7 @@ export function initSqlite(sqlitePath) {
       ON fabric_operations(status);
   `);
   migrateFabricAuditTable();
+  migrateFabricAgentLinksTable();
 
   statements = {
     upsertPage: database.prepare(`
@@ -6145,7 +6205,7 @@ function parseFabricLinkRow(row) {
   return {
     linkId: row.link_id, fabricDeviceId: row.fabric_device_id, agentType: row.agent_type,
     agentDeviceId: row.agent_device_id, agentFingerprint: row.agent_fingerprint,
-    linkStatus: row.link_status, linkedAt: row.linked_at, unlinkedAt: row.unlinked_at,
+    linkStatus: row.link_status, linkVersion: row.link_version, linkedAt: row.linked_at, unlinkedAt: row.unlinked_at,
   };
 }
 

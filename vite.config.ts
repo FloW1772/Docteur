@@ -121,6 +121,15 @@ export default defineConfig({
   ],
 
   optimizeDeps: {
+    // Without an explicit entry, Vite's dependency scanner crawls the whole
+    // project tree for HTML (its default glob is not gitignore-aware) and
+    // picks up the gitignored external/MetaGPT and external/OpenMontage
+    // nested repos sitting under the repo root. One of their HTML files
+    // fails to parse, aborting the scan mid-flight and leaving a stale
+    // node_modules/.vite/deps_temp_* behind (hence the EPERM rename and the
+    // 504 Outdated Optimize Dep on every subsequent request). Pinning the
+    // scan to Docteur's real entry avoids both nested repos entirely.
+    entries: ['index.html'],
     // Tesseract's CommonJS entry needs conversion to ESM, even when lazy-loaded.
     // Its worker/WASM assets remain served separately from public/tesseract/.
     include: ['tesseract.js'],
@@ -143,6 +152,15 @@ export default defineConfig({
     // loopback-only plugin above rejects any non-loopback connection, so
     // this does not expose the server to the LAN.
     host: localNetwork ? true : '::',
+    watch: {
+      // external/MetaGPT and external/OpenMontage are gitignored nested
+      // repos (each with their own .git, and MetaGPT its own Python .venv)
+      // that live under the repo root but are never part of the Docteur
+      // frontend. Vite's default watch ignores already cover node_modules
+      // and .git, but not this project-specific nested-repo layout, so
+      // without this they'd add pure watcher churn for zero benefit.
+      ignored: ['**/external/**'],
+    },
     // No HTTPS here — dev stays on http://localhost:5173 to preserve IDB origin.
   },
 

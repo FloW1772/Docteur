@@ -2108,6 +2108,104 @@ export interface FabricRouteRequest {
   semanticPayload: Record<string, unknown>;
 }
 
+// ── Device Fabric V2 (Phase 2: OMEGA V2 outbound link + exact resolution +
+// read-only status, no VIEW/INTERACTIVE/ADMIN/STOP routing) ─────────────────
+// A separate, distinct link kind from FabricAgentType's 'OMEGA' (OMEGA V1
+// inbound — a remote device paired TO this PC). OMEGA_V2_OUTBOUND names a
+// host THIS PC is allowed to control OUTBOUND, in a disjoint identity space
+// (omegaV2HostId is 'ov2h-<uuid>', never an omega_devices.id).
+export type OmegaV2LinkState = 'OK' | 'MISSING' | 'FINGERPRINT_MISMATCH' | 'REVOKED';
+export type OmegaV2Availability = 'AVAILABLE' | 'UNKNOWN' | 'UNAVAILABLE';
+export type OmegaV2Permission = 'VIEW' | 'INTERACTIVE' | 'ADMIN';
+
+export interface OmegaV2Trust {
+  omegaV2HostId: string;
+  host: string;
+  port: number;
+  identityFingerprint: string;
+  certificateFingerprint: string;
+  maxPermission: OmegaV2Permission;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export interface OmegaV2HostListing extends OmegaV2Trust {
+  linkedFabricDeviceId: string | null;
+}
+
+export interface OmegaV2Capability {
+  name: OmegaV2Permission;
+  supported: FabricTri;
+  authorized: FabricTri;
+  available: FabricTri;
+}
+
+export interface OmegaV2Link {
+  linkId: string;
+  omegaV2HostId: string;
+  linkedFingerprint: string;
+  linkVersion: number;
+  linkedAt: string;
+  linkState: OmegaV2LinkState;
+  trust: OmegaV2Trust | null;
+  availability: OmegaV2Availability;
+  capabilities: OmegaV2Capability[];
+  session?: { permission: OmegaV2Permission; expiresAt: string } | null;
+}
+
+export interface FabricOmegaV2ViewState {
+  fabricDeviceId: string;
+  omegaV2HostId: string | null;
+  linkId: string | null;
+  linkVersion: number | null;
+  sessionId: string | null;
+  sessionStatus: string;
+  sessionReason: string | null;
+  viewStatus: string;
+  streamId: string | null;
+  screenIndex: number | null;
+  interactiveStatus: string;
+  linkChanged: boolean;
+  linkReason?: string | null;
+}
+
+// Phase 5: closed 9-action ADMIN allowlist result shapes. `result` is only
+// ever OMEGA V2's own already-safe-bounded projection (system/processes/
+// services/interfaces/disks) — Fabric neither widens nor stores it.
+export type FabricOmegaV2AdminReadResult = {
+  fabricDeviceId: string;
+  omegaV2HostId: string;
+  sessionId: string;
+  status: string;
+  actionType: string;
+  error?: string | null;
+  result?: Record<string, unknown>;
+};
+export type FabricOmegaV2AdminOperation = {
+  fabricDeviceId: string;
+  omegaV2HostId: string;
+  sessionId: string;
+  operationId: string;
+  actionType: string;
+  status: string;
+  error?: string | null;
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  result?: Record<string, unknown>;
+};
+export interface FabricOmegaV2AdminState {
+  fabricDeviceId: string;
+  omegaV2HostId: string | null;
+  sessionId: string | null;
+  sessionStatus: string;
+  linkChanged: boolean;
+}
+export interface FabricOmegaV2StopResult {
+  fabricDeviceId: string;
+  sessionId: string | null;
+  stopped: boolean;
+}
+
 async function deviceFabricJson<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const res = await apiFetch(`/api/device-fabric${path}`, {
     method,
@@ -2265,6 +2363,125 @@ export const cortexClient = {
 
   deviceFabricProbe(fabricDeviceId: string): Promise<{ ok: boolean; device: FabricDevice }> {
     return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/rassilon/probe`, {});
+  },
+
+  // ── OMEGA V2 outbound: link/status (Phase 2), closed VIEW (Phase 3) and
+  // closed INTERACTIVE (Phase 4) orchestration only. No ADMIN, generic
+  // route, or raw input call exists here.
+  deviceFabricOmegaV2Hosts(): Promise<{ ok: boolean; hosts: OmegaV2HostListing[] }> {
+    return deviceFabricJson('/omega-v2/hosts');
+  },
+
+  deviceFabricOmegaV2Status(fabricDeviceId: string): Promise<{ ok: boolean; link: OmegaV2Link | null }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/status`);
+  },
+
+  deviceFabricOmegaV2Link(fabricDeviceId: string, omegaV2HostId: string, confirmFingerprint: string): Promise<{ ok: boolean; link: OmegaV2Link }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/link`, 'POST', { omegaV2HostId, confirmFingerprint });
+  },
+
+  deviceFabricOmegaV2Unlink(fabricDeviceId: string): Promise<{ ok: boolean; unlinked: boolean }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/link`, 'DELETE');
+  },
+
+  deviceFabricOmegaV2ViewStart(fabricDeviceId: string, link: OmegaV2Link, screenIndex = 0): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/view/start`, {
+      screenIndex, linkId: link.linkId, linkVersion: link.linkVersion,
+      omegaV2HostId: link.omegaV2HostId, fingerprint: link.linkedFingerprint,
+    });
+  },
+
+  deviceFabricOmegaV2ViewStatus(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/view/status`);
+  },
+
+  deviceFabricOmegaV2ViewStop(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/view/stop`, {});
+  },
+
+  deviceFabricOmegaV2SessionStop(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/session/stop`, {});
+  },
+
+  // Phase 4: explicit INTERACTIVE elevation of an already-active VIEW.
+  // Pointer/keyboard/wheel events never go through Fabric — the browser
+  // calls OMEGA V2's own certified input routes directly with the
+  // sessionId this state exposes (mirrors omegaOutboundViewFrame's pattern).
+  deviceFabricOmegaV2InteractiveStart(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/interactive/start`, {});
+  },
+
+  deviceFabricOmegaV2InteractiveStatus(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/interactive/status`);
+  },
+
+  deviceFabricOmegaV2InteractiveStop(fabricDeviceId: string): Promise<{ ok: boolean; view: FabricOmegaV2ViewState }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/interactive/stop`, {});
+  },
+
+  // Phase 5: closed 9-action ADMIN allowlist + Fabric controller STOP. Every
+  // call is a typed wrapper; there is no generic action string anywhere.
+  deviceFabricOmegaV2AdminSystemInfo(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminReadResult }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/system-info`, {});
+  },
+  deviceFabricOmegaV2AdminProcesses(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminReadResult }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/processes`, {});
+  },
+  deviceFabricOmegaV2AdminServiceStatus(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminReadResult }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/service-status`, {});
+  },
+  deviceFabricOmegaV2AdminNetworkStatus(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminReadResult }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/network-status`, {});
+  },
+  deviceFabricOmegaV2AdminDiskStatus(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminReadResult }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/disk-status`, {});
+  },
+  deviceFabricOmegaV2AdminStatus(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminState }> {
+    return deviceFabricJson(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/status`);
+  },
+
+  // Each high-impact call requires the exact typed confirmation naming the
+  // action; this only gates Fabric's own request, never the remote device's
+  // own local approval (mission §9, §19).
+  deviceFabricOmegaV2AdminLock(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/lock`, { confirm: 'LOCK' });
+  },
+  deviceFabricOmegaV2AdminLogoff(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/logoff`, { confirm: 'LOGOFF' });
+  },
+  deviceFabricOmegaV2AdminRestart(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/restart`, { confirm: 'RESTART' });
+  },
+  deviceFabricOmegaV2AdminShutdown(fabricDeviceId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/shutdown`, { confirm: 'SHUTDOWN' });
+  },
+
+  deviceFabricOmegaV2AdminOperationStatus(fabricDeviceId: string, operationId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/operations/status`, { operationId });
+  },
+  deviceFabricOmegaV2AdminOperationCancel(fabricDeviceId: string, operationId: string): Promise<{ ok: boolean; admin: FabricOmegaV2AdminOperation }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/admin/operations/cancel`, { operationId });
+  },
+
+  // Fabric-scoped STOP: only sessions Fabric itself opened for this device
+  // (VIEW/INTERACTIVE has its own separate session/stop above; ADMIN uses
+  // its own session and its own stop).
+  deviceFabricOmegaV2AdminStopDevice(fabricDeviceId: string): Promise<{ ok: boolean; fabricDeviceId: string; sessionId: string | null; stopped: boolean }> {
+    return deviceFabricPostOnce(`/devices/${encodeURIComponent(fabricDeviceId)}/omega-v2/stop`, {});
+  },
+  deviceFabricOmegaV2AdminStopAll(): Promise<{ ok: boolean; results: FabricOmegaV2StopResult[] }> {
+    return deviceFabricPostOnce('/omega-v2/stop-all', {});
+  },
+
+  async omegaOutboundViewFrame(sessionId: string): Promise<Blob> {
+    const response = await fetchTimeout(`${BASE}/api/omega/outbound/sessions/${encodeURIComponent(sessionId)}/view/frame`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store',
+    }, 15_000);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({ error: `HTTP_${response.status}` })) as { error?: string };
+      throw new Error(data.error ?? `OMEGA_VIEW_FRAME HTTP ${response.status}`);
+    }
+    return response.blob();
   },
 
   async health(): Promise<HealthStatus> {
