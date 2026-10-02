@@ -20,6 +20,22 @@ const ENTROPY = 'Docteur.Cortex.CloudApiKeys.v1'; // additional entropy, not a s
 const SYSTEM_ROOT = process.env.SystemRoot || 'C:\\Windows';
 const POWERSHELL_EXE = path.join(SYSTEM_ROOT, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
+// SECURITY (Root Policy V1 closure, RPC-2A): both scripts below splice a base64 value inside a single-quoted
+// PowerShell literal. The base64 alphabet cannot close that literal, but a value read back from the database is
+// not guaranteed to be base64 — so it is checked first. The accepted shape is exactly what Docteur writes and
+// reads today: standard base64 (A-Z a-z 0-9 + /), a length multiple of 4, at most two trailing '=' (the output of
+// [Convert]::ToBase64String over a DPAPI blob). Anything else is refused BEFORE a process is started; the error
+// never carries the value. A refused blob behaves like any other undecryptable blob: getSecret() → null,
+// getSecretStatus() → 'invalid', the stored blob is left untouched.
+const STRICT_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+export function isStrictBase64(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8 * 1024 * 1024 && STRICT_BASE64.test(value);
+}
+function assertStrictBase64(value) {
+  if (!isStrictBase64(value)) throw new Error('DPAPI: valeur chiffrée invalide (base64 attendu)');
+  return value;
+}
+
 function runPowerShell(script) {
   const result = spawnSync(POWERSHELL_EXE, [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script,
@@ -39,7 +55,7 @@ function protect(plaintext) {
   const script = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
-$bytes = [Convert]::FromBase64String('${plainB64}')
+$bytes = [Convert]::FromBase64String('${assertStrictBase64(plainB64)}')
 $entropy = [System.Text.Encoding]::UTF8.GetBytes('${ENTROPY}')
 $protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 [Convert]::ToBase64String($protected)
@@ -51,7 +67,7 @@ function unprotect(cipherB64) {
   const script = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
-$bytes = [Convert]::FromBase64String('${cipherB64}')
+$bytes = [Convert]::FromBase64String('${assertStrictBase64(cipherB64)}')
 $entropy = [System.Text.Encoding]::UTF8.GetBytes('${ENTROPY}')
 $plain = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 [Convert]::ToBase64String($plain)
