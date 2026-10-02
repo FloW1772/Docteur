@@ -13,6 +13,7 @@
  */
 import crypto from 'node:crypto';
 import { ACTION_CEILING, ACTORS, AI_ACTORS, PROTECTED_ACTION_IDS, STOP_ACTION_IDS, UNTRUSTED_ORIGIN_ACTORS, canonicalize } from './schema.js';
+import { evaluateProcessRules } from './process-rules.js';
 
 export const DECISION = Object.freeze({ ALLOW: 'ALLOW', DENY: 'DENY', REQUIRE_APPROVAL: 'REQUIRE_APPROVAL', NOT_APPLICABLE: 'NOT_APPLICABLE' });
 
@@ -117,6 +118,10 @@ export function createEngine({ getPolicy, approvals = null, now = Date.now }) {
         return verdict(DECISION.DENY, 'DENY_ARBITRARY_EXECUTION', base);
       }
       if (untrusted) return verdict(DECISION.DENY, 'DENY_ACTOR_NOT_PERMITTED', base);
+      // Typed process rules (RPC-2C): a module the signed policy declares executors for may start ONLY those executables, with those argument shapes,
+      // from that working directory. A module without an entry keeps the V1 behaviour above (known executor id + typed arguments + no shell).
+      const processRules = constraints?.executors?.[moduleName];
+      if (processRules !== undefined && !evaluateProcessRules(processRules, ctx).ok) return verdict(DECISION.DENY, 'DENY_ARBITRARY_EXECUTION', base);
     }
     if (ceiling.serviceAllowlist && (typeof ctx.serviceId !== 'string' || !ctx.serviceId)) return verdict(DECISION.DENY, 'DENY_UNKNOWN_CAPABILITY', base);
 

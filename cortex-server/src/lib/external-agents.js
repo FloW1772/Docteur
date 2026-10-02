@@ -3,8 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { authorizeRoot, checkedPath, safeRelative, validateTask, sanitize, within, policyError, CAPABILITY, FEATURES } from './external-agent-policy.js';
+import { authorizeRoot, checkedPath, checkedMutationPath, safeRelative, validateTask, sanitize, within, policyError, CAPABILITY, FEATURES } from './external-agent-policy.js';
 import { resolveCli, launchProcess, commandArgs } from './external-agent-process.js';
+import { assertNotRootPolicyPath } from './root-policy/protected-paths.js';
 
 const TERMINAL = new Set(['completed', 'failed', 'timeout', 'cancelled']);
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -208,11 +209,13 @@ export class ExternalAgents extends EventEmitter {
         if (before === after) continue;
         changes.push({ path: file, kind: before === undefined ? 'created' : after === undefined ? 'deleted' : 'modified', diff: `--- ${file}\n+++ ${file}\n${(before ?? '').split('\n').map(l => `-${l}`).join('\n')}\n${(after ?? '').split('\n').map(l => `+${l}`).join('\n')}` });
       }
+      // ROOT POLICY V1 closure (RPC-2B): a proposal that touches the signed policy perimeter is refused here, before any review is possible.
+      for (const change of changes) assertNotRootPolicyPath(path.resolve(job.workspace, change.path), { operation: 'agent-change' });
       if (job.permissions === 'SAFE' && changes.length) throw policyError('read_only_violation');
       job.changes = changes;
       job.review = changes.length ? 'pending' : 'none';
       this.finish(job, 'completed', result.exitCode);
-    } catch (e) { this.finish(job, 'failed', result.exitCode, e.code === 'read_only_violation' ? e.code : 'unsafe_output'); }
+    } catch (e) { this.finish(job, 'failed', result.exitCode, ['read_only_violation', 'root_policy_protected'].includes(e.code) ? e.code : 'unsafe_output'); }
   }
   readStage(root) {
     const result = new Map(); let bytes = 0;
@@ -258,7 +261,7 @@ export class ExternalAgents extends EventEmitter {
       if (!this.roots.includes(root) || root !== job.workspace) throw policyError('workspace_not_authorized');
       // Validate every path and baseline BEFORE touching any file. No git reset/clean.
       const operations = job.changes.map(change => {
-        const target = checkedPath(root, change.path, true);
+        const target = checkedMutationPath(root, change.path); // checkedPath + Root Policy perimeter (RPC-2B)
         const baseline = internal.snapshot.get(change.path);
         const current = fs.existsSync(target) ? safeRead(root, change.path) : undefined;
         if (current !== baseline) throw policyError('review_conflict');

@@ -11,6 +11,8 @@
  * No LLM, no network, no I/O in this file.
  */
 
+import { validateExecutorsConstraint } from './process-rules.js';
+
 export const POLICY_SCHEMA = 'docteur.root-policy/1';
 /** Release floor: a policy older than this is refused (anti-rollback, together with the per-machine highest-seen version). */
 export const MIN_POLICY_VERSION = 1;
@@ -160,6 +162,17 @@ export function validatePolicy(policy) {
     only(def, ['grantable', 'constraints'], `$.capabilities.${name}`, errors);
     if (typeof def.grantable !== 'boolean') errors.push(`$.capabilities.${name}.grantable: boolean required`);
     if (def.constraints !== undefined && !isObj(def.constraints)) errors.push(`$.capabilities.${name}.constraints: object required`);
+  }
+
+  // typed process rules (RPC-2C): the only constraint PROCESS.START_TYPED accepts; structure and templates are checked here, so a malformed
+  // (even validly signed) document is refused at load
+  const processConstraints = isObj(policy.capabilities) ? policy.capabilities['PROCESS.START_TYPED']?.constraints : undefined;
+  if (processConstraints !== undefined) {
+    only(processConstraints, ['executors'], '$.capabilities.PROCESS.START_TYPED.constraints', errors);
+    if (processConstraints.executors !== undefined) {
+      const hasProcessCapability = (moduleName) => isObj(policy.modules) && isObj(policy.modules[moduleName]) && isStrArray(policy.modules[moduleName].capabilities) && policy.modules[moduleName].capabilities.includes('PROCESS.START_TYPED');
+      validateExecutorsConstraint(processConstraints.executors, '$.capabilities.PROCESS.START_TYPED.constraints.executors', errors, { isModuleWithProcessCapability: hasProcessCapability });
+    }
   }
 
   // actions: every catalogue action configured, within the ceiling

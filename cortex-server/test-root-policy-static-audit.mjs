@@ -33,6 +33,36 @@ const rel = (f) => path.relative(SRC, f).split(path.sep).join('/');
 const ALL = walk(SRC).map(f => ({ rel: rel(f), text: fs.readFileSync(f, 'utf8') }));
 const code = (text) => text.split(/\r?\n/).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 
+// ── The offline signing tool ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// WHAT THIS PROTECTS (intent): nothing under src/ may IMPORT, LAUNCH or re-implement the human signing ceremony (import / spawn / exec / reseal / a signing or
+// private-key capability), because the runtime must never be able to sign a policy. A purely textual "the name never appears" check is evaded by assembling the
+// name, so the audit also rejects every fragment that could be used to build it, and checks the capabilities themselves.
+// ONE narrow, defensive exception (RPC-2C): lib/root-policy/protected-paths.js DESIGNATES the tool's path as a file the AI-driven apply flows must never write.
+// That is a path declaration, not a use: it is allowed only as the single exact line below, in a file that has no execution, network or dynamic-load primitive
+// and imports nothing but fs / os / path / url. Anything else naming or assembling the tool — in that file or any other — is a finding.
+const DEFENSIVE_FILE = 'lib/root-policy/protected-paths.js';
+const DEFENSIVE_LINE = /^\s*path\.join\(CORTEX_SERVER, 'root-policy-tool\.mjs'\),?\s*$/;
+const TOOL_TEXT = /root-policy-tool|tool\.mjs|root-policy['"`]\s*[,+]\s*['"`]-?tool/;
+const SIGNING_CAPABILITY = /\b(signPolicy|ROOT_POLICY_PASSPHRASE)\b/;
+const KEY_CAPABILITY = /createPrivateKey|crypto\.sign\(|generateKeyPair|createSign\(/;
+const EXEC_PRIMITIVE = /child_process|\bspawn\w*\(|\bexec\w*\(|\bfork\(|import\s*\(|\brequire\s*\(|\beval\s*\(|new\s+Function|\bfetch\s*\(|node:(net|http|https|dns|tls|worker_threads|vm)/;
+export function signingToolFindings(relPath, text) {
+  const body = code(text);
+  const found = [];
+  const named = body.split(/\r?\n/).filter(l => TOOL_TEXT.test(l));
+  if (relPath === DEFENSIVE_FILE) {
+    if (named.length !== 1 || !DEFENSIVE_LINE.test(named[0])) found.push('the defensive file may name the tool exactly once, as the exact protected-path declaration');
+    if (EXEC_PRIMITIVE.test(body)) found.push('the defensive file contains an execution / network / dynamic-load primitive');
+    const imports = [...body.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]);
+    if (imports.some(i => !['node:fs', 'node:os', 'node:path', 'node:url'].includes(i))) found.push('the defensive file imports something other than fs / os / path / url');
+  } else if (named.length) {
+    found.push('the offline signing tool is referenced or its name assembled');
+  }
+  if (SIGNING_CAPABILITY.test(body)) found.push('signing capability (signPolicy / passphrase) under src/');
+  if ((relPath.startsWith('lib/root-policy/') || relPath === 'routes/root-policy.js') && KEY_CAPABILITY.test(body)) found.push('private-key capability in the Root Policy runtime');
+  return found;
+}
+
 test('the decision engine is pure: no network, no filesystem, no process, no LLM, no database, no clock-driven randomness', () => {
   for (const file of ['schema.js', 'default-policy.js', 'engine.js', 'route-map.js']) {
     const text = code(read(`lib/root-policy/${file}`));
@@ -55,7 +85,7 @@ test('IMMUTABILITY: nothing under src/ can write, replace, reload or disable the
   const forbidden = exported.filter(name => /update|write|save|install|replace|disable|override|grant|setPolicy|loadPolicy/i.test(name));
   assert.deepEqual(forbidden, [], 'public surface of the Root Policy runtime');
   for (const f of ALL) {
-    assert.doesNotMatch(code(f.text), /root-policy-tool/, `${f.rel} imports the offline tool`);
+    assert.deepEqual(signingToolFindings(f.rel, f.text), [], `${f.rel}: offline tool / signing capability`);
     if (!f.rel.startsWith('lib/root-policy/')) {
       if (/root-policy\//.test(f.text)) assert.doesNotMatch(code(f.text), /__testing|createApprovalRegistry/, `${f.rel} uses a Root Policy test seam`);
       assert.doesNotMatch(code(f.text), /root-policy\.json|root-policy\.sig\.json|signing-key/, `${f.rel} touches the policy files`);
@@ -191,6 +221,58 @@ test('FROZEN modules: none imports Root Policy; none of their files differs from
   for (const f of ALL.filter(f => FROZEN.test(f.rel) || /^routes\/(device-fabric|omega|rassilon|maitre|monitor|cyber|notebook)/.test(f.rel))) assert.doesNotMatch(f.text, /root-policy|media-egress/, f.rel);
   const git = spawnSync('git', ['status', '--porcelain', '--', 'src/lib/device-fabric*', 'src/lib/omega*', 'src/lib/rassilon*', 'src/lib/maitre*', 'src/lib/monitor*', 'src/lib/cyber*', 'src/routes/device-fabric.js', 'src/routes/omega*', 'src/routes/rassilon*', 'src/routes/maitre.js', 'src/routes/monitor.js', 'src/routes/cyber-audit.js'], { cwd: HERE, encoding: 'utf8', windowsHide: true });
   if (git.status === 0) assert.equal(git.stdout.trim(), '', `frozen files modified:\n${git.stdout}`);
+});
+
+test('SIGNING TOOL (RPC-2C): the real tree is clean, a DEFENSIVE path reference is allowed, every way to RUN, import, assemble or re-implement signing is detected', () => {
+  // the real defensive file is accepted, and nothing else under src/ names or assembles the tool
+  const real = ALL.find(f => f.rel === DEFENSIVE_FILE);
+  assert.ok(real, 'the defensive file exists');
+  assert.deepEqual(signingToolFindings(DEFENSIVE_FILE, real.text), []);
+  assert.equal(ALL.filter(f => f.rel !== DEFENSIVE_FILE && TOOL_TEXT.test(code(f.text))).length, 0);
+
+  const DECL = "const files = [\n  path.join(CORTEX_SERVER, 'root-policy-tool.mjs'),\n];";
+  const SAFE_HEAD = "import fs from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n";
+  const defensive = (extra = '') => `${SAFE_HEAD}${DECL}\n${extra}`;
+
+  // ALLOWED: the defensive reference (and mentions in comments, which are documentation)
+  assert.deepEqual(signingToolFindings(DEFENSIVE_FILE, defensive()), []);
+  assert.deepEqual(signingToolFindings(DEFENSIVE_FILE, `// see root-policy-tool.mjs\n/**\n * root-policy-tool.mjs signs offline\n */\n${defensive()}`), []);
+  assert.deepEqual(signingToolFindings('lib/other.js', '// the human signs with root-policy-tool.mjs (offline)\nexport const x = 1;\n'), []);
+
+  // DETECTED: execution, import, assembly, re-implementation — in any other file …
+  const bad = {
+    'import of the tool': "import { signPolicy } from '../../root-policy-tool.mjs';",
+    'dynamic import': "const t = await import('./root-policy-tool.mjs');",
+    'spawn of the tool': "spawn(process.execPath, ['root-policy-tool.mjs', 'sign', '--yes']);",
+    'execFile of the tool by path': "execFile('node', [path.join(HERE, 'root-policy-tool.mjs')]);",
+    'name assembled with join (the RPC-2B workaround)': "const f = ['root-policy', 'tool.mjs'].join('-');",
+    'name assembled with +': "const f = 'root-policy' + '-tool' + '.mjs';",
+    'bare fragment': "const f = path.join(dir, 'tool.mjs');",
+    'signPolicy call (reseal)': "signPolicy({ policy, privateKeyPem, publicKeyPem, policyDir });",
+    'passphrase for unattended signing': "process.env.ROOT_POLICY_PASSPHRASE = secret;",
+  };
+  for (const [label, text] of Object.entries(bad)) assert.notDeepEqual(signingToolFindings('lib/some-runtime.js', text), [], `must detect: ${label}`);
+  // … including a signing / key capability inside the Root Policy runtime itself
+  for (const text of ["crypto.sign(null, data, key);", "crypto.createPrivateKey(pem);", "crypto.generateKeyPairSync('ed25519');", "crypto.createSign('sha256');"]) {
+    assert.notDeepEqual(signingToolFindings('lib/root-policy/engine.js', text), [], `must detect in the engine: ${text}`);
+    assert.notDeepEqual(signingToolFindings('routes/root-policy.js', text), [], `must detect in the route: ${text}`);
+  }
+
+  // … and the defensive exception is NARROW: it cannot be used to execute, to name the tool twice, or to change the declaration
+  const narrow = {
+    'spawn in the defensive file': defensive("import { spawn } from 'node:child_process';\nspawn('node', [path.join(CORTEX_SERVER, 'root-policy-tool.mjs')]);"),
+    'child_process import': `import { execFile } from 'node:child_process';\n${defensive()}`,
+    'second mention of the tool': defensive("const again = path.join(CORTEX_SERVER, 'root-policy-tool.mjs');"),
+    'declaration used as an argument': `${SAFE_HEAD}execFileSync('node', [path.join(CORTEX_SERVER, 'root-policy-tool.mjs')]);`,
+    'declaration changed (different line shape)': `${SAFE_HEAD}const tool = require('./root-policy-tool.mjs');`,
+    'dynamic import': defensive('await import(someVariable);'),
+    'network primitive': defensive("await fetch('https://example.invalid');"),
+    'extra import': `import crypto from 'node:crypto';\n${defensive()}`,
+    'assembled name next to the declaration': defensive("const f = ['root-policy', 'tool.mjs'].join('-');"),
+    'eval': defensive('eval(code);'),
+    'no declaration at all is not a pass for a hidden one': `${SAFE_HEAD}const x = 'root-policy' + '-tool.mjs';`,
+  };
+  for (const [label, text] of Object.entries(narrow)) assert.notDeepEqual(signingToolFindings(DEFENSIVE_FILE, text), [], `defensive exception must not allow: ${label}`);
 });
 
 test('NO second ADMIN engine: Root Policy contains no OMEGA admin vocabulary (no LOCK / LOGOFF / RESTART / SHUTDOWN handling of its own)', () => {

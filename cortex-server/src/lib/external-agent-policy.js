@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { redactSecrets } from './logger.js';
+import { assertNotRootPolicyPath } from './root-policy/protected-paths.js';
 
 export const CAPABILITY = 'external_code_agent';
 export const FEATURES = ['code_analysis', 'code_generation', 'code_fix', 'refactor', 'debug', 'test_generation', 'repository_analysis'];
@@ -48,6 +49,15 @@ export function checkedPath(root, name, allowMissing = false) {
     const st = fs.lstatSync(current);
     if (st.isSymbolicLink() || !within(root, fs.realpathSync(current)) || (st.isFile() && st.nlink > 1)) throw policyError('symlink_denied');
   }
+  return target;
+}
+// ROOT POLICY V1 closure (RPC-2B): the path of a change that is about to be recorded or APPLIED. Same validation as checkedPath (links, hard links,
+// workspace boundary, sensitive names) PLUS the Root Policy perimeter: a change that resolves into the signed policy, its engine, trust anchors,
+// signing tool, anti-rollback state or key location is refused whatever the diff says and whoever approved it. Reading is not affected
+// (preview / snapshot use checkedPath); every other write, create and delete keeps working exactly as before.
+export function checkedMutationPath(root, name) {
+  const target = checkedPath(root, name, true);
+  assertNotRootPolicyPath(target, { operation: 'agent-apply' });
   return target;
 }
 export function authorizeRoot(candidate) {

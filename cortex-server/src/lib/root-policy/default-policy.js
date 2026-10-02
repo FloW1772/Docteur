@@ -46,11 +46,53 @@ const BOUNDARIES = Object.freeze({
   'maitre-certified': { covers: ['PROCESS_STOP'], description: 'MAITRE: proposal, local approval, PID/start-time/path re-check at execution.' },
 });
 
+// ── V2 (RPC-2C): the three typed process starters that had no Root Policy identity ─────────────────────────────────────────────────────────
+// ADDED only: three modules, each granted ONLY `PROCESS.START_TYPED` in the PROCESS domain, plus the `executors` rules for them under that capability.
+// Every V1 module, grant, action, boundary and constraint is untouched. Policy files of version 1 are generated exactly as before.
+// What the rules express (all verified on the ACTUAL executable / arguments / working directory by process-rules.js):
+//   browser           a detected browser by name, the system default through explorer.exe, the legacy `cmd /c start` only for a URL cmd.exe
+//                     cannot reinterpret, or a user-chosen .exe that is NOT a shell / interpreter / script host / system administration tool
+//   kiwix             kiwix-serve.exe only, loopback arguments, started from its own folder
+//   image-generation  ComfyUI's embedded python (<install>\python_embeded\python.exe running <install>\ComfyUI\main.py from <install>) and 7-Zip for its archive
+const BROWSER_SHELL_LIKE = Object.freeze([
+  'cmd.exe', 'powershell.exe', 'pwsh.exe', 'powershell_ise.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe', 'regsvr32.exe', 'msiexec.exe',
+  'wmic.exe', 'bash.exe', 'sh.exe', 'wsl.exe', 'python.exe', 'pythonw.exe', 'py.exe', 'node.exe', 'java.exe', 'javaw.exe', 'certutil.exe', 'bitsadmin.exe',
+  'schtasks.exe', 'sc.exe', 'reg.exe', 'net.exe', 'net1.exe', 'taskkill.exe', 'explorer.exe',
+]);
+const V2_MODULES = Object.freeze({
+  browser:            { domains: ['PROCESS'], capabilities: ['PROCESS.START_TYPED'], approvalBoundary: null },
+  kiwix:              { domains: ['PROCESS'], capabilities: ['PROCESS.START_TYPED'], approvalBoundary: null },
+  'image-generation': { domains: ['PROCESS'], capabilities: ['PROCESS.START_TYPED'], approvalBoundary: null },
+});
+const V2_PROCESS_EXECUTORS = Object.freeze({
+  browser: {
+    // the four browsers Docteur DETECTS, each pinned to the folder it installs into (a `chrome.exe` dropped in Downloads is not a detected Chrome)
+    'browser-open-brave': { executables: ['brave.exe'], parentDir: 'Application', argsTemplates: ['url'] },
+    'browser-open-chrome': { executables: ['chrome.exe'], parentDir: 'Application', argsTemplates: ['url'] },
+    'browser-open-edge': { executables: ['msedge.exe'], parentDir: 'Application', argsTemplates: ['url'] },
+    'browser-open-firefox': { executables: ['firefox.exe'], parentDir: 'Mozilla Firefox', argsTemplates: ['url'] },
+    'browser-open-system': { executables: ['cmd.exe', 'explorer.exe'], argsTemplates: ['cmd-start-url', 'shell-open-url'] },
+    'browser-open-custom': { deniedExecutables: [...BROWSER_SHELL_LIKE], executableExtension: '.exe', argsTemplates: ['url'] },
+  },
+  kiwix: {
+    'kiwix-serve': { executables: ['kiwix-serve.exe'], argsTemplates: ['kiwix-serve-loopback'] },
+  },
+  'image-generation': {
+    'comfyui-launch': { executables: ['python.exe'], parentDir: 'python_embeded', argsTemplates: ['comfyui-main'] },
+    'comfyui-archive': { executables: ['7za.exe'], argsTemplates: ['sevenzip-archive'] },
+  },
+});
+
 export function buildDefaultPolicy({ version = 1, issuedAt = new Date().toISOString() } = {}) {
   const capabilities = {};
   for (const name of KNOWN_CAPABILITIES) {
     capabilities[name] = { grantable: !NEVER_GRANTED_CAPABILITIES.has(name) };
     if (CAPABILITY_CONSTRAINTS[name]) capabilities[name].constraints = CAPABILITY_CONSTRAINTS[name];
+  }
+  const modules = JSON.parse(JSON.stringify(MODULES));
+  if (version >= 2) {
+    Object.assign(modules, JSON.parse(JSON.stringify(V2_MODULES)));
+    capabilities['PROCESS.START_TYPED'].constraints = { executors: JSON.parse(JSON.stringify(V2_PROCESS_EXECUTORS)) };
   }
   const actions = {};
   for (const id of ACTION_IDS) {
@@ -65,7 +107,7 @@ export function buildDefaultPolicy({ version = 1, issuedAt = new Date().toISOStr
     trustDomains: [...TRUST_DOMAINS],
     capabilities,
     actions,
-    modules: JSON.parse(JSON.stringify(MODULES)),
+    modules,
     approvalBoundaries: JSON.parse(JSON.stringify(BOUNDARIES)),
   };
 }

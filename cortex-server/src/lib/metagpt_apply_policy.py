@@ -72,6 +72,45 @@ PROTECTED_PATH_PATTERNS = (
 )
 
 # ---------------------------------------------------------------------------
+# Section 4b — Root Policy perimeter (Root Policy V1 closure, RPC-2B).
+# Evaluated on the RESOLVED destination (links followed, `..` impossible, case folded, trailing
+# dots/spaces dropped), never on the string the plan carried. Exact and small: NOT all of
+# cortex-server/, NOT every file whose name contains "root-policy". Mirrors
+# cortex-server/src/lib/root-policy/protected-paths.js (a test keeps the two in agreement).
+# ---------------------------------------------------------------------------
+
+ROOT_POLICY_PROTECTED_DIRS = (
+    "cortex-server/policy",
+    "cortex-server/src/lib/root-policy",
+    "cortex-server/data/root-policy",
+)
+ROOT_POLICY_PROTECTED_FILES = (
+    "cortex-server/src/routes/root-policy.js",
+    "cortex-server/root-policy-tool.mjs",
+)
+
+
+def _fold_for_protection(relative_posix: str) -> str:
+    """Windows ignores trailing dots/spaces on every component and is case-insensitive."""
+    parts = []
+    for part in relative_posix.replace("\\", "/").split("/"):
+        part = part.rstrip(". ")
+        if part and part != ".":
+            parts.append(part.lower())
+    return "/".join(parts)
+
+
+def is_root_policy_protected(relative_posix: str) -> bool:
+    """True when the (already root-relative) path is, or is inside, the Root Policy perimeter.
+    Prefix confusion is impossible: `cortex-server/policy-backup` is NOT `cortex-server/policy`."""
+    folded = _fold_for_protection(relative_posix)
+    for directory in ROOT_POLICY_PROTECTED_DIRS:
+        if folded == directory or folded.startswith(directory + "/"):
+            return True
+    return folded in ROOT_POLICY_PROTECTED_FILES
+
+
+# ---------------------------------------------------------------------------
 # Section 8 — static, non-executing dangerous-pattern scan.
 # Classification only: INFO / REVIEW_REQUIRED / BLOCKED. Never auto-fixed,
 # never a reason to skip generating the diff — only a finding attached to it.
@@ -175,6 +214,13 @@ def resolve_destination(destination_relative: str) -> Path:
         raise ApplyPolicyError("destination_absolute_denied")
 
     posix = canonical.replace("\\", "/")
+    # RPC-2B: a destination is Docteur-decided and never needs `..` or a Windows stream/device character.
+    # Refusing them makes the allowlist prefix check below meaningful (`src/../cortex-server/policy/x`
+    # starts with `src/` but does not stay in it).
+    if ".." in posix.split("/"):
+        raise ApplyPolicyError("destination_traversal_denied")
+    if any(ch in posix for ch in ':<>"|?*'):
+        raise ApplyPolicyError("destination_invalid_character")
     if not any(posix.startswith(prefix) for prefix in DESTINATION_ALLOWLIST_PREFIXES):
         raise ApplyPolicyError(f"destination_not_in_allowlist:{posix}")
 
@@ -193,6 +239,16 @@ def resolve_destination(destination_relative: str) -> Path:
         current = current / part
         if current.exists() and current.is_symlink():
             raise ApplyPolicyError("destination_symlink_escape")
+
+    # RPC-2B: decide on where the destination REALLY is. A junction (not reported by is_symlink() on
+    # Windows) or any alias that lands outside the allowlist or inside the Root Policy perimeter is refused.
+    real_relative = resolved.relative_to(DOCTEUR_ROOT.resolve()).as_posix()
+    if is_root_policy_protected(real_relative) or is_root_policy_protected(posix):
+        raise ApplyPolicyError("destination_root_policy_protected")
+    if not any(real_relative.startswith(prefix) for prefix in DESTINATION_ALLOWLIST_PREFIXES):
+        raise ApplyPolicyError("destination_resolves_outside_allowlist")
+    if is_protected_destination(real_relative):
+        raise ApplyPolicyError("destination_protected_after_resolution")
 
     return resolved
 

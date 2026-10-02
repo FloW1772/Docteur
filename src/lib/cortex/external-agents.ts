@@ -32,6 +32,7 @@ export const externalAgentMessages: Record<string, string> = {
   review_conflict: 'Un fichier du projet a changé. Application ou retour arrière refusé pour préserver votre travail.',
   path_denied: 'Chemin refusé', sensitive_path: 'Fichier sensible ou format non autorisé',
   symlink_denied: 'Lien symbolique, junction ou lien physique refusé',
+  root_policy_protected: 'Cette modification vise un fichier de la Root Policy (politique signée, moteur ou outil de signature). Elle est refusée ; seul vous pouvez la changer, hors de Docteur.',
   mode_unsupported: 'Ce mode nécessite un contrôle de commandes qui n’est pas encore disponible.',
   workspace_not_authorized: 'Dossier non autorisé', permission_denied: 'Le client officiel a refusé une permission.',
   cleanup_unconfirmed: 'Windows n’a pas confirmé l’arrêt du processus. Le workspace reste bloqué ; vérifiez le client dans le Gestionnaire des tâches.',
