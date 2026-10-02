@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertSafeUrl } from './url-security.js';
+import { safeFetch } from './web-egress-guard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -61,7 +62,8 @@ export function saveImageBuffer(buf, mimeType) {
 // Download an image from a URL, returns image id
 export async function downloadImageFromUrl(rawUrl, { signal } = {}) {
   assertSafeUrl(rawUrl);
-  const res = await fetch(rawUrl, { signal, redirect: 'follow' });
+  // WEB EGRESS GUARD: pinned connection, every redirect hop revalidated, body capped at MAX_SIZE (+1 to detect overflow).
+  const res = await safeFetch(rawUrl, { signal, maxBytes: MAX_SIZE + 1, purpose: 'image' });
   if (!res.ok) throw new Error(`Fetch image HTTP ${res.status}`);
 
   const contentType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();

@@ -1,4 +1,5 @@
 import { chromium }          from 'playwright';
+import { getSharedBrowserEgressProxy } from './web-egress-guard.js';
 import { marked, Renderer }  from 'marked';
 import fs                    from 'node:fs';
 import path                  from 'node:path';
@@ -424,8 +425,12 @@ export function buildSubjectHtml(subject, neurons, intro, mode = 'basic', trunca
 // ── PDF generation via Playwright ─────────────────────────────────────────────
 
 export async function generatePdf(html, { mode = 'basic' } = {}) {
+  // WEB EGRESS GUARD: the exported HTML embeds document-controlled content (images, links, mermaid CDN); everything the browser
+  // fetches goes through the validating egress proxy, so a hostile note cannot make the PDF renderer reach internal addresses.
+  const egress = (await getSharedBrowserEgressProxy()).launchOptions();
   const browser = await chromium.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', ...egress.args],
+    proxy: egress.proxy,
   });
   try {
     const pg = await browser.newPage();

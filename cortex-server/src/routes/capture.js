@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
-import { getPlaylistInfo } from '../lib/ytdlp.js';
+import { getPlaylistInfo, normalizeDiscoveryOptions } from '../lib/ytdlp.js';
+import { classifyDiscoveryInput, discoverYouTube } from '../lib/youtube-discovery.js';
 import { downloadImageFromUrl, IMAGE_DIR } from '../lib/image.js';
 import { getWhisperStats } from '../lib/sqlite.js';
 
@@ -76,17 +78,19 @@ export function createCaptureRoute({ services, logger }) {
         return c.json({ error: 'Payload invalide. Champ requis: source quand text est fourni.' }, 400);
       }
       c.set('requestPayload', { text: text.slice(0, 80), source, url });
+      const captureId = randomUUID();
+      if (logger) logger.info({ captureId, elapsedMs: 0, mode: 'text', source }, 'CAPTURE_START');
       try {
         const started = Date.now();
         const styleExampleType = body?.style_example_type ? String(body.style_example_type).trim() : undefined;
-        const result  = await services.deepCaptureText(text, source, url || undefined, styleExampleType);
+        const result  = await services.deepCaptureText(text, source, url || undefined, styleExampleType, captureId);
         c.set('modelUsed', result.model_used ?? 'deep-capture-text');
         if (logger) {
-          logger.info({ source, url, word_count: result.child?.metadata?.word_count, latency_ms: Date.now() - started }, 'DEEP_CAPTURE_TEXT_DONE');
+          logger.info({ captureId, source, url, word_count: result.child?.metadata?.word_count, latency_ms: Date.now() - started, timings: result.timings }, 'DEEP_CAPTURE_TEXT_DONE');
         }
         return c.json(result, 200);
       } catch (error) {
-        if (logger) logger.error({ error_message: error.message, source }, 'DEEP_CAPTURE_TEXT_ERROR');
+        if (logger) logger.error({ captureId, error_message: error.message, source }, 'DEEP_CAPTURE_TEXT_ERROR');
         return c.json({ error: error.message }, 500);
       }
     }
@@ -97,12 +101,14 @@ export function createCaptureRoute({ services, logger }) {
     }
 
     const captureImagesFlag = body?.captureImages === true;
+    const captureId = randomUUID();
 
     c.set('requestPayload', { url });
+    if (logger) logger.info({ captureId, elapsedMs: 0, mode: 'url', url }, 'CAPTURE_START');
 
     try {
       const started = Date.now();
-      const result  = await services.deepCapture(url);
+      const result  = await services.deepCapture(url, captureId);
       c.set('modelUsed', result.model_used ?? 'deep-capture');
 
       // Feature B: download article images if enabled and capture succeeded
@@ -140,12 +146,12 @@ export function createCaptureRoute({ services, logger }) {
       }
 
       if (logger) {
-        logger.info({ url, latency_ms: Date.now() - started, fallback: result.fallback }, 'DEEP_CAPTURE_DONE');
+        logger.info({ captureId, url, latency_ms: Date.now() - started, fallback: result.fallback, reason: result.reason ?? null, extraction: result.extraction ?? null, timings: result.timings }, 'DEEP_CAPTURE_DONE');
       }
       return c.json(result, 200);
     } catch (error) {
       if (logger) {
-        logger.error({ error_message: error.message, url }, 'DEEP_CAPTURE_ERROR');
+        logger.error({ captureId, error_message: error.message, url }, 'DEEP_CAPTURE_ERROR');
       }
       return c.json({ error: error.message }, 500);
     }
@@ -223,6 +229,43 @@ export function createCaptureRoute({ services, logger }) {
     });
   });
 
+  // POST /api/capture/discover — YouTube Smart Discovery V2. The URL decides the mode (no limit parameter, no cap).
+  //   body: { input: string, context?: 'youtube' }   ('youtube' = explicit YouTube workflow: a bare @handle is accepted)
+  //   NDJSON events: start, mode, phase_start, progress, items_batch, phase_done, done | cancelled | error
+  route.post('/capture/discover', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const input = typeof body?.input === 'string' ? body.input.trim() : '';
+    const allowBareHandle = body?.context === 'youtube';
+    const classified = classifyDiscoveryInput(input, { allowBareHandle });
+    if (!classified.ok) return c.json({ error: 'URL YouTube non supportée', reason: classified.reason }, 400);
+
+    c.header('Content-Type', 'application/x-ndjson; charset=utf-8');
+    c.header('Cache-Control', 'no-store');
+    return stream(c, async (s) => {
+      const ctrl = new AbortController();
+      const onClientGone = () => ctrl.abort();
+      if (c.req.raw.signal.aborted) ctrl.abort();
+      c.req.raw.signal.addEventListener('abort', onClientGone, { once: true });
+      s.onAbort(onClientGone);
+      let writes = Promise.resolve();
+      const send = data => {
+        if (ctrl.signal.aborted && data.type !== 'cancelled') return writes;
+        writes = writes.then(() => s.write(`${JSON.stringify(data)}\n`)).catch(() => {});
+        return writes;
+      };
+      try {
+        const result = await discoverYouTube(input, { signal: ctrl.signal, allowBareHandle, onEvent: event => { void send(event); } });
+        if (logger) logger.info({ mode: classified.mode, status: result.status, total: result.total, duration_ms: result.durationMs }, 'YOUTUBE_DISCOVERY_END');
+      } catch (err) {
+        if (logger) logger.error({ error_message: err.message }, 'YOUTUBE_DISCOVERY_FAILED');
+        await send({ type: 'error', name: err.name, code: 'INTERNAL', message: 'Échec de la découverte YouTube' });
+      } finally {
+        c.req.raw.signal.removeEventListener('abort', onClientGone);
+      }
+      await writes;
+    });
+  });
+
   // POST /api/capture/playlist — returns playlist metadata (no download)
   route.post('/capture/playlist', async (c) => {
     const body = await c.req.json().catch(() => ({}));
@@ -232,17 +275,41 @@ export function createCaptureRoute({ services, logger }) {
       return c.json({ error: 'URL invalide' }, 400);
     }
 
+    let discovery;
     try {
-      const info = await getPlaylistInfo(url, {
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (logger) logger.info({ url, video_count: info.video_count, playlist: info.title }, 'PLAYLIST_INFO_DONE');
-      return c.json(info, 200);
+      const requestedMode = body?.mode ?? (body?.limit === null ? 'all' : 'limited');
+      const requestedLimit = requestedMode === 'all'
+        ? body?.limit
+        : (body?.limit === undefined ? 100 : body.limit);
+      discovery = normalizeDiscoveryOptions({ mode: requestedMode, limit: requestedLimit });
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message, url }, 'PLAYLIST_INFO_ERROR');
-      const status = err.name === 'AbortError' ? 408 : 500;
-      return c.json({ error: err.message }, status);
+      return c.json({ error: err.message }, 400);
     }
+
+    c.header('Content-Type', 'application/x-ndjson; charset=utf-8');
+    c.header('Cache-Control', 'no-store');
+    return stream(c, async (s) => {
+      let writes = Promise.resolve();
+      const send = data => {
+        writes = writes.then(() => s.write(`${JSON.stringify(data)}\n`));
+        return writes;
+      };
+      await send({ type: 'started', mode: discovery.mode, limit: discovery.limit });
+      try {
+        const info = await getPlaylistInfo(url, {
+          signal: c.req.raw.signal,
+          mode: discovery.mode,
+          limit: discovery.limit ?? undefined,
+          onProgress: ({ count }) => { void send({ type: 'progress', count }); },
+        });
+        if (logger) logger.info({ url, video_count: info.video_count, playlist: info.title }, 'PLAYLIST_INFO_DONE');
+        await send({ type: 'done', result: info });
+      } catch (err) {
+        if (logger) logger.error({ error_message: err.message, url }, 'PLAYLIST_INFO_ERROR');
+        await send({ type: 'error', name: err.name, message: err.message });
+      }
+      await writes;
+    });
   });
 
   return route;

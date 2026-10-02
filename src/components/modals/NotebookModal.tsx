@@ -2,6 +2,9 @@ import { useEffect, useState, useCallback } from 'react';
 import { NotebookText, X, Plus, Trash2, Lock, Send, RefreshCw, ArrowLeft, Search } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import type { Notebook, NotebookSource, NotebookCitation, SearchResult } from '../../lib/cortex/client';
+import NotebookDocumentsPanel from './NotebookDocumentsPanel';
+import NotebookAiHistoryPanel from './NotebookAiHistoryPanel';
+import NotebookMemoryPanel from './NotebookMemoryPanel';
 
 interface Props {
   onClose: () => void;
@@ -164,6 +167,7 @@ function NotebookDetail({ notebookId, onBack }: { notebookId: string; onBack: ()
   const [summary, setSummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [rightTab, setRightTab] = useState<'summary' | 'soon'>('summary');
+  const [centerTab, setCenterTab] = useState<'ask' | 'docs' | 'ai' | 'mem'>('ask');
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportNeedsConfirm, setExportNeedsConfirm] = useState(false);
@@ -350,8 +354,22 @@ function NotebookDetail({ notebookId, onBack }: { notebookId: string; onBack: ()
       </div>
 
       {/* CENTER — Chat / Q&A with citations */}
-      <div className="flex-1 flex flex-col" style={{ borderRight: '1px solid rgba(255,255,255,0.06)' }}>
-        <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 flex flex-col" style={{ borderRight: '1px solid rgba(255,255,255,0.06)', minWidth: 0 }}>
+        <div className="flex items-center" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          {([['ask', 'Q&R NEURONES'], ['docs', 'DOCUMENTS'], ['ai', 'HISTORIQUE IA'], ['mem', 'MÉMOIRE']] as const).map(([tab, label]) => (
+            <button key={tab} type="button" data-testid={`nb-center-tab-${tab}`} onClick={() => setCenterTab(tab)}
+              className="font-mono py-2 px-4" style={{ fontSize: 10, color: centerTab === tab ? '#3dffaa' : '#5a4a7a', background: 'none', border: 'none', borderBottom: centerTab === tab ? '2px solid #3dffaa' : '2px solid transparent', cursor: 'pointer', letterSpacing: '0.05em' }}>
+              {label}
+            </button>
+          ))}
+          <span data-testid="nb-strict-local-badge" className="font-mono ml-auto mr-3 flex items-center gap-1" style={{ fontSize: 9, color: '#3dffaa', letterSpacing: '0.08em' }}>
+            <Lock size={9} /> STRICT LOCAL
+          </span>
+        </div>
+        {centerTab === 'docs' && <NotebookDocumentsPanel notebookId={notebookId} onChanged={() => void reload()} />}
+        {centerTab === 'ai' && <NotebookAiHistoryPanel notebookId={notebookId} onChanged={() => void reload()} />}
+        {centerTab === 'mem' && <NotebookMemoryPanel notebookId={notebookId} onChanged={() => void reload()} />}
+        <div className="flex-1 overflow-y-auto p-4" style={{ display: centerTab === 'ask' ? undefined : 'none' }}>
           {askError && <p className="font-mono text-xs mb-3" style={{ color: '#ff4d58' }}>{askError}</p>}
           {answer && (
             <div className="mb-4">
@@ -375,7 +393,7 @@ function NotebookDetail({ notebookId, onBack }: { notebookId: string; onBack: ()
             </p>
           )}
         </div>
-        <div className="p-3 flex gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="p-3 flex gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.06)', display: centerTab === 'ask' ? undefined : 'none' }}>
           <input
             value={question}
             onChange={e => setQuestion(e.target.value)}

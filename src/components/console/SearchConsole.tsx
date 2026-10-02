@@ -11,6 +11,7 @@ import { KIND_META } from '../../lib/types';
 import { getCorpusTrustedSites } from '../../lib/corpusSettings';
 import { canAutoSpeak, canManuallySpeak } from '../../lib/voiceResponsePolicy';
 import { getStoredTtsSettings } from '../../lib/voiceTts';
+import { ChatMemoryControls, ChatMemoryUsed, useChatMemoryPrefs } from './ChatMemoryControls';
 
 const RESEARCH_RE          = /^(?:veille|recherche)\s+(.+)$/iu;
 const MULTI_SOURCE_RE      = /^veille\+\+\s+(.+)$/iu;
@@ -323,6 +324,7 @@ export default function SearchConsole({
   }, []);
   const [localMode, setLocalMode]             = useState(false);
   const [answerScope, setAnswerScope]         = useState<'all' | 'personal' | 'reference'>('all');
+  const [memoryPrefs, setMemoryPrefs]         = useChatMemoryPrefs();
   const [commandState, setCommandState]       = useState<CommandState>(null);
   const [exploreSubject, setExploreSubject]   = useState<string | null>(null);
   const [exploreState, setExploreState]       = useState<ExploreState | null>(null);
@@ -486,6 +488,9 @@ export default function SearchConsole({
       const result = await cortexClient.answer(q, {
         max_context: 5,
         scope: answerScope,
+        use_memory: memoryPrefs.enabled,
+        ...(memoryPrefs.enabled && memoryPrefs.project ? { memory_project: memoryPrefs.project } : {}),
+        ...(memoryPrefs.enabled && memoryPrefs.notebook ? { memory_notebook: memoryPrefs.notebook } : {}),
         ...(forceLocal ? { force_local_powerful: true } : {}),
         ...(clarCtx.length > 0 ? { clarification_context: clarCtx } : {}),
       });
@@ -527,7 +532,7 @@ export default function SearchConsole({
       setIsLoading(false);
       setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
-  }, [onHighlightSources, onClearHighlights, answerScope, maybeAutoSpeak, captureResponseGuard]);
+  }, [onHighlightSources, onClearHighlights, answerScope, memoryPrefs, maybeAutoSpeak, captureResponseGuard]);
 
   // ── Web quick answer ─────────────────────────────────────────────────────
 
@@ -1360,6 +1365,9 @@ export default function SearchConsole({
                 ))}
               </div>
 
+              {/* NB-7 — Docteur Memory in the main chat: explicit switch + explicit project / notebook */}
+              <ChatMemoryControls prefs={memoryPrefs} onChange={setMemoryPrefs} />
+
               {/* Clarification loading */}
               {clarifyLoading && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 4px' }}>
@@ -1717,6 +1725,9 @@ export default function SearchConsole({
                               })}
                             </div>
                           )}
+
+                          {/* NB-7 — « Mémoire utilisée : N » (collapsed; nothing shown when no memory reached the model; shown while the answer types out — nothing is hidden) */}
+                          <ChatMemoryUsed answer={entry.answer} />
 
                           {/* Footer */}
                           {!showTyping && (

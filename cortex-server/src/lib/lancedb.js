@@ -336,3 +336,115 @@ export async function getNeuronById(lancedbPath, id) {
   const rows = await table.search().limit(100000).toArray();
   return rows.find((row) => row.id === id) ?? null;
 }
+
+// ── Notebook document chunk vectors (NB-2) ──────────────────────────────────
+// Same LanceDB database as `neurons`, separate table `notebook_chunks`. Rows
+// carry ids only (no text) — chunk text/metadata live in SQLite (nb_chunks),
+// which is the single source of truth. Every search is pushed down with a
+// notebook_id predicate so retrieval can never cross notebooks.
+const CHUNK_TABLE_NAME = 'notebook_chunks';
+let chunkTablePromise = null;
+
+async function getChunkTable(lancedbPath) {
+  const db = await ensureDatabase(lancedbPath);
+  if (!chunkTablePromise) chunkTablePromise = db.openTable(CHUNK_TABLE_NAME).catch(() => null);
+  return chunkTablePromise;
+}
+
+export async function upsertChunkVectors(lancedbPath, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  const clean = rows.map(r => ({
+    chunk_id: String(r.chunk_id),
+    notebook_id: String(r.notebook_id),
+    source_id: String(r.source_id),
+    version_id: String(r.version_id),
+    vector: r.vector,
+  }));
+  const table = await getChunkTable(lancedbPath);
+  if (!table) {
+    const db = await ensureDatabase(lancedbPath);
+    chunkTablePromise = db.createTable(CHUNK_TABLE_NAME, clean);
+    await chunkTablePromise;
+    return clean.length;
+  }
+  await table.mergeInsert('chunk_id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(clean);
+  return clean.length;
+}
+
+export async function searchChunkVectors(lancedbPath, vector, { notebookId, sourceIds = null, limit = 20 } = {}) {
+  if (!notebookId) return [];
+  const table = await getChunkTable(lancedbPath);
+  if (!table) return [];
+  let where = `notebook_id = '${escapeSqlString(notebookId)}'`;
+  if (Array.isArray(sourceIds)) {
+    if (sourceIds.length === 0) return [];
+    where += ` AND source_id IN (${sourceIds.map(id => `'${escapeSqlString(id)}'`).join(',')})`;
+  }
+  // Cosine distance: score = 1 - distance = cosine similarity (embeddings are unit-normalised).
+  const rows = await table.search(vector).distanceType('cosine').where(where).limit(limit).toArray();
+  return rows.map(row => {
+    const distance = typeof row._distance === 'number' ? row._distance : 1;
+    return {
+      chunk_id: row.chunk_id,
+      notebook_id: row.notebook_id,
+      source_id: row.source_id,
+      version_id: row.version_id,
+      // Same convention as searchNeurons/searchNeuronsByIds: score = clamp(1 - distance).
+      score: Number.isFinite(distance) ? Math.max(0, Math.min(1, 1 - distance)) : 0,
+    };
+  });
+}
+
+// Delete by exact chunk ids, or by (notebookId[, sourceId[, versionId]]).
+export async function deleteChunkVectors(lancedbPath, { chunkIds, notebookId, sourceId, versionId } = {}) {
+  const table = await getChunkTable(lancedbPath);
+  if (!table) return;
+  const q = v => `'${escapeSqlString(v)}'`;
+  if (Array.isArray(chunkIds)) {
+    for (let i = 0; i < chunkIds.length; i += 200) {
+      await table.delete(`chunk_id IN (${chunkIds.slice(i, i + 200).map(q).join(',')})`);
+    }
+    return;
+  }
+  const parts = [];
+  if (notebookId) parts.push(`notebook_id = ${q(notebookId)}`);
+  if (sourceId) parts.push(`source_id = ${q(sourceId)}`);
+  if (versionId) parts.push(`version_id = ${q(versionId)}`);
+  if (parts.length === 0) return; // never delete everything by accident
+  await table.delete(parts.join(' AND '));
+}
+
+// ── NB-5 Docteur Memory vectors ─────────────────────────────────────────────
+// Same LanceDB database, table `docteur_memory` (ids + scope columns only; the statement lives in SQLite).
+// Scope predicates are pushed down so a query can never even see another project's / notebook's vectors.
+const MEMORY_TABLE_NAME = 'docteur_memory';
+let memoryTablePromise = null;
+async function getMemoryTable(lancedbPath) {
+  const db = await ensureDatabase(lancedbPath);
+  if (!memoryTablePromise) memoryTablePromise = db.openTable(MEMORY_TABLE_NAME).catch(() => null);
+  return memoryTablePromise;
+}
+export async function upsertMemoryVectors(lancedbPath, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  const clean = rows.map(r => ({ memory_id: String(r.memory_id), scope_kind: String(r.scope_kind), project_id: String(r.project_id ?? ''), notebook_id: String(r.notebook_id ?? ''), vector: r.vector }));
+  const table = await getMemoryTable(lancedbPath);
+  if (!table) { const db = await ensureDatabase(lancedbPath); memoryTablePromise = db.createTable(MEMORY_TABLE_NAME, clean); await memoryTablePromise; return clean.length; }
+  await table.mergeInsert('memory_id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(clean);
+  return clean.length;
+}
+// scopes: { projectId?, notebookId? } — GLOBAL always visible; PROJECT only for that project; NOTEBOOK only for that notebook.
+export async function searchMemoryVectors(lancedbPath, vector, { scopes = {}, limit = 20 } = {}) {
+  const table = await getMemoryTable(lancedbPath);
+  if (!table) return [];
+  const q = (v) => `'${escapeSqlString(v)}'`;
+  const parts = [`scope_kind = 'GLOBAL'`];
+  if (scopes.projectId) parts.push(`(scope_kind = 'PROJECT' AND project_id = ${q(scopes.projectId)})`);
+  if (scopes.notebookId) parts.push(`(scope_kind = 'NOTEBOOK' AND notebook_id = ${q(scopes.notebookId)})`);
+  const rows = await table.search(vector).distanceType('cosine').where(parts.join(' OR ')).limit(limit).toArray();
+  return rows.map(r => ({ memory_id: r.memory_id, scope_kind: r.scope_kind, project_id: r.project_id, notebook_id: r.notebook_id, score: Number.isFinite(r._distance) ? Math.max(0, Math.min(1, 1 - r._distance)) : 0 }));
+}
+export async function deleteMemoryVectors(lancedbPath, memoryIds) {
+  const table = await getMemoryTable(lancedbPath);
+  if (!table || !Array.isArray(memoryIds) || memoryIds.length === 0) return;
+  for (let i = 0; i < memoryIds.length; i += 200) await table.delete(`memory_id IN (${memoryIds.slice(i, i + 200).map(id => `'${escapeSqlString(id)}'`).join(',')})`);
+}

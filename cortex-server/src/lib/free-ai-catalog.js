@@ -16,6 +16,7 @@
 // docs_url as the "get a key" destination.
 
 import { ErrorCategory, classifiedError, classifyNetworkError } from './provider-errors.js';
+import { safeFetch } from './web-egress-guard.js';
 
 // Fixed, allowlisted source — never derived from user/query input, so this
 // can never become an SSRF vector via a caller-supplied URL.
@@ -107,10 +108,13 @@ function validateDataset(json) {
 async function fetchCatalog() {
   let response;
   try {
-    response = await fetch(CATALOG_URL, {
+    // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): constant https host; redirects revalidated per hop.
+    response = await safeFetch(CATALOG_URL, {
       headers: { Accept: 'application/json', 'User-Agent': 'Docteur-FreeAIFinder' },
-      redirect: 'follow',
+      trustedHosts: ['raw.githubusercontent.com'],
+      maxBytes: 5 * 1024 * 1024,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      purpose: 'free-ai-catalog',
     });
   } catch (error) {
     const category = error?.name === 'TimeoutError' || error?.name === 'AbortError'

@@ -2557,14 +2557,15 @@ export function getWhisperStats() {
   };
 }
 
+const TEST_ROUTER_DEFAULTS = process.env.DOCTEUR_TEST_MODE === '1';
 const ROUTER_SETTINGS_DEFAULTS = {
     router_enabled:      true,
     fallback_model:      'llama3.2:3b',
-    cloud_enabled:       true,
+    cloud_enabled:       TEST_ROUTER_DEFAULTS,
     paying_apis_enabled: false,
     gemini_rpm:          10,
     cloud_preference:    'local',   // 'local' | 'balanced' | 'quality'
-    strict_local_mode:   false,     // when true: NO cloud call ever, regardless of router config
+    strict_local_mode:   !TEST_ROUTER_DEFAULTS, // production is Strict Local; tests opt into their simulated cloud baseline
     groq_model:          'openai/gpt-oss-120b',
     // Claude/OpenAI each have two mutually-exclusive backends: a subscription
     // mode (Claude Code CLI / Codex CLI — no per-token API cost to Docteur)

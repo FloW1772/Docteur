@@ -73,6 +73,12 @@ import { createPrivacyRoute }      from './routes/privacy.js';
 import { createConnectorsRoute }   from './routes/connectors.js';
 import { createMemoryRoute }       from './routes/memory.js';
 import { createNotebookRoute }     from './routes/notebook.js';
+import { createNotebookDocumentsRoute } from './routes/notebook-documents.js';
+import { createNotebookAiHistoryRoute } from './routes/notebook-ai-history.js';
+import { createNotebookMemoryRoute } from './routes/notebook-memory.js';
+import { getChatMemory } from './lib/notebook-documents-runtime.js';
+import { insertChatMemoryMessages, chatMemoryResponse } from './lib/chat-memory.js';
+import { applyLocalApiSecurity } from './lib/local-api-policy.js';
 import { createNotebookLmRoute }   from './routes/notebooklm.js';
 import { createBrowserRoute }      from './routes/browser.js';
 import { createSherlockRoute }     from './routes/sherlock.js';
@@ -108,6 +114,10 @@ import { extractContent } from './lib/deep-capture.js';
 import { transcribeYouTube, ensureTmpDir, cleanTmpDir, TMP_DIR, downloadAudio } from './lib/whisper.js';
 import { transcribeWithGroq } from './lib/whisper-groq.js';
 import { assertSafeUrl } from './lib/url-security.js';
+import { safeFetch, setEgressLogger, setEgressPolicyHook } from './lib/web-egress-guard.js';
+import { initRootPolicy, createRootPolicyMiddleware, webFetchHook } from './lib/root-policy/index.js';
+import { startMediaEgress } from './lib/media-egress.js';
+import { createRootPolicyRoute } from './routes/root-policy.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -175,6 +185,13 @@ cleanTmpDir(); // remove leftover audio files from previous run
 ensureImageDir();
 
 const logger = createLogger({ level: env.LOG_LEVEL, logFile: env.LOG_FILE });
+setEgressLogger(logger); // WEB EGRESS GUARD: structured BLOCKED_* events (host only — never userinfo/path/query/headers)
+
+// ROOT POLICY V1 — boot BEFORE anything can act: load → verify format/version/integrity/signature. Never throws: an invalid policy leaves the
+// UI reachable (status explains why) while protected operations fail closed. Audit + anti-rollback state live next to the (isolated) database.
+const rootPolicyStatus = initRootPolicy({ policyDir: process.env.DOCTEUR_ROOT_POLICY_DIR || undefined, dataDir: path.join(path.dirname(env.SQLITE_PATH), 'root-policy'), logger });
+setEgressPolicyHook(webFetchHook); // WEB_FETCH: Root Policy asks "may this be attempted?", the Web Egress Guard then asks "is this destination safe?"
+logger.info({ state: rootPolicyStatus.state, version: rootPolicyStatus.version, integrity: rootPolicyStatus.integrity, errorCode: rootPolicyStatus.errorCode }, 'ROOT_POLICY_STATUS');
 
 // ── Global crash safety net ───────────────────────────────────────────────────
 // Route handlers and background jobs (corpus import, inbox watcher, agent
@@ -590,12 +607,18 @@ function shouldFallbackToExtraction(answer) {
 async function answerQuestion(payload) {
   await ensureOllamaAvailableOrThrow();
 
-  const vector = await embedText(ollamaClient, env.EMBEDDING_MODEL, payload.question);
+  // NB-7: Docteur Memory in the main chat. Explicit context only (payload.memory_project / memory_notebook), toggle via
+  // payload.use_memory / global setting. Everything injected is returned in memoryUsed[]; nothing is injected when nothing is relevant.
+  const chatMem = await getChatMemory({ ollamaClient, env, logger }).prepare(payload);
+  let vector = null; let embedError = null;
+  try { vector = await embedText(ollamaClient, env.EMBEDDING_MODEL, payload.question); } catch (err) { embedError = err; }
+  // Pre-existing behaviour is kept: without embeddings the chat fails — unless Memory (FTS-only fallback) has something to say.
+  if (embedError && !chatMem.active) throw embedError;
   const maxContext = Number(payload.max_context ?? 5);
   // scope: 'all' (default) | 'personal' (exclude corpus references) | 'reference' (corpus only)
   const scope = payload.scope === 'personal' || payload.scope === 'reference' ? payload.scope : 'all';
   const fetchLimit = scope === 'personal' ? maxContext * 3 : maxContext; // over-fetch so post-filtering still fills maxContext
-  let retrieved = await searchNeurons(env.LANCEDB_PATH, vector, {
+  let retrieved = embedError ? [] : await searchNeurons(env.LANCEDB_PATH, vector, {
     limit: fetchLimit,
     threshold: 0.35,
     filterByKinds: scope === 'reference' ? ['corpus'] : [],
@@ -604,13 +627,14 @@ async function answerQuestion(payload) {
     retrieved = retrieved.filter(item => item.kind !== 'corpus').slice(0, maxContext);
   }
 
-  if (retrieved.length === 0) {
+  if (retrieved.length === 0 && !chatMem.active) {
     return {
       answer: "Je n'ai rien trouve dans ton cortex sur ce sujet.",
       sources: [],
       no_results: true,
       model_used: null,
       router_level: null,
+      ...chatMemoryResponse(chatMem, '', []),
     };
   }
 
@@ -675,13 +699,14 @@ async function answerQuestion(payload) {
   }
   sources.push(...kiwixSources);
 
-  if (sources.length === 0) {
+  if (sources.length === 0 && !chatMem.active) {
     return {
       answer: "Je n'ai rien trouvé dans ton cortex ni dans les archives sur ce sujet.",
       sources: [],
       no_results: true,
       model_used: null,
       router_level: null,
+      ...chatMemoryResponse(chatMem, '', []),
     };
   }
 
@@ -689,7 +714,7 @@ async function answerQuestion(payload) {
   // kinds auto-privés : cv et candidature (données personnelles)
   // pages marquées private:true par l'utilisateur
   const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
-  const hasPrivateSources = sources.some(s => {
+  const hasPrivateSources = chatMem.localOnly || sources.some(s => {
     if (isLocalOnlySource(s)) return true;
     try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; }
   });
@@ -701,7 +726,9 @@ async function answerQuestion(payload) {
       (() => { try { return isLocalOnlySource(getPageFromStore(s.id)); } catch { return false; } })();
     return isPriv ? { ...s, content: markPrivate(s.content) } : s;
   });
-  const messages = buildContextMessages(payload.question, taggedSources, payload.clarification_context ?? []);
+  // The memory / Notebook blocks are separate, fenced, private-marked system messages placed right before the user question
+  // (identity when nothing was injected).
+  const messages = insertChatMemoryMessages(buildContextMessages(payload.question, taggedSources, payload.clarification_context ?? []), chatMem);
 
   const installedNames = await getCachedInstalledModelNames();
   const routerSettings = getRouterSettings();
@@ -727,7 +754,7 @@ async function answerQuestion(payload) {
       chosenModel    = env.ANSWER_MODEL;
       chosenLevel    = 0;
       chosenProvider = 'local';
-      chosenReason   = 'privé · neurones sensibles → local imposé';
+      chosenReason   = chatMem.localOnly && sources.every(s => !isLocalOnlySource(s)) ? 'mémoire · local imposé' : 'privé · neurones sensibles → local imposé';
     } catch (err) {
       throw new Error(`Réponse locale impossible : ${err.message}`);
     }
@@ -836,6 +863,7 @@ async function answerQuestion(payload) {
     routing_reason: chosenReason ?? undefined,
     warning: chosenWarning ?? undefined,
     has_private_sources: hasPrivateSources || undefined,
+    ...chatMemoryResponse(chatMem, finalAnswer, sources.filter(s => !s.isKiwix)),
   };
 }
 
@@ -1021,11 +1049,20 @@ const RESUMMARISE_PROMPTS = {
   ].join('\n'),
 };
 
-async function deepCapture(url) {
+async function deepCapture(url, captureId) {
+  const captureStarted = performance.now();
   await ensureOllamaAvailableOrThrow();
 
   // Step 1 — extract content
   const extraction = await extractContent(url);
+  logger.info({ captureId, elapsedMs: extraction.timings?.fetchMs ?? 0 }, 'CAPTURE_FETCH_DONE');
+  logger.info({
+    captureId,
+    elapsedMs: Math.round(performance.now() - captureStarted),
+    fetchMs: extraction.timings?.fetchMs ?? 0,
+    readabilityMs: extraction.timings?.readabilityMs ?? 0,
+    playwrightMs: extraction.timings?.playwrightMs ?? 0,
+  }, 'CAPTURE_EXTRACT_DONE');
   if (extraction.fallback) {
     if (extraction.needs_whisper) {
       return {
@@ -1034,9 +1071,18 @@ async function deepCapture(url) {
         video_duration: extraction.video_duration ?? null,
         title: extraction.title ?? '',
         channel: extraction.channel ?? '',
+        captureId,
+        timings: { ...(extraction.timings ?? {}), totalMs: Math.round(performance.now() - captureStarted) },
       };
     }
-    return { fallback: true, reason: extraction.reason ?? 'extraction_failed' };
+    return {
+      fallback: true, reason: extraction.reason ?? 'extraction_failed', captureId,
+      title: extraction.title ?? '',
+      partial: extraction.partial ?? null,
+      extraction: extraction.extraction ?? null,
+      imageUrls: extraction.imageUrls ?? [],
+      timings: { ...(extraction.timings ?? {}), totalMs: Math.round(performance.now() - captureStarted) },
+    };
   }
 
   // Step 2 — analyse via router
@@ -1055,6 +1101,9 @@ async function deepCapture(url) {
 
   let analysisResponse;
   let modelUsed;
+  let pairAttemptMs = 0;
+  let aiMs = 0;
+  const aiStarted = performance.now();
   try {
     const result = await routedCompletion(ollamaClient, {
       action:       'deep_capture',
@@ -1067,6 +1116,15 @@ async function deepCapture(url) {
     });
     analysisResponse = result.response;
     modelUsed        = result.model;
+    pairAttemptMs    = result.pairAttemptMs ?? 0;
+    aiMs             = Math.round(performance.now() - aiStarted);
+    logger.info({
+      captureId,
+      elapsedMs: Math.round(performance.now() - captureStarted),
+      aiMs,
+      pairAttemptMs,
+      model: modelUsed,
+    }, 'CAPTURE_AI_DONE');
     logRouterCall({
       actionType:     'deep_capture',
       chosenLevel:    result.level,
@@ -1084,11 +1142,20 @@ async function deepCapture(url) {
       inputLength: extraction.text.length, responseLength: 0, latencyMs: 0,
       success: false, errorMessage: err.message, provider: null,
     });
-    return { fallback: true, reason: 'analysis_failed', error: err.message };
+    return {
+      fallback: true, reason: 'analysis_failed', error: err.message, captureId,
+      timings: {
+        ...(extraction.timings ?? {}), pairAttemptMs,
+        aiMs: Math.round(performance.now() - aiStarted),
+        totalMs: Math.round(performance.now() - captureStarted),
+      },
+    };
   }
 
   // Step 3 — build parent/child using simple capture for the hierarchy
+  const titleStarted = performance.now();
   const simpleResult = await buildCaptureResult(url, {}).catch(() => ({ parent: null, child: null }));
+  const titleMs = Math.round(performance.now() - titleStarted);
 
   const childKind  = extraction.source_type === 'youtube' ? 'video' : 'link';
   const childTitle = extraction.title || simpleResult.child?.title || 'Capture profonde';
@@ -1107,11 +1174,21 @@ async function deepCapture(url) {
         model_used:   modelUsed,
         source_type:  extraction.source_type,
         truncated:    extraction.truncated ?? false,
+        captureId,
+        captureStatus: 'EXTRACTED',
+        extraction: extraction.extraction ?? null,
         ...(extraction.imageUrls?.length > 0 ? { images: extraction.imageUrls } : {}),
       },
     },
     fallback:   false,
     model_used: modelUsed,
+    captureId,
+    extraction: extraction.extraction ?? null,
+    timings: {
+      ...(extraction.timings ?? {}), pairAttemptMs,
+      aiMs, titleMs,
+      totalMs: Math.round(performance.now() - captureStarted),
+    },
   };
 }
 
@@ -1126,7 +1203,8 @@ async function resolveStyleExamplesBlock({ type, queryText } = {}) {
   return { block: buildStyleExamplesBlock(examples), usedExamples: describeUsedExamples(examples) };
 }
 
-async function deepCaptureText(text, source, url, styleExampleType) {
+async function deepCaptureText(text, source, url, styleExampleType, captureId) {
+  const captureStarted = performance.now();
   await ensureOllamaAvailableOrThrow();
 
   // Truncate if needed (same logic as deep-capture.js)
@@ -1152,6 +1230,9 @@ async function deepCaptureText(text, source, url, styleExampleType) {
   const routerSettings = getRouterSettings();
 
   let analysisResponse, modelUsed;
+  let pairAttemptMs = 0;
+  let aiMs = 0;
+  const aiStarted = performance.now();
   try {
     const result = await routedCompletion(ollamaClient, {
       action:       'deep_capture',
@@ -1164,6 +1245,9 @@ async function deepCaptureText(text, source, url, styleExampleType) {
     });
     analysisResponse = result.response;
     modelUsed        = result.model;
+    pairAttemptMs    = result.pairAttemptMs ?? 0;
+    aiMs             = Math.round(performance.now() - aiStarted);
+    logger.info({ captureId, elapsedMs: Math.round(performance.now() - captureStarted), aiMs, pairAttemptMs, model: modelUsed }, 'CAPTURE_AI_DONE');
     logRouterCall({
       actionType: 'deep_capture', chosenLevel: result.level, chosenModel: result.model,
       inputLength: analysisText.length, responseLength: result.response.length,
@@ -1176,10 +1260,15 @@ async function deepCaptureText(text, source, url, styleExampleType) {
       inputLength: analysisText.length, responseLength: 0, latencyMs: 0,
       success: false, errorMessage: err.message, provider: null,
     });
-    return { fallback: true, reason: 'analysis_failed', error: err.message };
+    return {
+      fallback: true, reason: 'analysis_failed', error: err.message, captureId,
+      timings: { aiMs: Math.round(performance.now() - aiStarted), pairAttemptMs, totalMs: Math.round(performance.now() - captureStarted) },
+    };
   }
 
+  const titleStarted = performance.now();
   const title = await generateNoteTitle(analysisText.slice(0, 1000)).catch(() => source);
+  const titleMs = Math.round(performance.now() - titleStarted);
   const fullContent = analysisResponse.trim() + (url ? `\n\nSource : ${url}` : '');
 
   return {
@@ -1200,12 +1289,16 @@ async function deepCaptureText(text, source, url, styleExampleType) {
         word_count:   wordCount,
         model_used:   modelUsed,
         truncated,
+        captureId,
+        captureStatus: 'EXTRACTED',
         ...(url ? { url } : {}),
         ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}),
       },
     },
     fallback:   false,
     model_used: modelUsed,
+    captureId,
+    timings: { aiMs, pairAttemptMs, titleMs, totalMs: Math.round(performance.now() - captureStarted) },
   };
 }
 
@@ -1237,9 +1330,9 @@ async function deepCaptureWhisper(url, onProgress, signal, provider = 'local') {
   let title = '';
   let channel = '';
   try {
-    const res = await fetch(
+    const res = await safeFetch(
       `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
-      { signal: AbortSignal.timeout(8_000) },
+      { signal: AbortSignal.timeout(8_000), trustedHosts: ['www.youtube.com'], maxBytes: 256 * 1024, purpose: 'oembed' },
     );
     if (res.ok) {
       const data = await res.json();
@@ -1554,10 +1647,10 @@ const services = {
     });
     return result;
   },
-  deepCapture: async (url) => {
+  deepCapture: async (url, captureId) => {
     const started = Date.now();
     try {
-      const result  = await deepCapture(url);
+      const result  = await deepCapture(url, captureId);
       result.latency_ms = Date.now() - started;
       insertActivityLog({
         opType: 'capture_deep', item: result?.child?.title ?? url,
@@ -1571,10 +1664,10 @@ const services = {
       throw err;
     }
   },
-  deepCaptureText: async (text, source, url, styleExampleType) => {
+  deepCaptureText: async (text, source, url, styleExampleType, captureId) => {
     const started = Date.now();
     try {
-      const result  = await deepCaptureText(text, source, url, styleExampleType);
+      const result  = await deepCaptureText(text, source, url, styleExampleType, captureId);
       result.latency_ms = Date.now() - started;
       insertActivityLog({
         opType: 'capture_deep', item: result?.child?.title ?? source ?? 'texte collé',
@@ -1673,11 +1766,19 @@ app.use('*', cors({
     if (LOCAL_NETWORK && isLanOrigin(origin)) return origin;
     return null;
   },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // PATCH: Docteur Memory edits (a browser preflight would otherwise refuse them)
   allowHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
   maxAge: 86400,
 }));
+
+// NB-7: ONE central guard for the whole local API (Host allow-list vs DNS rebinding, expected-frontend / same origin vs CSRF,
+// body caps, minimal response headers). Frozen modules (OMEGA, Device Fabric, RASSILON, Maître, Observateur) are exempt — see lib/local-api-policy.js.
+applyLocalApiSecurity(app, { isAllowedOrigin: (origin) => DEV_ORIGINS.has(origin) || (LOCAL_NETWORK && isLanOrigin(origin)), logger });
+
+// ROOT POLICY V1: semantic gate for the certified device routes (OMEGA / Device Fabric / RASSILON / MAÎTRE). Policy valid ⇒ their own certified
+// controls decide (no behaviour change); policy invalid ⇒ protected device operations fail closed while STOP / revocation always pass.
+app.use('*', createRootPolicyMiddleware());
 
 // Destructive routes (DELETE methods, POST /api/backup/import) are protected
 // by loopback binding (127.0.0.1 by default) + strict CORS/Origin validation
@@ -1734,6 +1835,7 @@ app.use('*', async (c, next) => {
 });
 
 app.route('/api', createHealthRoute({ services }));
+app.route('/api', createRootPolicyRoute());
 app.route('/api', createIndexRoute({ services, logger }));
 app.route('/api', createCaptureRoute({ services, logger }));
 app.route('/api', createSearchRoute({ services }));
@@ -1801,6 +1903,9 @@ app.route('/api', createPrivacyRoute({ logger }));
 app.route('/api', createConnectorsRoute({ services, logger }));
 app.route('/api', createMemoryRoute({ logger }));
 app.route('/api', createNotebookRoute({ ollamaClient, env, logger }));
+app.route('/api', createNotebookDocumentsRoute({ ollamaClient, env, logger }));
+app.route('/api', createNotebookAiHistoryRoute({ ollamaClient, env, logger }));
+app.route('/api', createNotebookMemoryRoute({ ollamaClient, env, logger }));
 app.route('/api', createNotebookLmRoute({ logger }));
 app.route('/api', createBrowserRoute({ logger }));
 app.route('/api', createSherlockRoute({ services, logger }));
@@ -1867,6 +1972,9 @@ if (portOwner.state === 'owned_by_cortex') {
   logger.error('Port is occupied by a process that is not a recognized cortex-server instance. Refusing to start or kill it automatically — identify and stop it manually, then retry.');
   process.exit(1);
 }
+
+// MEDIA EGRESS: yt-dlp is routed through the validating egress proxy (not disabled). If it cannot start, media processes fail closed.
+await startMediaEgress().catch((error) => logger.error({ err: error?.message }, 'MEDIA_EGRESS_START_FAILED'));
 
 const httpServer = serve({
   fetch: app.fetch,

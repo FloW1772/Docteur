@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { getRouterSettings } from './sqlite.js';
+import { enforceCloudAi } from './root-policy/index.js';
 
 const GROQ_TRANSCRIPTIONS_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB
@@ -12,6 +14,10 @@ const TIMEOUT_MS = 180_000; // 3 minutes
  * API key is never included in thrown error messages.
  */
 export async function transcribeWithGroq(audioPath, apiKey) {
+  // ROOT POLICY (AI_CLOUD_REQUEST): audio leaves the machine — strict local, explicit cloud opt-in, fail closed on an untrusted policy.
+  let settings = null;
+  try { settings = getRouterSettings(); } catch { /* db not ready: defaults */ }
+  enforceCloudAi({ provider: 'groq-whisper', messages: [], strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled !== false });
   const stat = fs.statSync(audioPath);
   if (stat.size > MAX_FILE_BYTES) {
     const err = new Error(

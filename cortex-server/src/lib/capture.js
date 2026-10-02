@@ -1,4 +1,5 @@
 import { assertSafeUrl } from './url-security.js';
+import { safeFetch } from './web-egress-guard.js';
 
 const COMMON_SUBDOMAINS = new Set(['www', 'm', 'mobile', 'amp', 'blog', 'news', 'info']);
 
@@ -131,8 +132,12 @@ async function fetchText(url, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
+    // WEB EGRESS GUARD: user-influenced URL → DNS-validated, pinned connection, every redirect hop revalidated, bounded body.
+    const response = await safeFetch(url, {
       signal: controller.signal,
+      timeoutMs,
+      maxBytes: 5 * 1024 * 1024,
+      purpose: 'capture',
       headers: {
         'user-agent': 'Docteur/1.0 (+https://localhost)',
         accept: 'text/html,application/json;q=0.9,*/*;q=0.8',

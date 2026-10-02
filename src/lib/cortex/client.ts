@@ -1,5 +1,7 @@
 import type { Page, Block } from '../types';
 import { pageToContent } from './pageToContent';
+import { DEEP_CAPTURE_TIMEOUT_MS } from '../capturePipeline';
+export { DEEP_CAPTURE_TIMEOUT_MS } from '../capturePipeline';
 
 const BASE      = `${window.location.protocol}//${window.location.hostname}:3001`;
 const TIMEOUT        = 90_000;   // ms per request (default)
@@ -63,6 +65,19 @@ export interface AnswerResult {
   router_level?: number | null;
   routing_reason?: string | null;
   has_private_sources?: boolean;
+  // NB-7 — Docteur Memory in the main chat (additive; memoryUsed is always an array when the server is NB-7)
+  memoryUsed?: ChatMemoryUsed[];
+  memory?: { enabled: boolean; requestId: string | null; notice: string | null; retrievalMode: string | null; vectorStatus: string | null; historical: boolean; project: string | null; notebook: string | null;
+    conflicts: Array<{ conflictId: string | null; kind: string; memoryA?: string; memoryB?: string; detail?: string }>; skipped: Array<{ memoryId: string | null; code: string }>; citedMemoryIds: string[]; citedSources: string[]; timingMs: number };
+  notebookSources?: Array<{ marker: string; type: 'DOCUMENT_CHUNK' | 'AI_HISTORY_MESSAGE'; id: string; ref: string; title: string; trustLevel: string | null }>;
+  citations?: ChatCitation[];
+}
+export type ChatCitationType = 'NEURON' | 'MEMORY' | 'DOCUMENT_CHUNK' | 'AI_HISTORY_MESSAGE';
+export interface ChatCitation { type: ChatCitationType; id: string; marker?: string }
+export interface ChatMemoryUsed {
+  marker: string; memoryId: string; type: string; scope: { kind: 'GLOBAL' | 'PROJECT' | 'NOTEBOOK'; projectId: string | null; notebookId: string | null }; status: string; isHistorical: boolean;
+  score: number; reason: 'FTS' | 'VECTOR' | 'HYBRID'; statement: string; provenance: string; trustLevel: string; effectiveFrom: string; effectiveUntil: string | null;
+  evidence: Array<{ kind: string; ref: string; provider: string | null; status: string }>;
 }
 
 export type CorpusScope = 'all' | 'personal' | 'reference';
@@ -788,6 +803,47 @@ export interface DeepCaptureResult {
   child?: CaptureNeuron | null;
   model_used?: string | null;
   latency_ms?: number;
+  captureId?: string;
+  partial?: {
+    title?: string;
+    text?: string;
+    word_count?: number;
+    imageUrls?: string[];
+  } | null;
+  imageUrls?: string[];
+  extraction?: {
+    httpStatus?: number | null;
+    finalUrl?: string;
+    rawChars?: number;
+    renderedChars?: number;
+    readabilityChars?: number;
+    readabilityWords?: number;
+    structuredChars?: number;
+    structuredWords?: number;
+    semanticChars?: number;
+    semanticWords?: number;
+    playwrightChars?: number;
+    playwrightWords?: number;
+    finalChars?: number;
+    finalWords?: number;
+    finalParagraphs?: number;
+    chosenExtractor?: string | null;
+    fallbackReason?: string | null;
+    qualityStatus?: 'COMPLETE' | 'PARTIAL_EXTRACTION' | 'NO_CONTENT';
+    navigationMs?: number;
+    waitMs?: number;
+    playwrightExtractionMs?: number;
+  } | null;
+  timings?: {
+    fetchMs?: number;
+    readabilityMs?: number;
+    playwrightMs?: number;
+    extractionMs?: number;
+    pairAttemptMs?: number;
+    aiMs?: number;
+    titleMs?: number;
+    totalMs?: number;
+  };
   groq_fallback?: { reason: string; label: string } | null;
 }
 
@@ -1178,6 +1234,217 @@ export interface NotebookSummaryResult {
   sourceCount:  number;
 }
 
+// ── Notebook NB-2 — raw documents (strict local) ─────────────────────────────
+export type NotebookDocStatus =
+  | 'QUEUED' | 'SCANNING' | 'PARSING' | 'CHUNKING' | 'INDEXING' | 'READY' | 'FAILED' | 'SECURITY_BLOCKED';
+
+export interface NotebookDocument {
+  documentId:       string;
+  sourceId:         string;
+  title:            string;
+  mimeType:         string;
+  hash:             string;
+  size:             number;
+  language:         string | null;
+  createdAt:        string;
+  updatedAt:        string;
+  currentVersionId: string | null;
+  status:           NotebookDocStatus;
+  trustLevel:       string;
+  errorCode:        string | null;
+  retention?:       'KEEP' | 'MANUAL' | 'DELETE_AFTER' | 'SESSION_ONLY';
+  expiresAt?:       string | null;
+}
+
+export type NotebookVectorStatusName = 'READY' | 'VECTOR_PARTIAL' | 'VECTOR_STALE' | 'VECTOR_UNAVAILABLE' | 'NOT_USED';
+export interface NotebookVectorStatus {
+  status:       NotebookVectorStatusName;
+  total:        number;
+  compatible:   number;
+  incompatible: number;
+  missing:      number;
+  model?:       string;
+  embedVersion?: string;
+  needsReindex: boolean;
+}
+
+export type NotebookRetention = 'KEEP' | 'MANUAL' | 'DELETE_AFTER' | 'SESSION_ONLY';
+export type NotebookTrustFilter = 'all' | 'trusted' | 'user_authored';
+
+export interface NotebookRetrievalOptions {
+  trustFilter?:       NotebookTrustFilter;
+  documentIds?:       string[];
+  includeHistorical?: boolean;
+  profile?:           'precise' | 'broad';
+}
+
+export interface NotebookSourceConflict {
+  type:     'POLARITY' | 'NUMERIC' | 'VERSION';
+  heuristic: boolean;
+  a: { citationId: number | null; chunkId: string; sourceId: string; sourceTitle: string; documentVersion: number; importedAt: string | null; page: number | null; excerpt: string };
+  b: { citationId: number | null; chunkId: string; sourceId: string; sourceTitle: string; documentVersion: number; importedAt: string | null; page: number | null; excerpt: string };
+}
+
+export interface NotebookDocAnswer {
+  strict_local:    boolean;
+  status:          'ANSWERED' | 'NO_RELEVANT_SOURCE' | 'OUTSIDE_NOTEBOOK';
+  outside_notebook: boolean;
+  answer:          string;
+  citations:       NotebookDocCitation[];
+  uncertainties:   Array<{ code: string; message: string }>;
+  source_conflicts: NotebookSourceConflict[];
+  sources_used:    Array<{ sourceId: string; sourceTitle: string; documentVersion: number; trustLevel: string; assertionType: string; chunksUsed: number; cited: boolean }>;
+  retrieval_mode:  'HYBRID' | 'FTS_ONLY' | 'NONE';
+  mode:            string;
+  vector_status:   NotebookVectorStatusName;
+  confidence:      'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+  chunks_used:     number;
+}
+
+// ── Notebook NB-4 — imported AI histories (strict local; provider formats are synthetic-tested only) ──
+export type AiProvider = 'CHATGPT' | 'GEMINI' | 'CLAUDE' | 'UNKNOWN';
+export type AiRole = 'USER' | 'ASSISTANT' | 'SYSTEM' | 'TOOL' | 'UNKNOWN';
+export type AiImportStatus = 'QUEUED' | 'SCANNING' | 'PARSING' | 'NORMALIZING' | 'SECURITY_SCAN' | 'INDEXING' | 'DISTILLING' | 'REVIEW_REQUIRED' | 'READY' | 'FAILED' | 'CANCELLED';
+
+export interface AiImportCounts {
+  files: number; conversations: number; conversationsNew: number; conversationsUpdated: number; conversationsUnchanged: number; invalid: number;
+  messages: number; messagesNew: number; messagesDuplicate: number; messagesBlocked: number; messagesRedacted: number;
+  attachments: number; attachmentsAvailable: number; attachmentsMissing: number; attachmentsUnsupported: number; attachmentsBlocked: number;
+  chunks: number; vectorFailed: boolean; blockedEntries: number; declaredProvider?: string;
+}
+export interface AiSecretFinding { kind: string; severity: string; count: number }
+export interface AiImportPreview {
+  previewId: string | null; size: number; adapter: string; provider: AiProvider; providerVerified: boolean; detection: string;
+  counts: AiImportCounts; findings: AiSecretFinding[]; dateRange: { from: string | null; to: string | null }; titles: string[];
+  blockedEntries: Array<{ name: string; reason: string }>; syntheticCoverage: boolean; needsConfirm: boolean; fileHash: string;
+}
+export interface AiImport {
+  importId: string; provider: AiProvider; adapter: string; providerVerified: boolean; sourceName: string; size: number; status: AiImportStatus;
+  distillStatus: string; errorCode: string | null; secretPolicy: string; counts: Partial<AiImportCounts>; findings: AiSecretFinding[];
+  createdAt: string; updatedAt: string; retention: string | null; expiresAt: string | null;
+}
+export interface AiConversation {
+  conversationId: string; importId: string; provider: AiProvider; providerVerified: boolean; title: string; createdAt: string | null;
+  updatedAt: string | null; messageCount: number; language: string | null;
+}
+export interface AiMessage {
+  messageId: string; role: AiRole; content: string; createdAt: string | null; trustLevel: string; onMainPath: boolean; isCurrent: boolean;
+  provider: AiProvider; originalId: string | null; flags: string[]; codeLangs: string[];
+  attachments?: Array<{ name: string; status: string; mime: string; size: number | null }>;
+}
+export interface AiHistoryHit {
+  chunkId: string; conversationId: string; conversationTitle: string; importId: string; provider: AiProvider; providerLabel: string; providerVerified: boolean;
+  role: AiRole; trustLevel: string; assertionType: string; speaker: string; date: string | null; messageIds: string[]; branch: boolean;
+  injectionFlags: string[]; score: number; text: string;
+}
+export interface AiHistoryCitation {
+  type: 'AI_HISTORY_MESSAGE'; ref: number; chunkId: string; importId: string; conversationId: string; conversationTitle: string; provider: AiProvider; providerLabel: string;
+  role: AiRole; trustLevel: string; assertionType: string; verification: string; messageIds: string[]; date: string | null; speaker: string; passage: string; branch: boolean;
+}
+export interface AiHistoryAnswer {
+  status: 'ANSWERED' | 'NO_RELEVANT_SOURCE'; answer: string; citations: AiHistoryCitation[]; uncertainties: Array<{ code: string; message: string }>;
+  sourceConflicts: NotebookSourceConflict[]; retrievalMode: string; vectorStatus: string; confidence: string; voices?: Array<{ role: AiRole; provider: AiProvider; speaker: string }>;
+}
+export interface AiCitationPreview {
+  chunkId: string; conversationTitle: string; providerLabel: string; providerVerified: boolean; role: AiRole; trustLevel: string; assertionType: string; date: string | null; text: string; branch: boolean;
+  messages: Array<{ messageId: string; role: AiRole; createdAt: string | null; content: string; trustLevel: string; onMainPath: boolean }>;
+  attachments: Array<{ name: string; status: string; indexed: boolean }>;
+}
+export interface AiCandidate {
+  candidateId: string; type: string; statement: string; trustLevel: string; assertionType: string; confidence: number; status: 'CANDIDATE' | 'APPROVED' | 'REJECTED' | 'SUPERSEDED';
+  method: string; statedAt: string | null; lastEvidenceAt: string | null; edited: boolean; orphaned: boolean; promotion: string; evidenceCount?: number; conversationCount?: number;
+}
+export interface AiCandidateDetail extends AiCandidate {
+  evidence: Array<{ messageId: string; conversationId: string; conversationTitle: string; provider: AiProvider; role: AiRole; quote: string; ts: string | null }>;
+  links: Array<{ candidateId: string; relatedId: string; kind: string; ambiguous: boolean; detail: string }>;
+}
+export interface AiHistoryFilters { provider?: AiProvider; role?: AiRole; from?: string; to?: string; importIds?: string[]; conversationIds?: string[]; trustLevels?: string[]; profile?: 'precise' | 'broad' }
+
+// ── NB-5 — DOCTEUR MEMORY (approved memory only; every item was explicitly approved by a human) ─────────
+export type MemoryStatus = 'APPROVED' | 'SUPERSEDED' | 'REVOKED' | 'ARCHIVED';
+export type MemoryScopeKind = 'GLOBAL' | 'PROJECT' | 'NOTEBOOK';
+export type MemorySensitivity = 'NORMAL' | 'SENSITIVE' | 'HIGHLY_SENSITIVE';
+export type MemoryRetention = 'KEEP' | 'MANUAL' | 'DELETE_AFTER' | 'SESSION_ONLY';
+export interface MemoryScope { kind: MemoryScopeKind; projectId: string | null; notebookId: string | null }
+export interface MemoryItem {
+  memoryId: string; statement: string; type: string; status: MemoryStatus; scope: MemoryScope; scopeKind: MemoryScopeKind; projectId: string | null; notebookId: string | null;
+  confidence: number; trustLevel: string; sensitivity: MemorySensitivity; createdAt: string; updatedAt: string; approvedAt: string; effectiveFrom: string; effectiveUntil: string | null;
+  supersededBy: string | null; sourceKind: 'CANDIDATE' | 'MANUAL'; sourceCandidateId: string | null; originalStatement: string | null; editedBeforeApproval: boolean; approvalSource: string;
+  provenance: { origin?: string; evidenceCount?: number; providers?: string[] }; injectionFlags: string[]; version: number; retention: MemoryRetention; expiresAt: string | null; needsReview: boolean;
+  provenanceStatus: 'OK' | 'MANUAL' | 'MISSING'; score?: number;
+}
+export interface MemoryEvidence { kind: string; ref: string; sourceId: string | null; conversationId: string | null; provider: string | null; role: string | null; trustLevel: string | null; quote: string; ts: string | null; status: 'OK' | 'SOURCE_MISSING' }
+export interface MemoryRevision { revisionId: string; version: number; action: string; oldStatement: string | null; newStatement: string | null; oldStatus: string | null; newStatus: string | null; reason: string | null; at: string }
+export interface MemoryConflict { conflictId: string; memoryA: string; memoryB: string; kind: string; detail: string; status: string; resolution: string | null; detectedAt: string; a: MemoryItem | null; b: MemoryItem | null }
+export interface MemorySuggestion { suggestionId: string; newId: string; oldId: string; ambiguous: boolean; detail: string; status: string; createdAt: string; newMemory: MemoryItem | null; oldMemory: MemoryItem | null }
+export interface MemoryProject { projectId: string; name: string }
+export interface MemoryWriteInput {
+  type?: string; scope?: { kind: MemoryScopeKind; projectId?: string | null; notebookId?: string | null }; statement?: string; sensitivity?: MemorySensitivity; retention?: MemoryRetention; retentionDuration?: string;
+  confirmGlobal?: boolean; confirmSensitive?: boolean; allowDuplicate?: boolean; secretPolicy?: 'block' | 'redact'; expectedVersion?: number;
+}
+export interface MemoryUsedRef { marker: string; memoryId: string; type: string; scope: MemoryScope; status: MemoryStatus; statement: string }
+export interface MemoryAnswer { requestId: string; answer: string; memoryUsed: MemoryUsedRef[]; memoryCitations: Array<{ marker: string; memoryId: string; statement: string }>; conflicts: Array<{ conflictId: string; kind: string; memoryA: string; memoryB: string; detail: string }>; notice: string | null; retrievalMode: string; vectorStatus: string; authority: 'CONTEXT_ONLY' }
+export interface MemoryStatusInfo { projects: MemoryProject[]; counts: { approved: number; superseded: number; revoked: number; archived: number }; vector: { total: number; missing: number; incompatible: number; needsReindex: boolean }; constants: { MEMORY_TYPES: string[]; MAX_STATEMENT_CHARS: number } }
+export class MemoryApiError extends Error {
+  code: string; extra: Record<string, unknown>;
+  constructor(message: string, code: string, extra: Record<string, unknown> = {}) { super(message); this.name = 'MemoryApiError'; this.code = code; this.extra = extra; }
+}
+async function memoryJson<T>(path: string, init: { method?: string; body?: unknown } = {}, timeoutMs = 60_000): Promise<T> {
+  const res = await apiFetch(`/api/docteur-memory${path}`, { method: init.method ?? 'GET', ...(init.body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(init.body) } : {}) }, timeoutMs);
+  const body = await res.json().catch(() => ({})) as T & { error?: string; code?: string };
+  if (!res.ok) { const { error, code, ...extra } = body as { error?: string; code?: string } & Record<string, unknown>; throw new MemoryApiError(error ?? `Mémoire HTTP ${res.status}`, code ?? 'MEMORY_HTTP', extra); }
+  return body;
+}
+
+export interface NotebookCitationPreview {
+  chunkId: string; sourceId: string; sourceTitle: string; documentVersion: number; versionId: string;
+  page: number | null; headingPath: string[]; startOffset: number | null; endOffset: number | null; hash: string;
+  trustLevel: string; assertionType: string; superseded: boolean; importedAt: string | null; text: string;
+}
+
+export interface NotebookDocImportResult {
+  documentId:  string;
+  versionId:   string;
+  duplicate:   boolean;
+  status:      NotebookDocStatus;
+  errorCode?:  string;
+  findings?:   Array<{ kind: string; severity: string; count: number; lines: number[] }>;
+  requiresConfirmation?: boolean;
+  vectorStatus?: string;
+}
+
+export interface NotebookDocSearchHit {
+  chunkId:         string;
+  sourceId:        string;
+  sourceTitle:     string;
+  documentVersion: number;
+  page:            number | null;
+  headingPath:     string[];
+  trustLevel:      string;
+  score:           number;
+  ftsRank:         number | null;
+  vectorRank:      number | null;
+  injectionFlags:  string[];
+  text:            string;
+}
+
+export interface NotebookDocCitation {
+  ref:             number;
+  chunkId:         string;
+  sourceId:        string;
+  sourceTitle:     string;
+  documentVersion: number;
+  versionId:       string;
+  page:            number | null;
+  headingPath:     string[];
+  trustLevel:      string;
+  superseded:      boolean;
+  passage:         string;
+  assertionType?:  string;
+  startOffset?:    number | null;
+  endOffset?:      number | null;
+}
+
 export interface InstalledBrowser {
   id:    string;
   label: string;
@@ -1453,10 +1720,50 @@ export interface BackupExport {
   links?: Array<{ from: string; to: string }>;
 }
 
+export type YouTubeMediaType = 'VIDEO' | 'SHORT' | 'STREAM';
+export type YouTubeSourceTab  = 'videos' | 'shorts' | 'streams' | 'playlist';
+export type YouTubeDiscoveryMode =
+  | 'CHANNEL_ALL_MEDIA' | 'CHANNEL_VIDEOS_ONLY' | 'CHANNEL_SHORTS_ONLY' | 'CHANNEL_STREAMS_ONLY'
+  | 'PLAYLIST_ONLY' | 'SINGLE_VIDEO' | 'SINGLE_SHORT' | 'CHANNEL_LIVE';
+
 export interface PlaylistVideo {
   id:    string;
   title: string;
   url:   string;
+  thumbnail?: string;
+  channel?: string;
+  duration?: number;
+  uploadDate?: string;
+  timestamp?: number;
+  /** Smart Discovery V2 typing */
+  sourceChannel?: string;
+  sourceTab?: YouTubeSourceTab;
+  sourceTabs?: YouTubeSourceTab[];
+  mediaType?: YouTubeMediaType;
+}
+
+export type YouTubeDiscoveryEvent =
+  | { type: 'start'; input: string; at: number }
+  | { type: 'mode'; mode: YouTubeDiscoveryMode; kind: string; handle: string | null; canonicalUrl: string; sources: YouTubeSourceTab[] }
+  | { type: 'phase_start'; tab: YouTubeSourceTab; index: number; total: number }
+  | { type: 'progress'; tab: YouTubeSourceTab; pages: number; count: number; total: number; elapsedMs: number }
+  | { type: 'items_batch'; tab: YouTubeSourceTab; items: PlaylistVideo[]; total: number }
+  | { type: 'phase_done'; tab: YouTubeSourceTab; count: number; available: boolean; pages: number; durationMs: number; total: number }
+  | { type: 'done'; mode: YouTubeDiscoveryMode; total: number; counts: Record<string, number>; duplicates: number; durationMs: number;
+      channel: YouTubeChannelInfo; merged?: Array<Pick<PlaylistVideo, 'id' | 'mediaType' | 'url' | 'sourceTab' | 'sourceTabs'>> }
+  | { type: 'cancelled'; total: number }
+  | { type: 'error'; name?: string; code?: string; message: string };
+
+export interface YouTubeChannelInfo { handle: string | null; url: string; title: string; uploader: string; id: string }
+
+export interface YouTubeDiscoveryResult {
+  mode: YouTubeDiscoveryMode;
+  channel: YouTubeChannelInfo;
+  items: PlaylistVideo[];
+  total: number;
+  counts: Record<string, number>;
+  duplicates: number;
+  durationMs: number;
 }
 
 export interface PlaylistInfo {
@@ -1465,6 +1772,7 @@ export interface PlaylistInfo {
   playlistId:  string;
   video_count: number;
   videos:      PlaylistVideo[];
+  source_type?: 'videos' | 'shorts' | 'short';
 }
 
 export interface ImportResult {
@@ -1505,17 +1813,20 @@ function isNetworkError(e: unknown): boolean {
 
 // ── Internal fetch helpers ─────────────────────────────────────────────────
 
-async function fetchTimeout(url: string, opts: RequestInit, timeoutMs = TIMEOUT): Promise<Response> {
+async function fetchTimeout(url: string, opts: RequestInit, timeoutMs: number | null = TIMEOUT): Promise<Response> {
   const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = timeoutMs === null ? null : setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...opts, signal: ctrl.signal });
+    const signal = opts.signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([opts.signal, ctrl.signal])
+      : ctrl.signal;
+    return await fetch(url, { ...opts, signal });
   } finally {
-    clearTimeout(timer);
+    if (timer !== null) clearTimeout(timer);
   }
 }
 
-async function apiFetch(path: string, opts: RequestInit = {}, timeoutMs = TIMEOUT): Promise<Response> {
+async function apiFetch(path: string, opts: RequestInit = {}, timeoutMs: number | null = TIMEOUT): Promise<Response> {
   const url = `${BASE}${path}`;
   let lastErr: unknown;
 
@@ -2508,10 +2819,18 @@ export const cortexClient = {
         kind:     page.kind,
         title:    page.title || 'Sans titre',
         content,
-        metadata: { tags: page.tags ?? [], updatedAt: page.updatedAt },
+        metadata: {
+          tags: page.tags ?? [],
+          updatedAt: page.updatedAt,
+          captureId: typeof page.metadata?.captureId === 'string' ? page.metadata.captureId : undefined,
+          captureStatus: typeof page.metadata?.captureStatus === 'string' ? page.metadata.captureStatus : undefined,
+        },
       }),
-    }, 60_000); // embedding can take longer when Ollama is under load
-    if (!res.ok) throw new Error(`Index HTTP ${res.status}`);
+    }, 180_000); // cold model swaps can make an otherwise healthy local embedding slow
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(error.error ? `Index HTTP ${res.status}: ${error.error}` : `Index HTTP ${res.status}`);
+    }
     return res.json() as Promise<IndexResult>;
   },
 
@@ -2532,7 +2851,7 @@ export const cortexClient = {
     signal?: AbortSignal,
   ): Promise<CaptureResult & { fallback?: boolean; reason?: string; model_used?: string }> {
     const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 120_000); // texte peut être long
+    const timer = setTimeout(() => ctrl.abort(), DEEP_CAPTURE_TIMEOUT_MS); // même analyse locale que le mode URL
     signal?.addEventListener('abort', () => ctrl.abort());
     try {
       const res = await fetch(`${BASE}/api/capture/deep`, {
@@ -2561,7 +2880,7 @@ export const cortexClient = {
 
   async captureDeep(url: string, signal?: AbortSignal, captureImages = false): Promise<DeepCaptureResult> {
     const ctrl  = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 90_000);
+    const timer = setTimeout(() => ctrl.abort(), DEEP_CAPTURE_TIMEOUT_MS);
     signal?.addEventListener('abort', () => ctrl.abort());
     try {
       const res = await fetch(`${BASE}/api/capture/deep`, {
@@ -2678,17 +2997,89 @@ export const cortexClient = {
     });
   },
 
-  async getPlaylist(url: string): Promise<PlaylistInfo> {
-    const res = await apiFetch('/api/capture/playlist', {
+  /** YouTube Smart Discovery V2: the URL decides what is discovered (no manual limit). */
+  async discoverYouTube(
+    input: string,
+    options: {
+      context?: 'youtube';
+      signal?: AbortSignal;
+      onEvent?: (event: YouTubeDiscoveryEvent) => void;
+    } = {},
+  ): Promise<YouTubeDiscoveryResult> {
+    const res = await apiFetch('/api/capture/discover', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ url }),
-    }, 40_000);
+      body:    JSON.stringify({ input, ...(options.context ? { context: options.context } : {}) }),
+      signal:  options.signal,
+    }, null);
     if (!res.ok) {
-      const err = await res.text().catch(() => `HTTP ${res.status}`);
-      throw new Error(err);
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error || `HTTP ${res.status}`);
     }
-    return res.json() as Promise<PlaylistInfo>;
+    if (!res.body) throw new Error('Réponse de découverte YouTube vide');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const items: PlaylistVideo[] = [];
+    let mode: YouTubeDiscoveryMode | null = null;
+    let result: YouTubeDiscoveryResult | null = null;
+    let buffer = '';
+    const consumeLine = (line: string) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line) as YouTubeDiscoveryEvent;
+      if (event.type === 'mode') mode = event.mode;
+      if (event.type === 'items_batch') for (const item of event.items) items.push(item);
+      options.onEvent?.(event);
+      if (event.type === 'done') {
+        if (event.merged?.length) {
+          const byId = new Map(items.map(item => [item.id, item]));
+          for (const patch of event.merged) {
+            const target = byId.get(patch.id);
+            if (target) Object.assign(target, patch);
+          }
+        }
+        result = { mode: event.mode ?? mode as YouTubeDiscoveryMode, channel: event.channel, items, total: event.total, counts: event.counts, duplicates: event.duplicates, durationMs: event.durationMs };
+      }
+      if (event.type === 'cancelled') {
+        const error = new Error('Découverte annulée');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (event.type === 'error') {
+        const error = new Error(event.message || 'Échec de la découverte YouTube') as Error & { code?: string };
+        error.name = event.name || 'Error';
+        error.code = event.code;
+        throw error;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? '';
+      for (const line of lines) consumeLine(line);
+      if (done) break;
+    }
+    consumeLine(buffer);
+    if (!result) throw new Error('Flux de découverte YouTube interrompu avant la fin');
+    return result;
+  },
+
+  /** Playlist metadata + every video (no manual limit). Thin adapter over discoverYouTube. */
+  async getPlaylist(url: string, options: { signal?: AbortSignal; onProgress?: (count: number) => void } = {}): Promise<PlaylistInfo> {
+    const found = await cortexClient.discoverYouTube(url, {
+      signal: options.signal,
+      onEvent: event => { if (event.type === 'progress') options.onProgress?.(event.total); },
+    });
+    return {
+      title:       found.channel.title,
+      uploader:    found.channel.uploader,
+      playlistId:  found.channel.id,
+      video_count: found.total,
+      videos:      found.items,
+      source_type: found.mode === 'SINGLE_SHORT' ? 'short' : 'videos',
+    };
   },
 
   async deleteNeuron(id: string): Promise<{ ok: boolean }> {
@@ -4284,6 +4675,10 @@ export const cortexClient = {
       clarification_context?: Array<{ question: string; answer: string }>;
       scope?:                 CorpusScope;
       kiwix_scope?:           KiwixSearchScope;
+      // NB-7: Docteur Memory. use_memory:false ⇒ the server makes ZERO memory calls. Project / notebook are EXPLICIT selections, never guessed.
+      use_memory?:            boolean;
+      memory_project?:        string | null;
+      memory_notebook?:       string | null;
     } = {},
   ): Promise<AnswerResult> {
     const timeout = opts.force_local_powerful ? 180_000 : TIMEOUT_ANSWER;
@@ -4463,6 +4858,235 @@ export const cortexClient = {
     if (!res.ok) throw new Error(`Notebook export HTTP ${res.status}`);
     return res.json();
   },
+
+  // ── Notebook NB-2 — raw documents (strict local, FTS5 + vector) ─────────────
+  async listNotebookDocuments(notebookId: string, page: { limit?: number; offset?: number } = {}): Promise<{ strict_local: boolean; documents: NotebookDocument[]; total: number; formats: string[]; vector?: NotebookVectorStatus }> {
+    const qs = new URLSearchParams({ limit: String(page.limit ?? 50), offset: String(page.offset ?? 0) });
+    const res = await apiFetch(`/api/notebooks/${notebookId}/documents?${qs}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Notebook documents HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async importNotebookDocument(
+    notebookId: string,
+    input: ({ file: File; originKind?: 'file' | 'past_ai_output'; secretPolicy?: 'block' | 'redact' }
+      | { text: string; title: string; originKind?: 'manual_text' | 'past_ai_output'; secretPolicy?: 'block' | 'redact' })
+      & { retention?: NotebookRetention; retentionDuration?: string; trustLevel?: string },
+  ): Promise<NotebookDocImportResult> {
+    let init: RequestInit;
+    if ('file' in input) {
+      const form = new FormData();
+      form.set('file', input.file);
+      if (input.originKind) form.set('origin_kind', input.originKind);
+      if (input.secretPolicy) form.set('secret_policy', input.secretPolicy);
+      if (input.retention) form.set('retention', input.retention);
+      if (input.retentionDuration) form.set('retention_duration', input.retentionDuration);
+      if (input.trustLevel) form.set('trust_level', input.trustLevel);
+      init = { method: 'POST', body: form };
+    } else {
+      init = {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: input.text, title: input.title, origin_kind: input.originKind, secret_policy: input.secretPolicy,
+          retention: input.retention, retention_duration: input.retentionDuration, trust_level: input.trustLevel,
+        }),
+      };
+    }
+    const res = await apiFetch(`/api/notebooks/${notebookId}/documents/import`, init, 120_000);
+    const body = await res.json().catch(() => ({})) as NotebookDocImportResult & { error?: string; code?: string };
+    if (!res.ok) {
+      const err = new Error(body.error ?? `Import HTTP ${res.status}`) as Error & { code?: string };
+      err.code = body.code;
+      throw err;
+    }
+    return body;
+  },
+
+  async deleteNotebookDocument(notebookId: string, documentId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Document delete HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async searchNotebookDocuments(notebookId: string, query: string, options: NotebookRetrievalOptions = {}): Promise<{ strict_local: boolean; mode: string; retrieval_mode?: 'HYBRID' | 'FTS_ONLY' | 'NONE'; vector_status: string; results: NotebookDocSearchHit[] }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/doc-search`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, trust_filter: options.trustFilter, document_ids: options.documentIds, include_historical: options.includeHistorical, profile: options.profile }),
+    });
+    if (!res.ok) throw new Error(`Document search HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async askNotebookDocuments(notebookId: string, question: string, options: NotebookRetrievalOptions & { allowOutsideNotebook?: boolean } = {}): Promise<NotebookDocAnswer> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/doc-ask`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question, trust_filter: options.trustFilter, document_ids: options.documentIds, include_historical: options.includeHistorical,
+        profile: options.profile, allow_outside_notebook: options.allowOutsideNotebook,
+      }),
+    }, 120_000);
+    if (!res.ok) throw new Error(`Document ask HTTP ${res.status}`);
+    const raw = await res.json() as Partial<NotebookDocAnswer> & { answer: string };
+    // Older servers (NB-2 contract) do not send the NB-3 fields: normalise instead of assuming.
+    return {
+      strict_local: raw.strict_local ?? true, status: raw.status ?? 'ANSWERED', outside_notebook: raw.outside_notebook ?? false,
+      answer: raw.answer, citations: raw.citations ?? [], uncertainties: raw.uncertainties ?? [], source_conflicts: raw.source_conflicts ?? [],
+      sources_used: raw.sources_used ?? [], retrieval_mode: raw.retrieval_mode ?? 'NONE', mode: raw.mode ?? '',
+      vector_status: raw.vector_status ?? 'NOT_USED', confidence: raw.confidence ?? 'NONE', chunks_used: raw.chunks_used ?? 0,
+    };
+  },
+
+  async previewNotebookCitation(notebookId: string, chunkId: string): Promise<NotebookCitationPreview> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/citations/${encodeURIComponent(chunkId)}`, { method: 'GET' });
+    if (!res.ok) throw new Error(res.status === 404 ? 'Citation introuvable (source supprimée ou expirée)' : `Citation HTTP ${res.status}`);
+    return ((await res.json()) as { citation: NotebookCitationPreview }).citation;
+  },
+
+  async setNotebookDocumentTrust(notebookId: string, documentId: string, trustLevel: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/documents/${encodeURIComponent(documentId)}/trust`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trust_level: trustLevel }),
+    });
+    if (!res.ok) throw new Error(`Trust HTTP ${res.status}`);
+    return res.json();
+  },
+
+  // Explicit user action only (never automatic): re-embed with the active model/format.
+  async reindexNotebookDocuments(notebookId: string): Promise<{ ok: boolean; documents: number; reindexed: number; failed: number }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/reindex`, { method: 'POST' }, 15 * 60_000);
+    const body = await res.json().catch(() => ({})) as { ok?: boolean; documents?: number; reindexed?: number; failed?: number };
+    if (!res.ok && res.status !== 503) throw new Error(`Reindex HTTP ${res.status}`);
+    return { ok: !!body.ok, documents: body.documents ?? 0, reindexed: body.reindexed ?? 0, failed: body.failed ?? 0 };
+  },
+
+  // ── Notebook NB-4 — imported AI histories (never sent anywhere; raw archive is not stored) ─────────────
+  async aiHistoryPreview(notebookId: string, file: File, o: { declaredProvider?: AiProvider; secretPolicy?: 'block' | 'redact' } = {}): Promise<AiImportPreview> {
+    const form = new FormData(); form.set('file', file);
+    if (o.declaredProvider) form.set('declared_provider', o.declaredProvider);
+    if (o.secretPolicy) form.set('secret_policy', o.secretPolicy);
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/preview`, { method: 'POST', body: form }, 300_000);
+    const body = await res.json().catch(() => ({})) as { preview?: AiImportPreview; error?: string; code?: string; reason?: string };
+    if (!res.ok || !body.preview) { const err = new Error(body.error ?? `Aperçu HTTP ${res.status}`) as Error & { code?: string }; err.code = body.code; throw err; }
+    return body.preview;
+  },
+  async aiHistoryImport(notebookId: string, o: { previewId: string; secretPolicy: 'block' | 'redact'; retention: NotebookRetention; retentionDuration?: string; distill?: boolean }): Promise<{ importId: string }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/imports`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preview_id: o.previewId, secret_policy: o.secretPolicy, retention: o.retention, retention_duration: o.retentionDuration, distill: o.distill }),
+    }, 60_000);
+    const body = await res.json().catch(() => ({})) as { importId?: string; error?: string; code?: string };
+    if (!res.ok || !body.importId) { const err = new Error(body.error ?? `Import HTTP ${res.status}`) as Error & { code?: string }; err.code = body.code; throw err; }
+    return { importId: body.importId };
+  },
+  async aiHistoryImports(notebookId: string): Promise<{ imports: AiImport[]; total: number }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/imports?limit=100`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Imports HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryCancel(notebookId: string, importId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/imports/${encodeURIComponent(importId)}/cancel`, { method: 'POST' });
+    return res.json();
+  },
+  async aiHistoryDelete(notebookId: string, importId: string): Promise<{ ok: boolean }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/imports/${encodeURIComponent(importId)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`Suppression HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryDistill(notebookId: string, importId: string, useLlm = false): Promise<{ status: string; created: number; extended: number; method: string; llm: { status: string } }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/imports/${encodeURIComponent(importId)}/distill`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ use_llm: useLlm }),
+    }, 300_000);
+    if (!res.ok) throw new Error(`Distillation HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryConversations(notebookId: string, q: { importId?: string; provider?: AiProvider; q?: string; limit?: number; offset?: number } = {}): Promise<{ conversations: AiConversation[]; total: number }> {
+    const p = new URLSearchParams({ limit: String(q.limit ?? 30), offset: String(q.offset ?? 0) });
+    if (q.importId) p.set('import_id', q.importId); if (q.provider) p.set('provider', q.provider); if (q.q) p.set('q', q.q);
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/conversations?${p}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Conversations HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryMessages(notebookId: string, conversationId: string, offset = 0): Promise<{ conversation: AiConversation; messages: AiMessage[]; total: number }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/conversations/${encodeURIComponent(conversationId)}/messages?limit=100&offset=${offset}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Messages HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistorySearch(notebookId: string, query: string, f: AiHistoryFilters = {}): Promise<{ retrieval_mode: string; vector_status: string; results: AiHistoryHit[] }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/search`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, provider: f.provider, role: f.role, from: f.from, to: f.to, import_ids: f.importIds, conversation_ids: f.conversationIds, trust_levels: f.trustLevels, profile: f.profile }),
+    });
+    if (!res.ok) throw new Error(`Recherche HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryAsk(notebookId: string, question: string, f: AiHistoryFilters = {}): Promise<AiHistoryAnswer> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/ask`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, provider: f.provider, role: f.role, from: f.from, to: f.to, import_ids: f.importIds, conversation_ids: f.conversationIds, trust_levels: f.trustLevels, profile: f.profile }),
+    }, 120_000);
+    if (!res.ok) throw new Error(`Question HTTP ${res.status}`);
+    const raw = await res.json() as Partial<AiHistoryAnswer> & { answer: string; status: AiHistoryAnswer['status'] };
+    return { status: raw.status, answer: raw.answer, citations: raw.citations ?? [], uncertainties: raw.uncertainties ?? [], sourceConflicts: raw.sourceConflicts ?? [], retrievalMode: raw.retrievalMode ?? 'NONE', vectorStatus: raw.vectorStatus ?? 'NOT_USED', confidence: raw.confidence ?? 'NONE', voices: raw.voices ?? [] };
+  },
+  async aiHistoryCitation(notebookId: string, chunkId: string): Promise<AiCitationPreview> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/citations/${encodeURIComponent(chunkId)}`, { method: 'GET' });
+    if (!res.ok) throw new Error(res.status === 404 ? 'Citation introuvable (import supprimé ou expiré)' : `Citation HTTP ${res.status}`);
+    return ((await res.json()) as { citation: AiCitationPreview }).citation;
+  },
+  async aiHistoryCandidates(notebookId: string, q: { status?: string; type?: string; limit?: number; offset?: number } = {}): Promise<{ candidates: AiCandidate[]; total: number; global_memory: boolean; types: string[] }> {
+    const p = new URLSearchParams({ limit: String(q.limit ?? 50), offset: String(q.offset ?? 0) });
+    if (q.status) p.set('status', q.status); if (q.type) p.set('type', q.type);
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/candidates?${p}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Candidats HTTP ${res.status}`);
+    return res.json();
+  },
+  async aiHistoryCandidate(notebookId: string, id: string): Promise<AiCandidateDetail> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/candidates/${encodeURIComponent(id)}`, { method: 'GET' });
+    if (!res.ok) throw new Error(`Candidat HTTP ${res.status}`);
+    return ((await res.json()) as { candidate: AiCandidateDetail }).candidate;
+  },
+  // The ONLY way a candidate changes status. There is no bulk / automatic approval endpoint.
+  async aiHistoryReview(notebookId: string, id: string, action: 'approve' | 'reject' | 'edit' | 'reopen', statement?: string): Promise<{ ok: boolean; candidate: AiCandidate }> {
+    const res = await apiFetch(`/api/notebooks/${notebookId}/ai-history/candidates/${encodeURIComponent(id)}/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, statement }),
+    });
+    const body = await res.json().catch(() => ({})) as { ok?: boolean; candidate?: AiCandidate; error?: string };
+    if (!res.ok || !body.candidate) throw new Error(body.error ?? `Revue HTTP ${res.status}`);
+    return { ok: true, candidate: body.candidate };
+  },
+
+  // ── NB-5 DOCTEUR MEMORY — approved memory. Every write below is an explicit human action; there is no bulk/auto path. ──
+  memoryChatSettings: () => memoryJson<{ settings: { enabled: boolean } }>('/chat-settings'),
+  setMemoryChatSettings: (enabled: boolean) => memoryJson<{ settings: { enabled: boolean } }>('/chat-settings', { method: 'PUT', body: { enabled } }),
+  memoryStatus: () => memoryJson<MemoryStatusInfo>('/status'),
+  memoryCreateProject: (projectId: string, name: string) => memoryJson<{ project: MemoryProject }>('/projects', { method: 'POST', body: { projectId, name } }),
+  memoryNotebookProject: (notebookId: string) => memoryJson<{ notebookId: string; projectId: string | null }>(`/notebooks/${encodeURIComponent(notebookId)}/project`),
+  memorySetNotebookProject: (notebookId: string, projectId: string | null) => memoryJson<{ notebookId: string; projectId: string | null }>(`/notebooks/${encodeURIComponent(notebookId)}/project`, { method: 'PUT', body: { projectId } }),
+  memoryList: (q: { status?: MemoryStatus; limit?: number; offset?: number; q?: string; needsReview?: boolean } = {}) => {
+    const p = new URLSearchParams({ limit: String(q.limit ?? 100), offset: String(q.offset ?? 0) });
+    if (q.status) p.set('status', q.status);
+    if (q.q) p.set('q', q.q);
+    if (q.needsReview) p.set('needs_review', '1');
+    return memoryJson<{ items: MemoryItem[]; total: number }>(`/items?${p}`);
+  },
+  memoryGet: (id: string) => memoryJson<{ memory: MemoryItem; evidence: MemoryEvidence[]; usageCount: number }>(`/items/${encodeURIComponent(id)}`),
+  memoryRevisions: (id: string) => memoryJson<{ revisions: MemoryRevision[] }>(`/items/${encodeURIComponent(id)}/revisions`),
+  memoryCreateManual: (input: MemoryWriteInput) => memoryJson<{ memory: MemoryItem; suggestions: number; conflicts: number; vector: string; warnings?: { pii: string[] } }>('/items', { method: 'POST', body: input }),
+  // Approval of ONE NB-4 candidate. `approve: true` is mandatory server-side (no implicit approval).
+  memoryApproveCandidate: (notebookId: string, candidateId: string, input: MemoryWriteInput) => memoryJson<{ memory: MemoryItem; suggestions: number; conflicts: number; vector: string }>(`/notebooks/${encodeURIComponent(notebookId)}/candidates/${encodeURIComponent(candidateId)}/approve`, { method: 'POST', body: { ...input, approve: true } }),
+  memoryEdit: (id: string, input: MemoryWriteInput) => memoryJson<{ memory: MemoryItem; unchanged?: boolean }>(`/items/${encodeURIComponent(id)}`, { method: 'PATCH', body: input }),
+  memoryRevoke: (id: string, expectedVersion?: number, reason?: string) => memoryJson<{ memory: MemoryItem }>(`/items/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: { expectedVersion, reason } }),
+  memoryArchive: (id: string, expectedVersion?: number) => memoryJson<{ memory: MemoryItem }>(`/items/${encodeURIComponent(id)}/archive`, { method: 'POST', body: { expectedVersion } }),
+  memoryRestore: (id: string, expectedVersion?: number) => memoryJson<{ memory: MemoryItem }>(`/items/${encodeURIComponent(id)}/restore`, { method: 'POST', body: { expectedVersion } }),
+  memoryDelete: (id: string, expectedVersion?: number) => memoryJson<{ ok: boolean }>(`/items/${encodeURIComponent(id)}${expectedVersion != null ? `?expected_version=${expectedVersion}` : ''}`, { method: 'DELETE' }),
+  memorySuggestions: () => memoryJson<{ suggestions: MemorySuggestion[] }>('/suggestions'),
+  memorySupersede: (newId: string, oldId: string, expectedOldVersion?: number) => memoryJson<{ old: MemoryItem; new: MemoryItem }>('/supersede', { method: 'POST', body: { newId, oldId, confirm: true, expectedOldVersion } }),
+  memoryDismissSupersede: (newId: string, oldId: string) => memoryJson<{ ok: boolean }>('/supersede/dismiss', { method: 'POST', body: { newId, oldId } }),
+  memoryConflicts: () => memoryJson<{ conflicts: MemoryConflict[] }>('/conflicts'),
+  memoryResolveConflict: (conflictId: string, action: 'KEEP_BOTH' | 'REVOKE_A' | 'REVOKE_B' | 'A_SUPERSEDES_B' | 'B_SUPERSEDES_A') => memoryJson<{ ok: boolean }>(`/conflicts/${encodeURIComponent(conflictId)}/resolve`, { method: 'POST', body: { action, confirm: true } }),
+  memoryRetrieve: (query: string, o: { activeProject?: string | null; activeNotebook?: string | null; includeHistorical?: boolean; includeSensitive?: boolean; topK?: number } = {}) =>
+    memoryJson<{ requestId: string; retrievalMode: string; vectorStatus: string; results: MemoryItem[]; conflicts: MemoryAnswer['conflicts']; notice: string | null }>('/retrieve', { method: 'POST', body: { query, ...o } }),
+  memoryAnswer: (question: string, o: { activeProject?: string | null; activeNotebook?: string | null; includeHistorical?: boolean; useNotebook?: boolean } = {}) => memoryJson<MemoryAnswer>('/answer', { method: 'POST', body: { question, ...o } }, 180_000),
+  memoryReindex: () => memoryJson<{ ok: boolean; reindexed: number; failed: number }>('/reindex', { method: 'POST' }, 15 * 60_000),
 
   // ── NotebookLM (Google) — future integration, NOT active (Phase 5B) ────────
   // Saving a key here makes ZERO calls to Google/NotebookLM — see

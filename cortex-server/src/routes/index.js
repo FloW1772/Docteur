@@ -20,6 +20,8 @@ export function createIndexRoute({ services, logger }) {
     c.set('modelUsed', services.embeddingModel);
 
     const t0 = performance.now();
+    const captureId = typeof body.metadata?.captureId === 'string' ? body.metadata.captureId : undefined;
+    if (captureId && logger) logger.info({ captureId, neuronId: body.id, elapsedMs: 0 }, 'CAPTURE_INDEX_START');
     try {
       const result = await services.indexNeuron(body);
       const total_ms = Math.round(performance.now() - t0);
@@ -31,6 +33,15 @@ export function createIndexRoute({ services, logger }) {
           lancedb_ms:    result.lancedb_ms,
           total_ms,
         }, 'INDEX_OK');
+        if (captureId) {
+          logger.info({
+            captureId,
+            neuronId: body.id,
+            elapsedMs: total_ms,
+            embeddingMs: result.embedding_ms,
+            lanceDbMs: result.lancedb_ms,
+          }, 'CAPTURE_INDEX_DONE');
+        }
       }
       return c.json(result, 200);
     } catch (error) {
@@ -46,6 +57,14 @@ export function createIndexRoute({ services, logger }) {
           content_length: body.content?.length ?? 0,
           is_ollama_error: isOllama,
         }, 'INDEX_ERROR');
+        if (captureId) {
+          logger.error({
+            captureId,
+            neuronId: body.id,
+            elapsedMs: Math.round(performance.now() - t0),
+            error: error.message,
+          }, 'INDEX_FAILED');
+        }
       } else {
         console.error('[INDEX_ERROR]', {
           message: error.message,

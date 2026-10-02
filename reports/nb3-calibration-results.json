@@ -1,0 +1,2423 @@
+{
+  "corpus": {
+    "documents": 26,
+    "queries": 52,
+    "negatives": 8
+  },
+  "model": "nomic-embed-text",
+  "generatedAt": "2026-09-30T00:27:43.729Z",
+  "separation": {
+    "raw": {
+      "relevantBestChunkCosine": {
+        "min": 0.469,
+        "p10": 0.508,
+        "median": 0.61,
+        "max": 0.913
+      },
+      "negativeQueryTopCosine": {
+        "min": 0.445,
+        "p10": 0.445,
+        "median": 0.539,
+        "max": 0.704
+      }
+    },
+    "nomic": {
+      "relevantBestChunkCosine": {
+        "min": 0.456,
+        "p10": 0.52,
+        "median": 0.615,
+        "max": 0.888
+      },
+      "negativeQueryTopCosine": {
+        "min": 0.483,
+        "p10": 0.483,
+        "median": 0.531,
+        "max": 0.647
+      }
+    }
+  },
+  "baselines": {
+    "raw": {
+      "fts": {
+        "hit1": 0.886,
+        "hit3": 0.886,
+        "mrr": 0.886,
+        "recall": 0.879,
+        "precision": 0.852,
+        "fpRate": 0,
+        "J": 0.921
+      },
+      "vector": {
+        "hit1": 0.523,
+        "hit3": 0.591,
+        "mrr": 0.557,
+        "recall": 0.572,
+        "precision": 0.465,
+        "fpRate": 0.25,
+        "J": 0.619
+      },
+      "hybrid": {
+        "hit1": 0.818,
+        "hit3": 0.955,
+        "mrr": 0.886,
+        "recall": 0.936,
+        "precision": 0.633,
+        "fpRate": 0.25,
+        "J": 0.826
+      },
+      "hybridByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.83
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.67,
+          "recall": 1
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0.33,
+          "mrr": 0.17,
+          "recall": 0.33
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0.25
+        }
+      },
+      "ftsByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0.33,
+          "mrr": 0.33,
+          "recall": 0.33
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0
+        }
+      },
+      "vectorByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.83
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.33,
+          "recall": 0.67
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.67,
+          "recall": 0.67
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.67,
+          "recall": 0.67
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0.25
+        }
+      }
+    },
+    "nomic": {
+      "fts": {
+        "hit1": 0.886,
+        "hit3": 0.886,
+        "mrr": 0.886,
+        "recall": 0.879,
+        "precision": 0.852,
+        "fpRate": 0,
+        "J": 0.921
+      },
+      "vector": {
+        "hit1": 0.523,
+        "hit3": 0.545,
+        "mrr": 0.534,
+        "recall": 0.527,
+        "precision": 0.419,
+        "fpRate": 0.25,
+        "J": 0.596
+      },
+      "hybrid": {
+        "hit1": 0.864,
+        "hit3": 0.955,
+        "mrr": 0.909,
+        "recall": 0.936,
+        "precision": 0.755,
+        "fpRate": 0.25,
+        "J": 0.845
+      },
+      "hybridByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.83
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 0.83,
+          "recall": 1
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0.33,
+          "mrr": 0.17,
+          "recall": 0.33
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0.25
+        }
+      },
+      "ftsByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0.33,
+          "mrr": 0.33,
+          "recall": 0.33
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0
+        }
+      },
+      "vectorByType": {
+        "exact keyword": {
+          "n": 3,
+          "hit3": 0.33,
+          "mrr": 0.33,
+          "recall": 0.33
+        },
+        "semantic paraphrase": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.83
+        },
+        "acronym": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "filename": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "heading": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "multi-word phrase": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.67,
+          "recall": 0.67
+        },
+        "question natural language": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.67,
+          "recall": 0.67
+        },
+        "french accents": {
+          "n": 3,
+          "hit3": 0.67,
+          "mrr": 0.67,
+          "recall": 0.67
+        },
+        "english query": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "french query vs english doc": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "technical identifier": {
+          "n": 3,
+          "hit3": 0,
+          "mrr": 0,
+          "recall": 0
+        },
+        "rare term": {
+          "n": 3,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "long document fact": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "table": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "contradiction": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 1
+        },
+        "near duplicate": {
+          "n": 1,
+          "hit3": 1,
+          "mrr": 1,
+          "recall": 0.67
+        },
+        "mixed language": {
+          "n": 2,
+          "hit3": 1,
+          "mrr": 0.75,
+          "recall": 1
+        },
+        "negative": {
+          "n": 8,
+          "fpRate": 0.25
+        }
+      }
+    }
+  },
+  "grid1": {
+    "raw": {
+      "top": [
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.886,
+          "hit3": 0.886,
+          "mrr": 0.886,
+          "recall": 0.879,
+          "precision": 0.852,
+          "fpRate": 0,
+          "J": 0.921
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.909,
+          "hit3": 0.932,
+          "mrr": 0.92,
+          "recall": 0.913,
+          "precision": 0.871,
+          "fpRate": 0.125,
+          "J": 0.898
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 1,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0.125,
+          "J": 0.889
+        }
+      ],
+      "all": [
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.886,
+          "hit3": 0.886,
+          "mrr": 0.886,
+          "recall": 0.879,
+          "precision": 0.852,
+          "fpRate": 0,
+          "J": 0.921
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.909,
+          "hit3": 0.932,
+          "mrr": 0.92,
+          "recall": 0.913,
+          "precision": 0.871,
+          "fpRate": 0.125,
+          "J": 0.898
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 1,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0.125,
+          "J": 0.889
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.958,
+          "precision": 0.75,
+          "fpRate": 0.25,
+          "J": 0.87
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.958,
+          "precision": 0.75,
+          "fpRate": 0.25,
+          "J": 0.87
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0.125,
+          "J": 0.848
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 1,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0.125,
+          "J": 0.848
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.864,
+          "hit3": 0.932,
+          "mrr": 0.898,
+          "recall": 0.913,
+          "precision": 0.813,
+          "fpRate": 0.25,
+          "J": 0.841
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.75,
+          "hit3": 0.75,
+          "mrr": 0.75,
+          "recall": 0.75,
+          "precision": 0.75,
+          "fpRate": 0,
+          "J": 0.837
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.818,
+          "hit3": 0.977,
+          "mrr": 0.898,
+          "recall": 0.958,
+          "precision": 0.626,
+          "fpRate": 0.25,
+          "J": 0.834
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.864,
+          "hit3": 0.909,
+          "mrr": 0.886,
+          "recall": 0.89,
+          "precision": 0.82,
+          "fpRate": 0.25,
+          "J": 0.833
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.818,
+          "hit3": 0.955,
+          "mrr": 0.886,
+          "recall": 0.936,
+          "precision": 0.633,
+          "fpRate": 0.25,
+          "J": 0.826
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0,
+          "hit1": 0.955,
+          "hit3": 0.977,
+          "mrr": 0.966,
+          "recall": 0.958,
+          "precision": 0.747,
+          "fpRate": 0.375,
+          "J": 0.823
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 1,
+          "hit1": 0.727,
+          "hit3": 0.727,
+          "mrr": 0.727,
+          "recall": 0.727,
+          "precision": 0.727,
+          "fpRate": 0,
+          "J": 0.823
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.864,
+          "hit3": 0.864,
+          "mrr": 0.864,
+          "recall": 0.845,
+          "precision": 0.841,
+          "fpRate": 0.25,
+          "J": 0.817
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 1,
+          "hit1": 0.864,
+          "hit3": 0.864,
+          "mrr": 0.864,
+          "recall": 0.845,
+          "precision": 0.841,
+          "fpRate": 0.25,
+          "J": 0.817
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.818,
+          "hit3": 0.909,
+          "mrr": 0.864,
+          "recall": 0.89,
+          "precision": 0.66,
+          "fpRate": 0.25,
+          "J": 0.81
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 1,
+          "hit1": 0.818,
+          "hit3": 0.909,
+          "mrr": 0.864,
+          "recall": 0.89,
+          "precision": 0.66,
+          "fpRate": 0.25,
+          "J": 0.81
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.886,
+          "hit3": 0.977,
+          "mrr": 0.932,
+          "recall": 0.958,
+          "precision": 0.515,
+          "fpRate": 0.375,
+          "J": 0.789
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.886,
+          "hit3": 0.955,
+          "mrr": 0.92,
+          "recall": 0.936,
+          "precision": 0.522,
+          "fpRate": 0.375,
+          "J": 0.781
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0,
+          "hit1": 0.909,
+          "hit3": 0.977,
+          "mrr": 0.936,
+          "recall": 0.958,
+          "precision": 0.714,
+          "fpRate": 0.5,
+          "J": 0.767
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.841,
+          "hit3": 0.909,
+          "mrr": 0.875,
+          "recall": 0.89,
+          "precision": 0.526,
+          "fpRate": 0.375,
+          "J": 0.756
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 1,
+          "hit1": 0.841,
+          "hit3": 0.909,
+          "mrr": 0.875,
+          "recall": 0.89,
+          "precision": 0.526,
+          "fpRate": 0.375,
+          "J": 0.756
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0,
+          "hit1": 0.818,
+          "hit3": 0.977,
+          "mrr": 0.89,
+          "recall": 0.958,
+          "precision": 0.502,
+          "fpRate": 0.5,
+          "J": 0.732
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0,
+          "hit1": 0.864,
+          "hit3": 0.977,
+          "mrr": 0.913,
+          "recall": 0.958,
+          "precision": 0.419,
+          "fpRate": 0.5,
+          "J": 0.73
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.955,
+          "hit3": 0.977,
+          "mrr": 0.966,
+          "recall": 0.958,
+          "precision": 0.325,
+          "fpRate": 0.75,
+          "J": 0.649
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0,
+          "hit1": 0.909,
+          "hit3": 0.977,
+          "mrr": 0.939,
+          "recall": 0.958,
+          "precision": 0.298,
+          "fpRate": 0.75,
+          "J": 0.639
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.932,
+          "hit3": 0.955,
+          "mrr": 0.943,
+          "recall": 0.936,
+          "precision": 0.323,
+          "fpRate": 0.75,
+          "J": 0.637
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.886,
+          "hit3": 0.909,
+          "mrr": 0.898,
+          "recall": 0.89,
+          "precision": 0.327,
+          "fpRate": 0.75,
+          "J": 0.612
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 1,
+          "hit1": 0.886,
+          "hit3": 0.909,
+          "mrr": 0.898,
+          "recall": 0.89,
+          "precision": 0.327,
+          "fpRate": 0.75,
+          "J": 0.612
+        }
+      ]
+    },
+    "nomic": {
+      "top": [
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.955,
+          "mrr": 0.943,
+          "recall": 0.936,
+          "precision": 0.86,
+          "fpRate": 0,
+          "J": 0.953
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.864,
+          "fpRate": 0,
+          "J": 0.944
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        }
+      ],
+      "all": [
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.955,
+          "mrr": 0.943,
+          "recall": 0.936,
+          "precision": 0.86,
+          "fpRate": 0,
+          "J": 0.953
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.886,
+          "fpRate": 0,
+          "J": 0.946
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.932,
+          "hit3": 0.932,
+          "mrr": 0.932,
+          "recall": 0.913,
+          "precision": 0.864,
+          "fpRate": 0,
+          "J": 0.944
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.909,
+          "recall": 0.89,
+          "precision": 0.875,
+          "fpRate": 0,
+          "J": 0.933
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.886,
+          "hit3": 0.886,
+          "mrr": 0.886,
+          "recall": 0.867,
+          "precision": 0.852,
+          "fpRate": 0,
+          "J": 0.918
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 1,
+          "hit1": 0.886,
+          "hit3": 0.886,
+          "mrr": 0.886,
+          "recall": 0.867,
+          "precision": 0.852,
+          "fpRate": 0,
+          "J": 0.918
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.864,
+          "hit3": 0.864,
+          "mrr": 0.864,
+          "recall": 0.845,
+          "precision": 0.864,
+          "fpRate": 0,
+          "J": 0.907
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 1,
+          "hit1": 0.864,
+          "hit3": 0.864,
+          "mrr": 0.864,
+          "recall": 0.845,
+          "precision": 0.864,
+          "fpRate": 0,
+          "J": 0.907
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 1,
+          "hit1": 0.841,
+          "hit3": 0.841,
+          "mrr": 0.841,
+          "recall": 0.822,
+          "precision": 0.841,
+          "fpRate": 0,
+          "J": 0.892
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.818,
+          "hit3": 0.818,
+          "mrr": 0.818,
+          "recall": 0.788,
+          "precision": 0.818,
+          "fpRate": 0,
+          "J": 0.874
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 1,
+          "hit1": 0.818,
+          "hit3": 0.818,
+          "mrr": 0.818,
+          "recall": 0.788,
+          "precision": 0.818,
+          "fpRate": 0,
+          "J": 0.874
+        },
+        {
+          "vectorThreshold": 0.7,
+          "minLexicalCoverage": 0,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.958,
+          "precision": 0.75,
+          "fpRate": 0.25,
+          "J": 0.87
+        },
+        {
+          "vectorThreshold": 0.75,
+          "minLexicalCoverage": 0,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.958,
+          "precision": 0.75,
+          "fpRate": 0.25,
+          "J": 0.87
+        },
+        {
+          "vectorThreshold": 0.8,
+          "minLexicalCoverage": 0,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.958,
+          "precision": 0.75,
+          "fpRate": 0.25,
+          "J": 0.87
+        },
+        {
+          "vectorThreshold": 0.65,
+          "minLexicalCoverage": 0,
+          "hit1": 0.955,
+          "hit3": 0.977,
+          "mrr": 0.966,
+          "recall": 0.958,
+          "precision": 0.74,
+          "fpRate": 0.25,
+          "J": 0.866
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.864,
+          "hit3": 0.977,
+          "mrr": 0.92,
+          "recall": 0.958,
+          "precision": 0.747,
+          "fpRate": 0.25,
+          "J": 0.853
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.864,
+          "hit3": 0.955,
+          "mrr": 0.909,
+          "recall": 0.936,
+          "precision": 0.755,
+          "fpRate": 0.25,
+          "J": 0.845
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.864,
+          "hit3": 0.909,
+          "mrr": 0.886,
+          "recall": 0.89,
+          "precision": 0.759,
+          "fpRate": 0.25,
+          "J": 0.827
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 1,
+          "hit1": 0.864,
+          "hit3": 0.909,
+          "mrr": 0.886,
+          "recall": 0.89,
+          "precision": 0.759,
+          "fpRate": 0.25,
+          "J": 0.827
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.864,
+          "hit3": 0.977,
+          "mrr": 0.92,
+          "recall": 0.97,
+          "precision": 0.43,
+          "fpRate": 0.375,
+          "J": 0.78
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.841,
+          "hit3": 0.955,
+          "mrr": 0.898,
+          "recall": 0.947,
+          "precision": 0.428,
+          "fpRate": 0.375,
+          "J": 0.768
+        },
+        {
+          "vectorThreshold": 0.6,
+          "minLexicalCoverage": 0,
+          "hit1": 0.864,
+          "hit3": 0.977,
+          "mrr": 0.913,
+          "recall": 0.958,
+          "precision": 0.655,
+          "fpRate": 0.5,
+          "J": 0.754
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.795,
+          "hit3": 0.909,
+          "mrr": 0.857,
+          "recall": 0.924,
+          "precision": 0.435,
+          "fpRate": 0.375,
+          "J": 0.75
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 1,
+          "hit1": 0.795,
+          "hit3": 0.909,
+          "mrr": 0.857,
+          "recall": 0.924,
+          "precision": 0.435,
+          "fpRate": 0.375,
+          "J": 0.75
+        },
+        {
+          "vectorThreshold": 0.55,
+          "minLexicalCoverage": 0,
+          "hit1": 0.818,
+          "hit3": 0.977,
+          "mrr": 0.898,
+          "recall": 0.97,
+          "precision": 0.389,
+          "fpRate": 0.5,
+          "J": 0.726
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.34,
+          "hit1": 0.977,
+          "hit3": 0.977,
+          "mrr": 0.977,
+          "recall": 0.97,
+          "precision": 0.268,
+          "fpRate": 0.875,
+          "J": 0.606
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.5,
+          "hit1": 0.955,
+          "hit3": 0.955,
+          "mrr": 0.955,
+          "recall": 0.947,
+          "precision": 0.264,
+          "fpRate": 0.875,
+          "J": 0.593
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0,
+          "hit1": 0.909,
+          "hit3": 0.977,
+          "mrr": 0.943,
+          "recall": 0.958,
+          "precision": 0.258,
+          "fpRate": 0.875,
+          "J": 0.592
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 0.67,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.914,
+          "recall": 0.924,
+          "precision": 0.26,
+          "fpRate": 0.875,
+          "J": 0.575
+        },
+        {
+          "vectorThreshold": 0.5,
+          "minLexicalCoverage": 1,
+          "hit1": 0.909,
+          "hit3": 0.909,
+          "mrr": 0.914,
+          "recall": 0.924,
+          "precision": 0.26,
+          "fpRate": 0.875,
+          "J": 0.575
+        }
+      ]
+    }
+  },
+  "chosenFormat": "nomic",
+  "gridAgreementFloor": [
+    {
+      "vectorAgreementFloor": null,
+      "hit1": 0.932,
+      "hit3": 0.955,
+      "mrr": 0.943,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.953
+    },
+    {
+      "vectorAgreementFloor": 0.4,
+      "hit1": 0.955,
+      "hit3": 0.955,
+      "mrr": 0.955,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.956
+    },
+    {
+      "vectorAgreementFloor": 0.5,
+      "hit1": 0.955,
+      "hit3": 0.955,
+      "mrr": 0.955,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.956
+    },
+    {
+      "vectorAgreementFloor": 0.55,
+      "hit1": 0.955,
+      "hit3": 0.955,
+      "mrr": 0.955,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.956
+    },
+    {
+      "vectorAgreementFloor": 0.6,
+      "hit1": 0.932,
+      "hit3": 0.955,
+      "mrr": 0.943,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.953
+    }
+  ],
+  "grid2": {
+    "top": [
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      }
+    ],
+    "all": [
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 1,
+        "vectorWeight": 0.5,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 2,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.955,
+        "hit3": 0.955,
+        "mrr": 0.955,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.956
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.943,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.953
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.943,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.953
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 1,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.943,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.953
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      },
+      {
+        "rrfK": 10,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      },
+      {
+        "rrfK": 30,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "none",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      },
+      {
+        "rrfK": 60,
+        "ftsWeight": 0.5,
+        "vectorWeight": 1,
+        "rerank": "coverage",
+        "hit1": 0.932,
+        "hit3": 0.955,
+        "mrr": 0.939,
+        "recall": 0.936,
+        "precision": 0.86,
+        "fpRate": 0,
+        "J": 0.952
+      }
+    ]
+  },
+  "rerankVerdict": {
+    "rrfOnlyBest": {
+      "rrfK": 10,
+      "ftsWeight": 1,
+      "vectorWeight": 0.5,
+      "rerank": "none",
+      "hit1": 0.955,
+      "hit3": 0.955,
+      "mrr": 0.955,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.956
+    },
+    "coverageRerankBest": {
+      "rrfK": 10,
+      "ftsWeight": 1,
+      "vectorWeight": 1,
+      "rerank": "coverage",
+      "hit1": 0.955,
+      "hit3": 0.955,
+      "mrr": 0.955,
+      "recall": 0.936,
+      "precision": 0.86,
+      "fpRate": 0,
+      "J": 0.956
+    },
+    "benefit": 0
+  },
+  "chosen": {
+    "format": "nomic",
+    "vectorThreshold": 0.7,
+    "minLexicalCoverage": 0.34,
+    "rrfK": 10,
+    "ftsWeight": 1,
+    "vectorWeight": 0.5,
+    "rerank": "none",
+    "metrics": {
+      "hit1": 0.932,
+      "hit3": 0.932,
+      "mrr": 0.932,
+      "recall": 0.913,
+      "precision": 0.886,
+      "fpRate": 0,
+      "J": 0.946
+    },
+    "byType": {
+      "exact keyword": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "semantic paraphrase": {
+        "n": 3,
+        "hit3": 0.33,
+        "mrr": 0.33,
+        "recall": 0.17
+      },
+      "acronym": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "filename": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "heading": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "multi-word phrase": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "question natural language": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "french accents": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "english query": {
+        "n": 2,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "french query vs english doc": {
+        "n": 3,
+        "hit3": 0.67,
+        "mrr": 0.67,
+        "recall": 0.67
+      },
+      "technical identifier": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "rare term": {
+        "n": 3,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "long document fact": {
+        "n": 2,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "table": {
+        "n": 2,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "contradiction": {
+        "n": 2,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "near duplicate": {
+        "n": 1,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 0.67
+      },
+      "mixed language": {
+        "n": 2,
+        "hit3": 1,
+        "mrr": 1,
+        "recall": 1
+      },
+      "negative": {
+        "n": 8,
+        "fpRate": 0
+      }
+    },
+    "failures": [
+      {
+        "type": "semantic paraphrase",
+        "q": "what happens when a client sends too many calls to the API",
+        "expected": [
+          "api-rate-limits.md"
+        ],
+        "got": []
+      },
+      {
+        "type": "semantic paraphrase",
+        "q": "how do I roll back a broken release",
+        "expected": [
+          "kubernetes-deploy.md"
+        ],
+        "got": []
+      },
+      {
+        "type": "french query vs english doc",
+        "q": "Quelle est la plus grande planète du système solaire ?",
+        "expected": [
+          "solar-system.txt"
+        ],
+        "got": []
+      }
+    ]
+  },
+  "defaultsBefore": {
+    "topK": 6,
+    "poolMultiplier": 4,
+    "rrfK": 60,
+    "ftsWeight": 1,
+    "vectorWeight": 1,
+    "vectorThreshold": 0.6,
+    "vectorMargin": null,
+    "vectorAgreementFloor": null,
+    "minLexicalCoverage": 0.5,
+    "rerank": "none",
+    "rerankBoost": 0.5,
+    "maxPerSource": 3,
+    "diversity": "round_robin",
+    "nearDuplicateJaccard": 0.85,
+    "maxContextTokens": 3000
+  },
+  "chunking": {
+    "overlap 0": {
+      "chunks": 24,
+      "avgChars": 1130,
+      "maxChars": 1369,
+      "factHit1": "12/12",
+      "factHit3": "12/12"
+    },
+    "overlap 150 (default)": {
+      "chunks": 36,
+      "avgChars": 853,
+      "maxChars": 1369,
+      "factHit1": "12/12",
+      "factHit3": "12/12"
+    },
+    "overlap 300": {
+      "chunks": 36,
+      "avgChars": 953,
+      "maxChars": 1369,
+      "factHit1": "12/12",
+      "factHit3": "12/12"
+    },
+    "target 500": {
+      "chunks": 60,
+      "avgChars": 572,
+      "maxChars": 700,
+      "factHit1": "12/12",
+      "factHit3": "12/12"
+    },
+    "target 1400": {
+      "chunks": 24,
+      "avgChars": 1205,
+      "maxChars": 1794,
+      "factHit1": "12/12",
+      "factHit3": "12/12"
+    }
+  },
+  "lancedbParity": {
+    "queries": 52,
+    "identicalResults": 52
+  },
+  "REAL_EMBEDDING_CALIBRATION": "PASS",
+  "embeddingCalls": 307
+}

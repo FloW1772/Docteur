@@ -19,6 +19,7 @@ import {
 } from '../lib/notebook.js';
 import { parseIntParam } from '../lib/http-params.js';
 import { isLocalOnlySource } from '../lib/source-privacy.js';
+import { getNotebookDocumentService } from '../lib/notebook-documents-runtime.js';
 
 const MAX_SOURCES_PER_NOTEBOOK = 5000; // mission scale ceiling ("5000 si raisonnable")
 
@@ -77,9 +78,11 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
   // Deleting a Notebook never deletes its sources' underlying neurons —
   // mission requirement. Only notebook_sources reference rows + cached
   // summaries are removed (see sqlite.js deleteNotebook).
-  app.delete('/notebooks/:id', (c) => {
+  app.delete('/notebooks/:id', async (c) => {
     const id = c.req.param('id');
     if (!getNotebook(id)) return c.json({ error: 'Notebook introuvable' }, 404);
+    // NB-2: purge raw documents (chunks, FTS, vectors) before the notebook row goes.
+    try { await getNotebookDocumentService({ ollamaClient, env, logger }).purgeNotebookDocuments(id); } catch (err) { logger?.warn({ notebookId: id, code: 'INDEX_FAILED', error: err.message }, 'NOTEBOOK_DOC_PURGE_FAILED'); }
     deleteNotebook(id);
     return c.json({ ok: true });
   });
@@ -128,9 +131,15 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
   });
 
   // Removing a source never deletes the underlying neuron — mission requirement.
-  app.delete('/notebooks/:id/sources/:sourceRowId', (c) => {
+  app.delete('/notebooks/:id/sources/:sourceRowId', async (c) => {
     const notebookId = c.req.param('id');
     if (!getNotebook(notebookId)) return c.json({ error: 'Notebook introuvable' }, 404);
+    // NB-2: a raw-document source must be fully purged, not just unlinked.
+    const rowId = c.req.param('sourceRowId');
+    const docSource = listNotebookSources(notebookId, { limit: 10_000 }).find(s => s.id === rowId && s.source_type === 'document');
+    if (docSource) {
+      try { await getNotebookDocumentService({ ollamaClient, env, logger }).removeDocument(notebookId, docSource.source_id); } catch (err) { logger?.warn({ notebookId, code: 'INDEX_FAILED', error: err.message }, 'NOTEBOOK_DOC_PURGE_FAILED'); }
+    }
     removeNotebookSource(notebookId, c.req.param('sourceRowId'));
     const derived = recomputeAndPersistNotebookPrivacy(notebookId);
     return c.json({ ok: true, notebook_privacy: derived });

@@ -90,25 +90,7 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/api\//],
 
         runtimeCaching: [
-          // ── Google Fonts — cache on first load, serve offline ─────────────
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-stylesheets',
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-assets',
-              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
+          // NB-3: Google Fonts runtime caching removed — fonts are no longer fetched from a third party.
           // ── cortex-server API (port 3001) — NEVER cache ───────────────────
           // Covers both HTTP (localhost dev) and HTTPS (LAN mobile).
           {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { filteredEnv, sanitize, policyError } from './external-agent-policy.js';
+import { enforce } from './root-policy/index.js';
 
 // Resolve only executables / official npm entrypoints, never execute a .cmd/.ps1 shim.
 export function resolveCli(provider, env = filteredEnv(), platform = process.platform) {
@@ -47,6 +48,8 @@ export function lineSink(emit) {
 }
 
 export function launchProcess({ executable, args, cwd, input = '', timeout = 300000, onLine = () => {}, spawnImpl = spawn, env = filteredEnv(), graceMs = 1000 }) {
+  // ROOT POLICY (PROCESS_START, rule 5): a KNOWN agent CLI resolved by resolveCli(), typed argv, no shell — never an arbitrary executable or command line.
+  enforce({ action: 'PROCESS_START', module: 'external-agents', trustDomain: 'PROCESS', actor: { kind: 'MODULE' }, context: { executorId: 'external-agent-cli', argsTyped: Array.isArray(args), freeFormCommand: false, viaShell: false } });
   let child, stopped = null, forced, timer, stopDeadline;
   let resolveDone;
   const done = new Promise(resolve => { resolveDone = resolve; });

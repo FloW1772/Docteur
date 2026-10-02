@@ -12,6 +12,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { registerJob, updateJob, finishJob } from '../routes/jobs.js';
 import { getInstallState, assertSafeInstallPath } from './comfyui-install-manager.js';
+import { safeFetch } from './web-egress-guard.js';
 
 // Verified against https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive
 // (file size and license read directly from the repo's file listing).
@@ -77,7 +78,8 @@ async function runModelDownload(jobId, entry, destDir, signal) {
   const tmpPath = `${finalPath}.download.tmp`;
 
   try {
-    const res = await fetch(entry.source, { signal, redirect: 'follow' });
+    // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): catalog source host is pinned; redirect hops (CDN) are validated + pinned.
+    const res = await safeFetch(entry.source, { signal, trustedHosts: ['huggingface.co'], maxBytes: 20 * 1024 * 1024 * 1024, timeoutMs: 60_000, purpose: 'comfyui-model' });
     if (!res.ok) throw new Error(`Téléchargement HTTP ${res.status}`);
 
     const total = Number(res.headers.get('content-length')) || Math.round(entry.approxSizeGb * 1024 * 1024 * 1024);

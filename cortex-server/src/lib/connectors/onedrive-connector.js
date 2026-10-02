@@ -23,6 +23,7 @@ import {
 } from '../sqlite.js';
 import { MAX_FILE_SIZE_BYTES } from '../files.js';
 import { downloadWithSizeLimit } from './download-limits.js';
+import { safeFetch } from '../web-egress-guard.js';
 
 export const PROVIDER_ID = 'onedrive';
 
@@ -229,6 +230,9 @@ export async function downloadFileContent(downloadUrl, { maxBytes = ONEDRIVE_MAX
   return downloadWithSizeLimit(downloadUrl, {
     maxBytes,
     ErrorClass: OneDriveFileTooLargeError,
+    // WEB EGRESS GUARD: the pre-authenticated download URL is issued by Microsoft Graph (not a constant): its first hop host is
+    // taken from that issued URL (https, never an IP literal), every redirect hop is fully validated + pinned. Size: enforced here.
+    fetchImpl: (target, init) => safeFetch(target, { ...init, trustedHosts: [new URL(target).hostname], maxBytes: Number.MAX_SAFE_INTEGER, purpose: 'onedrive-download' }),
     fetchOptions: { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)]) : AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) },
     buildTooLargeMessage: ({ declaredSize, maxBytes: limit }) => `OneDrive: fichier trop volumineux (${declaredSize} octets, limite ${limit})`,
     buildStreamingTooLargeMessage: ({ maxBytes: limit }) => `OneDrive: fichier trop volumineux (dépassement en cours de lecture, > ${limit} octets)`,

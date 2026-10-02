@@ -3,6 +3,7 @@ import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { chromium } from 'playwright';
 import { assertSafeUrl } from './url-security.js';
+import { safeFetch, installBrowserEgressGuard, getSharedBrowserEgressProxy, closeSharedBrowserEgressProxy } from './web-egress-guard.js';
 import { getVideoDuration } from './whisper.js';
 
 const MAX_WORDS      = 8_000;
@@ -10,18 +11,24 @@ const FETCH_TIMEOUT  = 15_000;
 const PW_TIMEOUT     = 25_000;  // per-page Playwright timeout (raised: domcontentloaded fires fast but some sites are slow to serve HTML)
 const PW_IDLE_MS     = 5 * 60 * 1000; // close browser after 5 min inactivity
 const MIN_WORDS_FAST = 200;     // below this threshold → try Playwright
+const MIN_ARTICLE_WORDS = 90;
+const MIN_ARTICLE_CHARS = 500;
 
 // ── Browser pool (single reusable instance) ───────────────────────────────────
 
 let _browser    = null;
 let _idleTimer  = null;
 
+// WEB EGRESS GUARD: Chromium is forced through a loopback forwarding proxy that validates + pins EVERY connection
+// (main document, redirect hops, sub-resources, page scripts). A Playwright route() filter alone does not see redirect hops.
+
 async function getBrowser() {
   if (_browser) {
     resetIdleTimer();
     return _browser;
   }
-  _browser = await chromium.launch({ headless: true });
+  const proxy = await getSharedBrowserEgressProxy();
+  _browser = await chromium.launch({ headless: true, ...proxy.launchOptions() });
   resetIdleTimer();
   return _browser;
 }
@@ -38,10 +45,54 @@ function resetIdleTimer() {
   }, PW_IDLE_MS);
 }
 
+export async function closeDeepCaptureBrowserForTests() {
+  if (_idleTimer) clearTimeout(_idleTimer);
+  _idleTimer = null;
+  const browser = _browser;
+  _browser = null;
+  if (browser) await browser.close().catch(() => {});
+  await closeSharedBrowserEgressProxy().catch(() => {});
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function countWords(text) {
   return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function cleanArticleText(value) {
+  return String(value ?? '')
+    .replace(/\r/g, '')
+    .split(/\n{2,}|(?=<\/p>)/i)
+    .map(part => part.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+const BOILERPLATE_RE = /(?:tout accepter|gérer (?:mes )?cookies|politique de confidentialité|abonnez-vous|se connecter|publicité|contenu sponsorisé|newsletter)/i;
+
+export function assessArticleQuality(text, { semantic = false, paragraphCount } = {}) {
+  const clean = cleanArticleText(text);
+  const chars = clean.length;
+  const words = countWords(clean);
+  const paragraphs = paragraphCount ?? clean.split(/\n{2,}/).filter(p => countWords(p) >= 8).length;
+  const lines = clean.split(/\n+/).filter(Boolean);
+  const boilerplateWords = lines.filter(line => BOILERPLATE_RE.test(line)).reduce((n, line) => n + countWords(line), 0);
+  const boilerplateRatio = words ? boilerplateWords / words : 1;
+  const complete = boilerplateRatio < 0.45 && (
+    (words >= MIN_WORDS_FAST && chars >= 1_000) ||
+    (semantic && words >= MIN_ARTICLE_WORDS && chars >= MIN_ARTICLE_CHARS) ||
+    (words >= 120 && chars >= 700 && paragraphs >= 2)
+  );
+  return {
+    complete,
+    chars,
+    words,
+    paragraphs,
+    boilerplateRatio: Number(boilerplateRatio.toFixed(3)),
+    score: words + Math.min(paragraphs, 12) * 12 + (semantic ? 35 : 0) - Math.round(boilerplateRatio * 200),
+  };
 }
 
 // Detects MSN/web video player UI text that got scraped instead of article content.
@@ -242,26 +293,162 @@ function extractImagesFromHtml(rawHtml, baseUrl) {
   }
 }
 
-function parseReadability(html, url) {
-  try {
-    // Extract images from raw HTML BEFORE Readability mutates the DOM —
-    // Readability strips lazy-load attributes (data-src etc.) from <img> tags.
-    const imageUrls = extractImagesFromHtml(html, url);
-
-    const dom     = new JSDOM(html, { url });
-    const article = new Readability(dom.window.document).parse();
-    if (!article?.textContent || countWords(article.textContent) < MIN_WORDS_FAST) return null;
-    return { title: article.title ?? '', text: article.textContent.replace(/\s+/g, ' ').trim(), imageUrls };
-  } catch {
-    return null;
+function jsonLdNodes(value, out = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) jsonLdNodes(item, out);
+    return out;
   }
+  if (!value || typeof value !== 'object') return out;
+  out.push(value);
+  if (Array.isArray(value['@graph'])) jsonLdNodes(value['@graph'], out);
+  return out;
+}
+
+function isArticleJsonLd(node) {
+  const types = Array.isArray(node?.['@type']) ? node['@type'] : [node?.['@type']];
+  return types.some(type => /^(?:NewsArticle|Article|ReportageNewsArticle|AnalysisNewsArticle|BlogPosting)$/i.test(String(type ?? '')));
+}
+
+function jsonLdImageUrls(image, baseUrl) {
+  const values = Array.isArray(image) ? image : [image];
+  const urls = [];
+  for (const value of values) {
+    const raw = typeof value === 'string' ? value : (value?.url ?? value?.contentUrl);
+    if (!raw) continue;
+    try {
+      const absolute = new URL(raw, baseUrl).href;
+      assertSafeUrl(absolute);
+      if (!junkReason(absolute)) urls.push(absolute);
+    } catch { /* invalid or unsafe image */ }
+  }
+  return [...new Set(urls)].slice(0, 2);
+}
+
+function articleCandidate(source, title, text, imageUrls = [], extra = {}) {
+  const clean = cleanArticleText(text);
+  if (!clean) return null;
+  const semantic = source !== 'readability';
+  const quality = assessArticleQuality(clean, { semantic, paragraphCount: extra.paragraphCount });
+  return {
+    source,
+    title: String(title ?? '').replace(/\s+/g, ' ').trim(),
+    text: clean,
+    imageUrls: [...new Set(imageUrls)].slice(0, 2),
+    quality,
+    ...extra,
+  };
+}
+
+function selectBestArticleCandidate(candidates) {
+  return candidates.filter(Boolean).sort((a, b) =>
+    Number(b.quality.complete) - Number(a.quality.complete) ||
+    b.quality.score - a.quality.score ||
+    b.quality.chars - a.quality.chars
+  )[0] ?? null;
+}
+
+function metricFor(candidates, source) {
+  const found = candidates.filter(c => c.source === source).sort((a, b) => b.quality.chars - a.quality.chars)[0];
+  return { chars: found?.quality.chars ?? 0, words: found?.quality.words ?? 0, paragraphs: found?.quality.paragraphs ?? 0 };
+}
+
+export function extractArticleCandidatesFromHtml(html, url) {
+  try {
+    // Extract images before Readability mutates the DOM and strips lazy attributes.
+    const domImages = extractImagesFromHtml(html, url);
+    const dom = new JSDOM(html, { url });
+    const doc = dom.window.document;
+    const candidates = [];
+
+    // Structured data is often the authoritative article body on hydrated news sites.
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const parsed = JSON.parse(script.textContent?.trim() ?? 'null');
+        for (const node of jsonLdNodes(parsed)) {
+          if (!isArticleJsonLd(node) || typeof node.articleBody !== 'string') continue;
+          const candidate = articleCandidate(
+            'json-ld',
+            node.headline ?? node.name ?? doc.title,
+            node.articleBody,
+            [...jsonLdImageUrls(node.image, url), ...domImages],
+            {
+              author: Array.isArray(node.author) ? node.author.map(a => a?.name ?? a).filter(Boolean).join(', ') : (node.author?.name ?? node.author ?? ''),
+              datePublished: node.datePublished ?? '',
+            },
+          );
+          if (candidate) candidates.push(candidate);
+        }
+      } catch { /* malformed JSON-LD is ignored; other extractors remain available */ }
+    }
+
+    const readabilityDom = new JSDOM(html, { url });
+    const readability = new Readability(readabilityDom.window.document).parse();
+    if (readability?.textContent) {
+      const candidate = articleCandidate('readability', readability.title ?? doc.title, readability.textContent, domImages);
+      if (candidate) candidates.push(candidate);
+    }
+
+    // Generic semantic DOM fallback. Clone before deleting boilerplate zones so the live page is never mutated.
+    const selectors = ['[itemprop="articleBody"]', 'article', '[role="article"]', '.article-body', '.article-content', '.post-content', '.entry-content', 'main'];
+    const seen = new Set();
+    for (const selector of selectors) {
+      for (const element of doc.querySelectorAll(selector)) {
+        if (seen.has(element) || element.closest(NOISE_ZONE_SEL)) continue;
+        seen.add(element);
+        const clone = element.cloneNode(true);
+        clone.querySelectorAll(`script, style, noscript, nav, aside, footer, form, ${NOISE_ZONE_SEL}`).forEach(node => node.remove());
+        const paragraphs = [...clone.querySelectorAll('p')]
+          .map(p => p.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+          .filter(p => countWords(p) >= 5);
+        const text = paragraphs.length ? paragraphs.join('\n\n') : clone.textContent;
+        const candidate = articleCandidate(
+          'semantic-dom',
+          element.querySelector('h1')?.textContent ?? doc.querySelector('h1')?.textContent ?? doc.title,
+          text,
+          domImages,
+          { paragraphCount: paragraphs.length },
+        );
+        if (candidate) candidates.push(candidate);
+      }
+    }
+
+    let best = selectBestArticleCandidate(candidates);
+    if (best) {
+      const mergedImages = [...new Set(candidates.flatMap(candidate => candidate.imageUrls ?? []))].slice(0, 2);
+      best = { ...best, imageUrls: mergedImages };
+    }
+    return {
+      best,
+      candidates,
+      metrics: {
+        rawChars: String(html ?? '').length,
+        readability: metricFor(candidates, 'readability'),
+        structured: metricFor(candidates, 'json-ld'),
+        semantic: metricFor(candidates, 'semantic-dom'),
+        chosenExtractor: best?.source ?? null,
+        finalChars: best?.quality.chars ?? 0,
+        finalWords: best?.quality.words ?? 0,
+        finalParagraphs: best?.quality.paragraphs ?? 0,
+        qualityStatus: best?.quality.complete ? 'COMPLETE' : (best ? 'PARTIAL_EXTRACTION' : 'NO_CONTENT'),
+      },
+    };
+  } catch {
+    return { best: null, candidates: [], metrics: { rawChars: String(html ?? '').length, chosenExtractor: null, finalChars: 0, finalWords: 0, finalParagraphs: 0, qualityStatus: 'NO_CONTENT' } };
+  }
+}
+
+export function extractArticleFromHtml(html, url) {
+  const inspected = extractArticleCandidatesFromHtml(html, url);
+  if (!inspected.best?.quality.complete) return null;
+  return { ...inspected.best, diagnostics: inspected.metrics };
 }
 
 function getYouTubeVideoId(url) {
   try {
     const u = new URL(url);
     if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('?')[0];
-    return u.searchParams.get('v') ?? null;
+    const shortMatch = u.pathname.match(/^\/shorts\/([A-Za-z0-9_-]{11})(?:\/)?$/);
+    return shortMatch?.[1] ?? u.searchParams.get('v') ?? null;
   } catch {
     return null;
   }
@@ -271,16 +458,20 @@ async function httpFetch(url, timeoutMs = FETCH_TIMEOUT) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
+    // WEB EGRESS GUARD: DNS-validated + pinned connection, redirects revalidated per hop, bounded body.
+    const res = await safeFetch(url, {
       signal: controller.signal,
+      timeoutMs,
+      maxBytes: 8 * 1024 * 1024,
+      purpose: 'deep-capture',
       headers: {
         'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept':          'text/html,application/xhtml+xml,*/*;q=0.9',
         'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
       },
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status, finalUrl: res.url });
+    return { html: await res.text(), status: res.status, finalUrl: res.url || url };
   } finally {
     clearTimeout(timer);
   }
@@ -386,6 +577,29 @@ function getShadowText(root, depth) {
   return text;
 }`;
 
+const ARTICLE_READY_FN = `
+(() => {
+  const wordCount = value => String(value || '').trim().split(/\\s+/).filter(Boolean).length;
+  for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const value = JSON.parse(script.textContent || 'null');
+      const queue = Array.isArray(value) ? [...value] : [value];
+      while (queue.length) {
+        const item = queue.shift();
+        if (!item || typeof item !== 'object') continue;
+        if (Array.isArray(item['@graph'])) queue.push(...item['@graph']);
+        if (wordCount(item.articleBody) >= 80) return true;
+      }
+    } catch {}
+  }
+  for (const selector of ['[itemprop="articleBody"]', 'article', '[role="article"]', '.article-body', '.article-content', 'main']) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (wordCount(element.innerText || element.textContent) >= 90) return true;
+    }
+  }
+  return false;
+})()`;
+
 // Tries Readability first; falls back to innerText, then Shadow DOM traversal.
 // This handles SPAs (body.innerText works) and Web Component sites like MSN
 // (body.innerText is empty but shadow DOM has the content).
@@ -395,9 +609,12 @@ async function extractFromPage(page, url) {
   // data-src attributes, which is better than the initial static HTML for lazy-loaded images.
   const html = await page.content();
 
-  // 1. Readability on rendered HTML (fastest, best structure); includes imageUrls
-  const parsed = parseReadability(html, url);
-  if (parsed) return parsed;
+  const inspected = extractArticleCandidatesFromHtml(html, url);
+  const candidates = inspected.candidates.map(candidate => ({ ...candidate, source: `playwright-${candidate.source}` }));
+  if (inspected.best?.quality.complete) {
+    const best = selectBestArticleCandidate(candidates);
+    return { ...best, renderedChars: html.length, candidates };
+  }
 
   // 2. Live DOM — standard innerText + shadow DOM fallback (for SPAs / MSN)
   const result = await page.evaluate(new Function(`
@@ -408,19 +625,19 @@ async function extractFromPage(page, url) {
       const el = document.querySelector(sel);
       if (el) {
         const t = (el.innerText || getShadowText(el, 0)).trim();
-        if (t.split(/\\s+/).length > 200) return { text: t, title: document.title };
+        if (t.split(/\\s+/).length > 40) return { text: t, title: document.title, paragraphs: el.querySelectorAll('p').length };
       }
     }
     // Full body — standard innerText
     const bodyText = document.body.innerText.trim();
-    if (bodyText.split(/\\s+/).length > 200) return { text: bodyText, title: document.title };
+    if (bodyText.split(/\\s+/).length > 40) return { text: bodyText, title: document.title, paragraphs: document.body.querySelectorAll('p').length };
     // Shadow DOM fallback (Web Components / MSN)
     const shadowText = getShadowText(document.body, 0).replace(/\\s+/g, ' ').trim();
-    if (shadowText.split(/\\s+/).length > 200) return { text: shadowText, title: document.title };
+    if (shadowText.split(/\\s+/).length > 40) return { text: shadowText, title: document.title, paragraphs: 0 };
     return null;
   `)).catch(() => null);
 
-  if (!result) return null;
+  if (!result) return inspected.best ? { ...selectBestArticleCandidate(candidates), renderedChars: html.length, candidates } : null;
 
   const text = result.text.replace(/\s+/g, ' ').trim();
   if (isVideoPlayerGarbage(text)) {
@@ -429,10 +646,13 @@ async function extractFromPage(page, url) {
 
   // Reuse the rendered HTML for image extraction (same page, same attributes)
   const imageUrls = extractImagesFromHtml(html, url);
-  return { title: result.title, text, imageUrls };
+  const live = articleCandidate('playwright-dom', result.title, text, imageUrls, { paragraphCount: result.paragraphs });
+  if (live) candidates.push(live);
+  const best = selectBestArticleCandidate(candidates);
+  return best ? { ...best, renderedChars: html.length, candidates } : null;
 }
 
-async function extractWithPlaywright(url) {
+export async function extractWithPlaywright(url) {
   const browser  = await getBrowser();
   const hostname = new URL(url).hostname.toLowerCase();
   const ctx      = await browser.newContext({
@@ -454,6 +674,10 @@ async function extractWithPlaywright(url) {
   const consentCookies = getConsentCookies(hostname);
   if (consentCookies) await ctx.addCookies(consentCookies);
 
+  // WEB EGRESS GUARD: early static filter (schemes / ports / literal addresses / local names). The network boundary itself is
+  // the egress proxy the browser was launched with (redirect hops and DNS are handled there).
+  await installBrowserEgressGuard(ctx, { resolve: false });
+
   const page = await ctx.newPage();
   try {
     // domcontentloaded fires as soon as the HTML is parsed (~1-4s), regardless of
@@ -461,16 +685,20 @@ async function extractWithPlaywright(url) {
     // 15+ second timeout that 'load' causes on MSN (persistent beacon streams keep
     // the load event from ever firing). The networkidle race below compensates for
     // JS-heavy SPAs that need a bit more time to inject their content.
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PW_TIMEOUT });
+    const navigationStarted = performance.now();
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PW_TIMEOUT });
+    const navigationMs = Math.round(performance.now() - navigationStarted);
 
     // After DOMContentLoaded, give JS time to inject article content.
     // Fast/simple sites: networkidle fires in ~1-2 s and we proceed immediately.
     // Tracker-heavy sites (MSN, news portals): networkidle never fires, so we
     // proceed after the 3 s cap and let the shadow DOM extractor do its work.
+    const waitStarted = performance.now();
     await Promise.race([
-      page.waitForLoadState('networkidle', { timeout: 3_500 }),
-      new Promise(resolve => setTimeout(resolve, 3_000)),
+      page.waitForFunction(ARTICLE_READY_FN, { timeout: 8_000 }),
+      page.waitForLoadState('networkidle', { timeout: 8_000 }),
     ]).catch(() => {});
+    const waitMs = Math.round(performance.now() - waitStarted);
 
     // Dismiss consent wall BEFORE extracting — prevents shadow DOM returning
     // consent banner text as article content (MSN renders consent UI in shadow DOM).
@@ -487,9 +715,12 @@ async function extractWithPlaywright(url) {
       ).catch(() => {});
     }
 
-    const extracted = await extractFromPage(page, url);
+    const extractionStarted = performance.now();
+    const finalUrl = page.url() || url;
+    const extracted = await extractFromPage(page, finalUrl);
+    const extractionMs = Math.round(performance.now() - extractionStarted);
 
-    if (extracted?.videoGarbage) return { videoGarbage: true, title: extracted.title };
+    if (extracted?.videoGarbage) return { videoGarbage: true, title: extracted.title, navigationMs, waitMs, extractionMs, status: response?.status(), finalUrl };
 
     if (!extracted) {
       // Probe word count before closing the page — distinguishes expired articles
@@ -497,10 +728,11 @@ async function extractWithPlaywright(url) {
       const wc = await page.evaluate(new Function(
         `${SHADOW_TEXT_FN}\nreturn getShadowText(document.body,0).replace(/\\s+/g,' ').trim().split(/\\s+/).filter(Boolean).length;`,
       )).catch(() => 0);
-      return wc < 80 ? { expired: true } : null;
+      if ([404, 410].includes(response?.status())) return { expired: true, navigationMs, waitMs, extractionMs, status: response.status(), finalUrl };
+      return { noContent: true, observedWords: wc, navigationMs, waitMs, extractionMs, status: response?.status(), finalUrl };
     }
 
-    return extracted;
+    return { ...extracted, navigationMs, waitMs, extractionMs, status: response?.status(), finalUrl };
   } catch {
     return null;
   } finally {
@@ -515,9 +747,9 @@ async function extractYouTube(url) {
   let title = '';
   let channel = '';
   try {
-    const res = await fetch(
+    const res = await safeFetch(
       `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
-      { signal: AbortSignal.timeout(8_000) },
+      { signal: AbortSignal.timeout(8_000), maxBytes: 256 * 1024, purpose: 'oembed' },
     );
     if (res.ok) {
       const data = await res.json();
@@ -550,41 +782,134 @@ async function extractYouTube(url) {
 // ── Article (fetch → Readability → Playwright fallback) ───────────────────────
 
 async function extractArticle(url) {
-  // Step 1: fast fetch + Readability
-  let parsed = null;
+  const extractionStarted = performance.now();
+  let fetchMs = 0;
+  let readabilityMs = 0;
+  let playwrightMs = 0;
+  let fetchStatus = null;
+  let finalUrl = url;
+  let rawChars = 0;
+  let staticInspection = null;
+  let playwright = null;
+
+  // Step 1: fast fetch, then evaluate every static candidate instead of
+  // letting the first extractor win regardless of quality.
+  const fetchStarted = performance.now();
   try {
-    const html = await httpFetch(url);
-    parsed = parseReadability(html, url);
-  } catch { /* network error → go straight to Playwright */ }
+    const fetched = await httpFetch(url);
+    fetchStatus = fetched.status;
+    finalUrl = fetched.finalUrl;
+    rawChars = fetched.html.length;
+    const readabilityStarted = performance.now();
+    staticInspection = extractArticleCandidatesFromHtml(fetched.html, finalUrl);
+    readabilityMs = Math.round(performance.now() - readabilityStarted);
+  } catch (error) {
+    fetchStatus = error?.status ?? null;
+    finalUrl = error?.finalUrl ?? url;
+  }
+  finally { fetchMs = Math.round(performance.now() - fetchStarted); }
 
-  // Step 2: Playwright fallback when fetch fails or content too short
-  if (!parsed) {
-    let pw = null;
+  let chosen = staticInspection?.best?.quality.complete ? staticInspection.best : null;
+
+  // Step 2: render only when the static candidates fail the quality gate.
+  if (!chosen) {
+    const playwrightStarted = performance.now();
     try {
-      pw = await extractWithPlaywright(url);
+      playwright = await extractWithPlaywright(url);
     } catch { /* Playwright error → fallback below */ }
-
-    if (pw?.videoGarbage) return { fallback: true, reason: 'video_content',    source_type: 'web' };
-    if (pw?.expired)      return { fallback: true, reason: 'article_expired',  source_type: 'web' };
-    if (!pw)              return { fallback: true, reason: 'extraction_failed', source_type: 'web' };
-    parsed = pw;
+    finally { playwrightMs = Math.round(performance.now() - playwrightStarted); }
+    if (playwright && !playwright.videoGarbage && !playwright.expired && !playwright.noContent) {
+      chosen = playwright.quality?.complete ? playwright : null;
+    }
   }
 
-  const word_count = countWords(parsed.text);
-  const { text, truncated } = truncateForModel(parsed.text);
-  return { fallback: false, text, title: parsed.title, source_type: 'web', word_count, truncated, imageUrls: parsed.imageUrls ?? [] };
+  const staticCandidates = staticInspection?.candidates ?? [];
+  const renderedCandidates = playwright?.candidates ?? (playwright?.quality ? [playwright] : []);
+  const bestObserved = selectBestArticleCandidate([...staticCandidates, ...renderedCandidates]);
+  const readability = metricFor(staticCandidates, 'readability');
+  const structured = metricFor(staticCandidates, 'json-ld');
+  const semantic = metricFor(staticCandidates, 'semantic-dom');
+  const playwrightBest = selectBestArticleCandidate(renderedCandidates);
+  const extraction = {
+    httpStatus: fetchStatus,
+    finalUrl,
+    rawChars,
+    renderedChars: playwright?.renderedChars ?? 0,
+    readabilityChars: readability.chars,
+    readabilityWords: readability.words,
+    structuredChars: structured.chars,
+    structuredWords: structured.words,
+    semanticChars: semantic.chars,
+    semanticWords: semantic.words,
+    playwrightChars: playwrightBest?.quality.chars ?? 0,
+    playwrightWords: playwrightBest?.quality.words ?? 0,
+    finalChars: (chosen ?? bestObserved)?.quality.chars ?? 0,
+    finalWords: (chosen ?? bestObserved)?.quality.words ?? 0,
+    finalParagraphs: (chosen ?? bestObserved)?.quality.paragraphs ?? 0,
+    chosenExtractor: chosen?.source ?? null,
+    fallbackReason: null,
+    qualityStatus: chosen ? 'COMPLETE' : (bestObserved ? 'PARTIAL_EXTRACTION' : 'NO_CONTENT'),
+    navigationMs: playwright?.navigationMs ?? 0,
+    waitMs: playwright?.waitMs ?? 0,
+    playwrightExtractionMs: playwright?.extractionMs ?? 0,
+  };
+  const timings = { fetchMs, readabilityMs, playwrightMs, extractionMs: Math.round(performance.now() - extractionStarted) };
+
+  if (playwright?.videoGarbage) {
+    extraction.fallbackReason = 'video_content';
+    return { fallback: true, reason: 'video_content', source_type: 'web', extraction, timings };
+  }
+  if (playwright?.expired) {
+    extraction.fallbackReason = 'article_expired';
+    return { fallback: true, reason: 'article_expired', source_type: 'web', extraction, timings };
+  }
+  if (!chosen) {
+    const reason = bestObserved ? 'partial_extraction' : 'extraction_failed';
+    extraction.fallbackReason = reason;
+    return {
+      fallback: true,
+      reason,
+      source_type: 'web',
+      title: bestObserved?.title ?? '',
+      imageUrls: bestObserved?.imageUrls ?? [],
+      partial: bestObserved ? {
+        title: bestObserved.title,
+        text: bestObserved.text,
+        word_count: bestObserved.quality.words,
+        imageUrls: bestObserved.imageUrls,
+      } : null,
+      extraction,
+      timings,
+    };
+  }
+
+  const word_count = chosen.quality.words;
+  const { text, truncated } = truncateForModel(chosen.text);
+  return {
+    fallback: false, text, title: chosen.title, source_type: 'web', word_count, truncated,
+    imageUrls: chosen.imageUrls ?? [],
+    extraction,
+    timings,
+  };
 }
 
 // ── Public ────────────────────────────────────────────────────────────────────
 
 export async function extractContent(url) {
+  const started = performance.now();
   try {
     assertSafeUrl(url);  // SSRF guard — rejects internal addresses
     const u    = new URL(url);
     const host = u.hostname.toLowerCase();
-    if (host.includes('youtube.com') || host === 'youtu.be') return extractYouTube(url);
-    return extractArticle(url);
+    const result = host.includes('youtube.com') || host === 'youtu.be'
+      ? await extractYouTube(url)
+      : await extractArticle(url);
+    result.timings = { ...(result.timings ?? {}), extractionMs: Math.round(performance.now() - started) };
+    return result;
   } catch (err) {
-    return { fallback: true, reason: 'invalid_url', error: String(err?.message ?? err) };
+    return {
+      fallback: true, reason: 'invalid_url', error: String(err?.message ?? err),
+      timings: { extractionMs: Math.round(performance.now() - started) },
+    };
   }
 }

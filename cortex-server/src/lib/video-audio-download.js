@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { YTDLP_BIN } from './ytdlp.js';
+import { prepareYtDlp } from './media-egress.js';
 
 const FORBIDDEN = /(?:HTTP(?:\s+Error)?\s*[:=]?\s*403\b|403\s*[: ]\s*Forbidden)/i;
 const REFUSED = 'Le site refuse le téléchargement de cette vidéo. Une session navigateur ou une authentification peut être nécessaire.';
@@ -39,6 +40,9 @@ export function createAudioDownloader(spawnProcess = spawn) {
         '--fragment-retries', '0', '-o', outputPath, ...strategy.extra, '--', url];
       const safeArgs = args.map((arg, i) => arg === url ? '[URL masquée]' :
         args[i - 1] === '-o' ? '[sortie audio]' : arg);
+      // ROOT POLICY (MEDIA_DOWNLOAD) + egress proxy. The proxy argument is added AFTER safeArgs was built (never logged) and BEFORE `--`.
+      const egressArgs = prepareYtDlp({ action: 'MEDIA_DOWNLOAD', credentialSource: strategy.name === 'browser-session' ? 'user-browser-session' : 'none', spawnInjected: spawnProcess !== spawn });
+      const spawnArgs = [...args.slice(0, -2), ...egressArgs, '--', url];
       const started = Date.now();
       logger?.debug({ jobId, strategy: strategy.name, args: safeArgs, source: new URL(url).hostname }, 'VIDEO_DOWNLOAD_START');
       const result = await new Promise(resolve => {
@@ -59,7 +63,7 @@ export function createAudioDownloader(spawnProcess = spawn) {
           signal?.removeEventListener('abort', abort);
           resolve({ code, error, timedOut, forbidden, stderr: redactDownloadLog(stderr), stdout: redactDownloadLog(stdout) });
         };
-        try { proc = spawnProcess(YTDLP_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
+        try { proc = spawnProcess(YTDLP_BIN, spawnArgs, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
         catch (err) { finish(null, err.code ?? 'SPAWN_ERROR'); return; }
         signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted) abort();

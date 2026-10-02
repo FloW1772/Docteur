@@ -26,6 +26,7 @@ import Seven from 'node-7z';
 import { getMeta, setMeta } from './sqlite.js';
 import { registerJob, updateJob, finishJob } from '../routes/jobs.js';
 import { getComfyUiStatus, COMFYUI_DEFAULT_ENDPOINT } from './providers/comfyui.js';
+import { safeFetch } from './web-egress-guard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -255,7 +256,9 @@ function sanitizeErrorForState(err) {
 }
 
 async function downloadWithProgress(url, destPath, { signal, onProgress, expectedApproxBytes }) {
-  const res = await fetch(url, { signal, redirect: 'follow' });
+  // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): the first hop is the pinned release host; every redirect hop (CDN) is
+  // fully validated + pinned. Large-download cap, no overall deadline.
+  const res = await safeFetch(url, { signal, trustedHosts: ['github.com'], maxBytes: 20 * 1024 * 1024 * 1024, timeoutMs: 60_000, purpose: 'comfyui-install' });
   if (!res.ok) throw new Error(`Téléchargement HTTP ${res.status}`);
 
   const total = Number(res.headers.get('content-length')) || expectedApproxBytes || 0;

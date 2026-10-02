@@ -19,6 +19,7 @@ export interface CortexState {
   indexing:          Set<string>;
   queueSize:         number;
   scheduleIndex:     (page: Page) => void;
+  indexNow:          (page: Page) => Promise<void>;
   scheduleDelete:    (id: string) => void;
   triggerReindexAll: (pages: Page[], onProgress?: (n: number, total: number) => void) => Promise<number>;
   /** Resolves when all currently-scheduled index calls have completed. Use between batch lots. */
@@ -52,7 +53,7 @@ export function useCortex(): CortexState {
 
   // ── Core index call (single page, non-debounced) ─────────────────────────
 
-  const doIndex = useCallback(async (page: Page): Promise<void> => {
+  const doIndex = useCallback(async (page: Page, throwOnFailure = false): Promise<void> => {
     addIndexing(page.id);
     try {
       await cortexClient.indexNeuron(page);
@@ -65,6 +66,7 @@ export function useCortex(): CortexState {
       );
       queueRef.current.push({ type: 'index', page });
       setQueueSize(queueRef.current.length);
+      if (throwOnFailure) throw e;
     } finally {
       removeIndexing(page.id);
     }
@@ -150,6 +152,22 @@ export function useCortex(): CortexState {
     }, DEBOUNCE_MS));
   }, [doIndex]);
 
+  // Capture completion needs a transactional boundary: bypass the typing
+  // debounce, keep the global embedding semaphore, and propagate failures so
+  // the UI cannot announce success before LanceDB has acknowledged the row.
+  const indexNow = useCallback((page: Page): Promise<void> => {
+    const pending = debounceMap.current.get(page.id);
+    if (pending) {
+      clearTimeout(pending);
+      debounceMap.current.delete(page.id);
+    }
+    const run = indexChain.current.then(() => doIndex(page, true));
+    indexChain.current = run
+      .catch(() => {})
+      .then(() => new Promise<void>(resolve => setTimeout(resolve, 300)));
+    return run;
+  }, [doIndex]);
+
   // ── Public: scheduleDelete (immediate, no debounce) ──────────────────────
 
   const scheduleDelete = useCallback((id: string): void => {
@@ -187,5 +205,5 @@ export function useCortex(): CortexState {
     return indexChain.current.then(() => {});
   }, []);
 
-  return { available, lastCheck, indexing, queueSize, scheduleIndex, scheduleDelete, triggerReindexAll, flushIndex };
+  return { available, lastCheck, indexing, queueSize, scheduleIndex, indexNow, scheduleDelete, triggerReindexAll, flushIndex };
 }

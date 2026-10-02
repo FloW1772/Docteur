@@ -77,9 +77,13 @@ import type { Page, PageKind, Block } from './lib/types';
 import { KIND_META } from './lib/types';
 import { generateId } from './lib/generateId';
 import { cortexClient, onConnectionError, DETAIL_LEVEL_LABELS } from './lib/cortex/client';
-import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
+import { detectYouTubeDiscoveryInput } from './lib/youtube/discovery-input';
+import { applyDiscoveryEvent, createDiscoveryView, failureView, MODE_LABEL, type DiscoveryView } from './lib/youtube/discovery-view';
+import YouTubeDiscoveryPanel from './components/panels/YouTubeDiscoveryPanel';
+import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, YouTubeDiscoveryResult, YouTubeDiscoveryMode, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
 import { pageToContent } from './lib/cortex/pageToContent';
 import { savePage } from './lib/storage';
+import { CapturePipelineError, persistCapturedArticle } from './lib/capturePipeline';
 import { useMobile } from './lib/useMobile';
 
 // ─── Lazy modal loading fallback ───────────────────────────────────────────
@@ -376,6 +380,7 @@ function CaptureModal({
   const urlCount    = deepMatch?.mode === 'urls' ? deepMatch.urls.length : 0;
   const isBatch     = urlCount > 1;
   const isRunning   = busy && capturePhase !== null;
+  const youtubeDiscovery = detectYouTubeDiscoveryInput(value);
 
   useEffect(() => {
     if (!isRunning) inputRef.current?.focus();
@@ -486,6 +491,12 @@ function CaptureModal({
                 lineHeight: 1.6,
               }}
             />
+
+            {youtubeDiscovery && (
+              <p className="font-mono text-xs mt-3" data-testid="capture-youtube-mode" style={{ color: '#9f8fbf' }}>
+                Chaîne YouTube détectée — mode automatique : <span style={{ color: '#c4b5fd' }}>{MODE_LABEL[youtubeDiscovery.mode]}</span>
+              </p>
+            )}
 
             {/* Pending images strip */}
             {pendingImages && pendingImages.length > 0 && (
@@ -678,36 +689,15 @@ function captureWarnsLimited(result: CaptureResult): boolean {
   return capture.status === 'limited' || capture.warning === 'parent_not_identified';
 }
 
+const DISCOVERY_ITEM_LABEL: Partial<Record<YouTubeDiscoveryMode, string>> = {
+  CHANNEL_ALL_MEDIA: 'médias', CHANNEL_VIDEOS_ONLY: 'vidéos', CHANNEL_SHORTS_ONLY: 'Shorts', CHANNEL_STREAMS_ONLY: 'streams',
+};
+const DISCOVERY_OPERATION_LABEL: Partial<Record<YouTubeDiscoveryMode, string>> = {
+  CHANNEL_ALL_MEDIA: 'Chaîne', CHANNEL_VIDEOS_ONLY: 'Vidéos', CHANNEL_SHORTS_ONLY: 'Shorts', CHANNEL_STREAMS_ONLY: 'Streams',
+};
+
 const DEEP_PREFIX    = /^(info|veille|analyse|resume)\s+([\s\S]+)/i;
 const DOWNLOAD_PREFIX = /^(?:download|telecharge|télécharge|dl)\s+(https?:\/\/\S+)/i;
-const CHAINE_RE      = /^chaine\s+(https?:\/\/[^\s]+)/i;
-
-// YouTube channel URL patterns: /@nom, /channel/UCxxx, /c/nom, /user/nom
-// with optional tab suffixes (/videos, /featured, /about, /shorts, /streams …)
-const YT_CHANNEL_ROOT  = /^\/((@[^/?#/][^/?#]*)|(channel\/[^/?#]+)|(c\/[^/?#]+)|(user\/[^/?#]+))/;
-const YT_TAB_SUFFIX    = /\/(videos|featured|about|shorts|streams|playlists|community)\/?$/;
-// Paths that are definitely NOT channel roots
-const YT_NON_CHANNEL   = /^\/(watch|playlist|shorts\/[^/]+|embed\/|results|feed\/|yts\/)/;
-
-function detectChannelUrl(raw: string): string | null {
-  const trimmed = raw.trim();
-  const chaineMatch = trimmed.match(CHAINE_RE);
-  if (chaineMatch) {
-    try { new URL(chaineMatch[1]); return chaineMatch[1]; } catch { return null; }
-  }
-  try {
-    const u = new URL(trimmed);
-    if (!u.hostname.includes('youtube.com')) return null;
-    const p = u.pathname;
-    if (YT_NON_CHANNEL.test(p)) return null;
-    // Must start with a channel root pattern
-    if (!YT_CHANNEL_ROOT.test(p)) return null;
-    // Strip query, accept bare root or root + known tab suffix
-    const bare = p.replace(YT_TAB_SUFFIX, '').replace(/\/$/, '');
-    if (!YT_CHANNEL_ROOT.test(bare)) return null;
-    return trimmed;
-  } catch { return null; }
-}
 
 // Pure string URL extraction — never evaluated as code, only .match()
 function extractUrls(text: string): string[] {
@@ -2247,12 +2237,12 @@ export function PageEditor({
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const { pages, loading, writeError, isOnline, pageCounts, allMetaLoaded, pageContentLoading, createPage, createPageFromData, updatePage, upsertPage, removePage, createLink, removeLink, flushAllSaves, reloadFromServer, loadPage, loadAllMeta, loadAllPagesForReindex } = usePages();
+  const { pages, loading, writeError, isOnline, pageCounts, allMetaLoaded, pageContentLoading, createPage, createPageFromData, persistPage, updatePage, upsertPage, removePage, createLink, removeLink, flushAllSaves, reloadFromServer, loadPage, loadAllMeta, loadAllPagesForReindex } = usePages();
   const offline = isOnline === false;
   const cortex  = useCortex();
   // scheduleIndex is a stable useCallback in useCortex — destructure to avoid the `cortex`
   // object reference (which changes every render) propagating into deps of heavy callbacks.
-  const { scheduleIndex: cortexScheduleIndex } = cortex;
+  const { scheduleIndex: cortexScheduleIndex, indexNow: cortexIndexNow } = cortex;
   // Stable ref to latest pages — avoids adding `pages` to handleUpdatePage's dep array,
   // which would recreate the callback on every keystroke and cascade unnecessary re-renders.
   const pagesRef = useRef(pages);
@@ -2622,6 +2612,10 @@ export default function App() {
   const [captureValue, setCaptureValue]        = useState('');
   const [captureBusy, setCaptureBusy]          = useState(false);
   const [capturePhase, setCapturePhase]        = useState<string | null>(null);
+  // YouTube discovery: own AbortController + own view-state (never shares deepAbortRef with article/deep capture)
+  const [ytDiscovery, setYtDiscovery]          = useState<DiscoveryView | null>(null);
+  const ytDiscoveryAbortRef                    = useRef<AbortController | null>(null);
+  useEffect(() => () => ytDiscoveryAbortRef.current?.abort(), []);
   const [pendingCaptureImgs, setPendingCaptureImgs] = useState<Array<{ id: string; previewUrl: string }>>([]);
   const [cvBusyId, setCvBusyId]                    = useState<string | null>(null);
   const [candidatureLetterReq, setCandidatureLetterReq] = useState<{ cvPageId: string; prefillContext?: string } | null>(null);
@@ -2911,16 +2905,43 @@ export default function App() {
     setToast(`Neurone créé avec ${n} image${n > 1 ? 's' : ''}${text ? ' et du texte' : ''}`);
   }
 
-  async function createNeuronFromCapture(payload: CaptureNeuron, extraBlocks: Block[] = []): Promise<Page> {
+  async function createNeuronFromCapture(
+    payload: CaptureNeuron,
+    extraBlocks: Block[] = [],
+    transactional = false,
+    phaseLabel = payload.title || 'Article',
+  ): Promise<Page> {
     const contentBlocks = createContentBlocks(String(payload.content ?? ''), payload.title || 'Sans titre');
-    const page = await createPageFromData({
+    const pageData = {
       title: payload.title || 'Sans titre',
       kind: (payload.kind as PageKind) ?? 'note',
       blocks: [...extraBlocks, ...(payload.blocks ?? []), ...contentBlocks],
       metadata: payload.metadata,
+    };
+    if (!transactional) {
+      const page = await createPageFromData(pageData);
+      cortex.scheduleIndex(page);
+      return page;
+    }
+
+    return persistCapturedArticle<Page>({
+      createPersisted: () => createPageFromData({
+        ...pageData,
+        metadata: { ...(payload.metadata ?? {}), captureStatus: 'INDEXING' },
+      }, { requireServer: true }),
+      index: cortexIndexNow,
+      persistStatus: async (page, status, error) => {
+        const metadata = { ...page.metadata, captureStatus: status } as Record<string, unknown>;
+        if (error) metadata.captureError = error.slice(0, 500);
+        else delete metadata.captureError;
+        return persistPage({ ...page, metadata, updatedAt: Date.now() }, { requireServer: true });
+      },
+      onState: state => {
+        if (state === 'SAVING') setCapturePhase(`${phaseLabel} — Enregistrement…`);
+        if (state === 'INDEXING') setCapturePhase(`${phaseLabel} — Indexation…`);
+        if (state === 'READY') setCapturePhase(`${phaseLabel} — Terminé.`);
+      },
     });
-    cortex.scheduleIndex(page);
-    return page;
   }
 
   function showConflictModal(existingNeuron: Page, proposedParent: CaptureNeuron): Promise<ConflictChoice> {
@@ -2948,9 +2969,11 @@ export default function App() {
     response: CaptureResult,
     batchParents?: Map<string, string>,
     extraChildBlocks: Block[] = [],
+    transactionalChild = false,
+    phaseLabel?: string,
   ): Promise<void> {
     if (!response.parent) {
-      const childPage = await createNeuronFromCapture(response.child, extraChildBlocks);
+      const childPage = await createNeuronFromCapture(response.child, extraChildBlocks, transactionalChild, phaseLabel);
       setSelectedId(childPage.id);
       if (captureWarnsLimited(response)) setToast('Capture limitée, parent non identifié');
       return;
@@ -2989,8 +3012,8 @@ export default function App() {
       }
     }
 
-    const childPage = await createNeuronFromCapture(response.child, extraChildBlocks);
-    if (parentId) createLink(parentId, childPage.id);
+    const childPage = await createNeuronFromCapture(response.child, extraChildBlocks, transactionalChild, phaseLabel);
+    if (parentId) await createLink(parentId, childPage.id);
     setSelectedId(childPage.id);
     if (captureWarnsLimited(response)) setToast('Capture limitée, parent non identifié');
   }
@@ -3002,15 +3025,17 @@ export default function App() {
     batchParents: Map<string, string>,
     allowWhisper = false,
     extraChildBlocks: Block[] = [],
-  ): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper'> {
+  ): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed'> {
     if (ctrl.signal.aborted) return 'abort';
     setCapturePhase(`${label} — Récupération…`);
-    const phaseTimer = setTimeout(() => {
-      if (!ctrl.signal.aborted) setCapturePhase(`${label} — Analyse…`);
-    }, 5_000);
-    const attemptCapture = async (): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper'> => {
+    const phaseTimers = [
+      setTimeout(() => { if (!ctrl.signal.aborted) setCapturePhase(`${label} — Extraction de l'article…`); }, 2_000),
+      setTimeout(() => { if (!ctrl.signal.aborted) setCapturePhase(`${label} — Analyse locale…`); }, 5_000),
+    ];
+    const clearPhaseTimers = () => phaseTimers.forEach(clearTimeout);
+    const attemptCapture = async (): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed'> => {
       const response = await cortexClient.captureDeep(url, ctrl.signal, captureImages);
-      clearTimeout(phaseTimer);
+      clearPhaseTimers();
       if (ctrl.signal.aborted) return 'abort';
       if (response.fallback) {
         if (response.needs_whisper && allowWhisper) {
@@ -3023,22 +3048,36 @@ export default function App() {
         if (response.reason && simple.child) {
           simple.child = {
             ...simple.child,
-            metadata: { ...(simple.child.metadata ?? {}), capture_fallback_reason: response.reason },
+            metadata: {
+              ...(simple.child.metadata ?? {}),
+              captureStatus: 'PARTIAL_EXTRACTION',
+              capture_fallback_reason: response.reason,
+              captureWarning: response.reason === 'partial_extraction'
+                ? 'Le contenu extrait est trop court ou trop bruité pour être considéré comme un article complet.'
+                : 'L’extraction approfondie n’a pas produit un article complet.',
+              extraction_quality: response.extraction ?? undefined,
+              ...(response.imageUrls?.length ? { images: response.imageUrls } : {}),
+            },
           };
         }
         await applyCapturResponse(simple, batchParents, extraChildBlocks);
         return 'fallback';
       }
-      setCapturePhase(`${label} — Création…`);
-      await applyCapturResponse(response as unknown as CaptureResult, batchParents, extraChildBlocks);
+      await applyCapturResponse(response as unknown as CaptureResult, batchParents, extraChildBlocks, true, label);
       return 'ok';
     };
 
     try {
       return await attemptCapture();
     } catch (err) {
-      clearTimeout(phaseTimer);
+      clearPhaseTimers();
       if ((err as Error).name === 'AbortError' && ctrl.signal.aborted) return 'abort';
+      if (err instanceof CapturePipelineError) {
+        setToast(err.code === 'INDEX_FAILED'
+          ? 'INDEX_FAILED — article enregistré, indexation à réessayer'
+          : 'SAVE_FAILED — article non enregistré');
+        return 'failed';
+      }
       // Retry once on network errors (ERR_CONNECTION_RESET from VRAM saturation)
       const msg = (err as Error).message ?? '';
       const isNetwork = !((err as Error).name === 'AbortError') &&
@@ -3050,14 +3089,20 @@ export default function App() {
           if (ctrl.signal.aborted) return 'abort';
           setCapturePhase(`${label} — Nouvelle tentative…`);
           return await attemptCapture();
-        } catch {
-          // retry also failed — fall through to fallback
+        } catch (retryError) {
+          if (retryError instanceof CapturePipelineError) {
+            setToast(retryError.code === 'INDEX_FAILED'
+              ? 'INDEX_FAILED — article enregistré, indexation à réessayer'
+              : 'SAVE_FAILED — article non enregistré');
+            return 'failed';
+          }
+          setToast(`Capture échouée — ${(retryError as Error).message || 'erreur réseau'}`);
         }
       } else {
         // Non-network error (e.g. server error, bad response): surface it explicitly
         setToast(`Erreur capture — ${msg || 'erreur inconnue'}`);
       }
-      return 'fallback';
+      return 'failed';
     }
   }
 
@@ -3066,7 +3111,7 @@ export default function App() {
     const total      = urls.length;
     const lotTotal   = Math.ceil(total / batchSize);
     const batchParents = batchParentsRef.current;
-    let okCount = 0, fbCount = 0;
+    let okCount = 0, fbCount = 0, errCount = 0;
     const startedAt  = Date.now();
 
     const ctrl = new AbortController();
@@ -3101,16 +3146,17 @@ export default function App() {
           operation: 'Capture approfondie',
           current: i, total, lotIndex, lotTotal,
           currentLabel: host,
-          okCount, fallbackCount: fbCount, errorCount: 0,
+          okCount, fallbackCount: fbCount, errorCount: errCount,
           startedAt,
         });
 
         const outcome = await deepCaptureOne(url, ctrl, host, batchParents);
         if (outcome === 'abort' || ctrl.signal.aborted) break;
         if (outcome === 'ok') okCount++;
-        else                  fbCount++;
+        else if (outcome === 'fallback') fbCount++;
+        else errCount++;
 
-        setBatchProgress(prev => prev ? { ...prev, current: i + 1, okCount, fallbackCount: fbCount } : null);
+        setBatchProgress(prev => prev ? { ...prev, current: i + 1, okCount, fallbackCount: fbCount, errorCount: errCount } : null);
       }
 
       // Flush any remaining index calls from the last lot
@@ -3123,6 +3169,7 @@ export default function App() {
         const parts: string[] = [];
         if (okCount > 0) parts.push(`${okCount} analyse${okCount > 1 ? 's' : ''} réussie${okCount > 1 ? 's' : ''}`);
         if (fbCount > 0) parts.push(`${fbCount} capture${fbCount > 1 ? 's' : ''} simple${fbCount > 1 ? 's' : ''}`);
+        if (errCount > 0) parts.push(`${errCount} échec${errCount > 1 ? 's' : ''}`);
         setToast(parts.join(', ') || 'Aucun neurone créé');
       }
     } finally {
@@ -3159,14 +3206,18 @@ export default function App() {
   }
 
   // ── Channel capture: create parent 'channel' neuron + light 'video' children ─
-  async function doChannelCapture(channelUrl: string, info: PlaylistInfo): Promise<void> {
-    const videos   = info.videos;
+  async function doChannelCapture(channelUrl: string, found: YouTubeDiscoveryResult): Promise<void> {
+    const videos   = found.items;
     const total    = videos.length;
     const startedAt = Date.now();
+    const channelName = found.channel.uploader || found.channel.title;
+    const info = { title: found.channel.title, uploader: found.channel.uploader, playlistId: found.channel.id };
+    const itemLabel = DISCOVERY_ITEM_LABEL[found.mode] ?? 'vidéos';
+    const operationLabel = DISCOVERY_OPERATION_LABEL[found.mode] ?? 'Chaîne';
 
     batchAbortRef.current = false;
     setBatchProgress({
-      operation:    'Chaine: 0/' + total,
+      operation:    `${operationLabel}: 0/${total}`,
       current:      0,
       total,
       lotIndex:     1,
@@ -3189,6 +3240,8 @@ export default function App() {
         playlistId:   info.playlistId,
         video_count:  total,
         captured_as:  'channel',
+        discoveryMode: found.mode,
+        ...(found.channel.handle ? { handle: found.channel.handle } : {}),
       },
     });
     cortex.scheduleIndex(channelPage);
@@ -3202,7 +3255,7 @@ export default function App() {
       const v = videos[i];
       setPBP(prev => prev ? {
         ...prev,
-        operation:    `Chaine: ${i}/${total}`,
+        operation:    `${operationLabel}: ${i}/${total}`,
         current:      i,
         lotIndex:     i + 1,
         currentLabel: v.title || v.url,
@@ -3213,7 +3266,21 @@ export default function App() {
           title:  v.title || `Vidéo ${i + 1}`,
           kind:   'video',
           blocks: createContentBlocks(v.url, v.title || `Vidéo ${i + 1}`),
-          metadata: { url: v.url, light: true, channelId: channelPage.id, videoId: v.id },
+          metadata: {
+            url: v.url,
+            light: true,
+            channelId: channelPage.id,
+            videoId: v.id,
+            ...(v.thumbnail ? { thumbnail: v.thumbnail } : {}),
+            ...(v.channel ? { channel: v.channel } : {}),
+            ...(v.mediaType ? { mediaType: v.mediaType } : {}),
+            ...(v.sourceTab ? { sourceTab: v.sourceTab } : {}),
+            ...(v.sourceTabs ? { sourceTabs: v.sourceTabs } : {}),
+            ...(v.sourceChannel || channelName ? { sourceChannel: v.sourceChannel || channelName } : {}),
+            ...(v.duration !== undefined ? { duration: v.duration } : {}),
+            ...(v.uploadDate ? { uploadDate: v.uploadDate } : {}),
+            ...(v.timestamp !== undefined ? { timestamp: v.timestamp } : {}),
+          },
         });
         cortex.scheduleIndex(videoPage);
         createLink(channelPage.id, videoPage.id);
@@ -3245,48 +3312,72 @@ export default function App() {
     const aborted = batchAbortRef.current;
     const parts: string[] = [];
     if (aborted)     parts.push('Annulé —');
-    if (okCount > 0) parts.push(`${okCount} vidéo${okCount !== 1 ? 's' : ''} archivée${okCount !== 1 ? 's' : ''}`);
+    if (okCount > 0) parts.push(`${okCount} ${itemLabel} archivé${okCount !== 1 ? 's' : ''}`);
     if (errCount > 0) parts.push(`${errCount} erreur${errCount !== 1 ? 's' : ''}`);
     setToast(parts.join(', ') || 'Aucune vidéo créée');
     if (channelFailures.length > 0) setBatchFailures(channelFailures);
   }
 
-  async function startChannelCapture(channelUrl: string): Promise<void> {
-    // Normalize to /videos tab so yt-dlp lists individual videos, not channel tabs
-    const videosUrl = (() => {
-      try {
-        const u = new URL(channelUrl);
-        const TAB_RE = /\/(featured|about|shorts|streams|playlists|community|membership|store|channels)\/?$/;
-        const clean = u.pathname.replace(TAB_RE, '').replace(/\/$/, '');
-        u.pathname = clean.endsWith('/videos') ? clean : clean + '/videos';
-        u.search = '';
-        return u.toString();
-      } catch { return channelUrl; }
-    })();
+  // ── YouTube Smart Discovery V2 ───────────────────────────────────────────
+  // The URL decides what is discovered (root → all media, /videos, /shorts, /streams). No manual limit.
+  // Progress + Cancel live in a persistent panel (outside the capture modal) and use a dedicated AbortController.
+  function cancelYouTubeDiscovery(): void {
+    ytDiscoveryAbortRef.current?.abort();
+  }
 
-    setCaptureBusy(true);
-    setCapturePhase('Chaîne — Récupération…');
-    let info: PlaylistInfo;
+  async function startYouTubeDiscovery(request: NonNullable<ReturnType<typeof detectYouTubeDiscoveryInput>>): Promise<void> {
+    if (ytDiscoveryAbortRef.current) { setToast('Une découverte YouTube est déjà en cours'); return; }
+    const ctrl = new AbortController();
+    ytDiscoveryAbortRef.current = ctrl;
+    setCaptureOpen(false);
+    setCaptureValue('');
+
+    // Events are folded into a plain object and flushed to React at ≤ 4 Hz: no setState per discovered item.
+    let view = createDiscoveryView(request);
+    let flushTimer: number | null = null;
+    const flush = (immediate = false) => {
+      if (immediate) {
+        if (flushTimer !== null) { window.clearTimeout(flushTimer); flushTimer = null; }
+        setYtDiscovery(view);
+        return;
+      }
+      if (flushTimer === null) flushTimer = window.setTimeout(() => { flushTimer = null; setYtDiscovery(view); }, 250);
+    };
+    flush(true);
+
+    let found: YouTubeDiscoveryResult;
     try {
-      info = await cortexClient.getPlaylist(videosUrl);
-    } catch {
-      setToast('Impossible de récupérer les infos de la chaîne');
+      found = await cortexClient.discoverYouTube(request.input, {
+        context: request.context,
+        signal: ctrl.signal,
+        onEvent: event => {
+          view = applyDiscoveryEvent(view, event);
+          flush(event.type !== 'progress' && event.type !== 'items_batch');
+        },
+      });
+    } catch (err) {
+      view = failureView(view, err as Error);
+      flush(true);
       return;
     } finally {
-      setCapturePhase(null);
-      setCaptureBusy(false);
+      ytDiscoveryAbortRef.current = null;
     }
 
-    const total = info.videos.length;
+    flush(true);
+    const total = found.items.length;
+    setToast(`Terminé : ${total} élément${total > 1 ? 's' : ''}`);
+    window.setTimeout(() => setYtDiscovery(prev => (prev && prev.status === 'done' ? null : prev)), 4000);
+    if (total === 0) { setToast('Aucun média public trouvé pour cette chaîne'); return; }
+    const channelUrl = found.channel.url;
     if (total > 30) {
       setConfirmBatch({
         count:            total,
         operation:        'vidéos de la chaîne',
         estimatedMinutes: Math.max(1, Math.ceil(total * 0.1 / 60)),
-        onConfirm:        () => { setConfirmBatch(null); enqueueOrStart(`Chaîne (${total} vidéos)`, total, () => doChannelCapture(channelUrl, info)); },
+        onConfirm:        () => { setConfirmBatch(null); enqueueOrStart(`Chaîne (${total} vidéos)`, total, () => doChannelCapture(channelUrl, found)); },
       });
     } else {
-      enqueueOrStart(`Chaîne (${total} vidéos)`, total, () => doChannelCapture(channelUrl, info));
+      enqueueOrStart(`Chaîne (${total} vidéos)`, total, () => doChannelCapture(channelUrl, found));
     }
   }
 
@@ -3630,11 +3721,9 @@ export default function App() {
     }
 
     // ── CHAINE: YouTube channel capture (light video neurons) ────────────────
-    const channelUrl = detectChannelUrl(value);
-    if (channelUrl) {
-      setCaptureOpen(false);
-      setCaptureValue('');
-      void startChannelCapture(channelUrl);
+    const youtubeRequest = detectYouTubeDiscoveryInput(value);
+    if (youtubeRequest) {
+      void startYouTubeDiscovery(youtubeRequest);
       return;
     }
 
@@ -3679,11 +3768,25 @@ export default function App() {
             ctrl.signal,
           );
           if (!ctrl.signal.aborted) {
-            setCapturePhase(`${deepMatch.source} — Création…`);
-            await applyCapturResponse(response as unknown as CaptureResult, batchParentsRef.current, extraChildBlocks);
+            await applyCapturResponse(
+              response as unknown as CaptureResult,
+              batchParentsRef.current,
+              extraChildBlocks,
+              true,
+              deepMatch.source,
+            );
+            setToast('Terminé — article enregistré et indexé');
           }
         } catch (err) {
-          if ((err as Error).name !== 'AbortError') setToast('Analyse impossible');
+          if ((err as Error).name !== 'AbortError') {
+            if (err instanceof CapturePipelineError) {
+              setToast(err.code === 'INDEX_FAILED'
+                ? 'INDEX_FAILED — article enregistré, indexation à réessayer'
+                : 'SAVE_FAILED — article non enregistré');
+            } else {
+              setToast(`Analyse impossible — ${(err as Error).message || 'erreur inconnue'}`);
+            }
+          }
         } finally {
           setCapturePhase(null);
           setCaptureBusy(false);
@@ -3704,13 +3807,16 @@ export default function App() {
           const url     = urls[0];
           const host    = (() => { try { return new URL(url).hostname; } catch { return url.slice(0, 30); } })();
           const outcome = await deepCaptureOne(url, ctrl, host, batchParents, true, extraChildBlocks);
+          if (!ctrl.signal.aborted && outcome === 'ok') {
+            setToast('Terminé — article enregistré et indexé');
+          }
           if (!ctrl.signal.aborted && outcome === 'fallback') {
             setToast(url.includes('youtube')
               ? 'Pas de transcription — capture simple effectuée'
-              : 'Extraction impossible — capture simple effectuée');
+              : 'PARTIAL_EXTRACTION — capture conservée avec avertissement');
           }
           // needs_whisper: modal is shown, capture modal closes, whisper takes over
-          if (!ctrl.signal.aborted && outcome !== 'needs_whisper') { setCaptureOpen(false); setCaptureValue(''); }
+          if (!ctrl.signal.aborted && (outcome === 'ok' || outcome === 'fallback')) { setCaptureOpen(false); setCaptureValue(''); }
           if (outcome === 'needs_whisper') { setCaptureOpen(false); setCaptureValue(''); }
         } catch (err) {
           if ((err as Error).name !== 'AbortError') setToast('Capture impossible');
@@ -5665,6 +5771,14 @@ export default function App() {
           downloadFolder={downloadFolder}
           onDone={handleDownloadDone}
           onClose={() => setDownloadUrl(null)}
+        />
+      )}
+
+      {ytDiscovery && (
+        <YouTubeDiscoveryPanel
+          view={ytDiscovery}
+          onCancel={cancelYouTubeDiscovery}
+          onClose={() => setYtDiscovery(null)}
         />
       )}
 

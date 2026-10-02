@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { YTDLP_BIN } from './ytdlp.js';
+import { prepareYtDlp } from './media-egress.js';
 import { downloadAudio } from './video-audio-download.js';
 export { downloadAudio };
 import { assertSafeUrl } from './url-security.js';
@@ -37,8 +38,9 @@ function removeTmpFile(p) {
 // ── Get video duration via yt-dlp (no download) ───────────────────────────────
 
 export async function getVideoDuration(url) {
+  const egressArgs = prepareYtDlp({ action: 'MEDIA_INSPECT' }); // ROOT POLICY + egress proxy (throws when refused: no silent bypass)
   return new Promise((resolve) => {
-    const proc = spawn(YTDLP_BIN, [url, '--print', 'duration', '--no-playlist', '--no-warnings'], {
+    const proc = spawn(YTDLP_BIN, [url, '--print', 'duration', '--no-playlist', '--no-warnings', ...egressArgs], {
       stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000, windowsHide: true,
     });
     let out = '';

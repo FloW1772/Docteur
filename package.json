@@ -7,6 +7,8 @@
     "test:external-agents": "node scripts/test-external-agents-browser.mjs",
     "test:video": "node --test scripts/test-video-polling.mjs",
     "test:browser": "node scripts/test-frontend-browser.mjs",
+    "test:article-capture": "node --test scripts/test-article-capture-pipeline.mjs",
+    "test:article-capture-browser": "node scripts/test-article-capture-browser.mjs",
     "dev": "vite",
     "dev:local": "cross-env LOCAL_NETWORK=true vite",
     "build": "tsc && vite build",

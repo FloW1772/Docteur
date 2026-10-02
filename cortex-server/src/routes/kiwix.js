@@ -14,6 +14,7 @@ import { searchCatalog } from '../lib/kiwix-catalog.js';
 import { freeDiskSpaceBytes } from '../lib/disk-space.js';
 import { sanitizeZimHtml } from '../lib/kiwix-sanitize.js';
 import { assertSafeUrl } from '../lib/url-security.js';
+import { safeFetch } from '../lib/web-egress-guard.js';
 import { assertCloudAllowed } from '../lib/strict-local.js';
 import {
   KIWIX_ERROR_CODES, KiwixError, classifyKiwixError, kiwixErrorBody,
@@ -31,7 +32,8 @@ const CHUNK_MAX_CHARS = 3_500;
 // first. Resolve to the best mirror before downloading; no XML lib needed,
 // consistent with the regex-based OPDS parsing already used in kiwix-client.js.
 async function resolveMetalinkUrl(metalinkUrl) {
-  const res = await fetch(metalinkUrl, { signal: AbortSignal.timeout(10_000) });
+  // WEB EGRESS GUARD: the URL comes from the request body; the mirror list inside the XML is remote-controlled data.
+  const res = await safeFetch(metalinkUrl, { signal: AbortSignal.timeout(10_000), maxBytes: 1024 * 1024, purpose: 'kiwix-metalink' });
   if (!res.ok) throw new Error(`metalink ${res.status}`);
   const xml = await res.text();
   const urls = [];
@@ -345,7 +347,8 @@ export function createKiwixRoute({
         let fileHandle;
         try {
           send({ type: 'status', message: 'Connexion…' });
-          const res = await fetch(url, { signal: reqSignal });
+          // WEB EGRESS GUARD: mirror URL (remote-controlled) → DNS-validated, pinned, redirects revalidated; ZIM archives are very large.
+          const res = await safeFetch(url, { signal: reqSignal, maxBytes: 512 * 1024 * 1024 * 1024, timeoutMs: 60_000, purpose: 'kiwix-download' });
           if (!res.ok || !res.body) throw new Error(`Téléchargement échoué (${res.status})`);
 
           const total = Number(res.headers.get('content-length')) || sizeBytes || 0;

@@ -7,6 +7,7 @@
 // of generateImage() gets the same guarantee.
 
 import { isStrictLocalMode } from './strict-local.js';
+import { enforceCloudAi } from './root-policy/index.js';
 import { getImageGenSettings } from './sqlite.js';
 import { generateWithComfyUi, getComfyUiStatus } from './providers/comfyui.js';
 import { isCloudflareConfigured, cloudflareCapabilities, generateWithCloudflare } from './providers/cloudflare-image.js';
@@ -51,18 +52,33 @@ function autoOrder(priority) {
   return priority === 'cloud' ? [...cloud, ...local] : [...local, ...cloud];
 }
 
+// ROOT POLICY (AI_CLOUD_REQUEST) for the cloud image providers: the prompt leaves the machine. The router never throws provider internals:
+// a refusal becomes a controlled error code, like every other failure here.
+function cloudGate(provider, params) {
+  try {
+    enforceCloudAi({ provider, messages: [{ role: 'user', content: String(params?.prompt ?? '') }], strictLocal: isStrictLocalMode(), cloudEnabled: true });
+    return null;
+  } catch (error) {
+    if (error?.rootPolicyDenied) return { ok: false, errorCode: 'root_policy_denied' };
+    throw error;
+  }
+}
+
 async function callProvider(providerId, params, settings) {
   switch (providerId) {
     case 'comfyui':
       return generateWithComfyUi({ endpoint: settings.comfyui_endpoint, ...params });
     case 'cloudflare':
       if (!isCloudflareConfigured()) return { ok: false, errorCode: 'provider_unavailable' };
+      { const denied = cloudGate('cloudflare', params); if (denied) return denied; }
       return generateWithCloudflare(params);
     case 'huggingface':
       if (!isHuggingFaceConfigured()) return { ok: false, errorCode: 'provider_unavailable' };
+      { const denied = cloudGate('huggingface', params); if (denied) return denied; }
       return generateWithHuggingFace(params);
     case 'pollinations':
       if (!isPollinationsConfigured()) return { ok: false, errorCode: 'provider_unavailable' };
+      { const denied = cloudGate('pollinations', params); if (denied) return denied; }
       return generateWithPollinations(params);
     default:
       return { ok: false, errorCode: 'unknown' };

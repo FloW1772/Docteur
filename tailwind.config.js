@@ -18,8 +18,8 @@ export default {
         'n-dim':     '#3d3060',
       },
       fontFamily: {
-        'grotesk': ['Space Grotesk', 'sans-serif'],
-        'mono':    ['IBM Plex Mono', 'monospace'],
+        'grotesk': ['Space Grotesk', 'Segoe UI Variable Display', 'Segoe UI', 'system-ui', 'sans-serif'],
+        'mono':    ['IBM Plex Mono', 'Cascadia Mono', 'Cascadia Code', 'Consolas', 'monospace'],
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4,0,0.6,1) infinite',

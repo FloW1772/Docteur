@@ -300,7 +300,7 @@ export function usePages() {
 
   // ── Helper: save a page and surface server errors ────────────────────────────
 
-  const save = useCallback((page: Page): Promise<void> => {
+  const save = useCallback((page: Page, requireServer?: boolean): Promise<void> => {
     if (_lazyIds.has(page.id)) {
       const error = new Error('Contenu non chargé : sauvegarde refusée');
       setWriteError(error.message);
@@ -311,8 +311,10 @@ export function usePages() {
       setWriteError(err.message);
       return Promise.reject(err);
     }
-    return savePage(page, remote || page.metadata?.source === 'agent').catch(err => {
-      setWriteError((err as Error).message ?? 'Erreur de sauvegarde');
+    const mustReachServer = requireServer ?? (remote || page.metadata?.source === 'agent');
+    return savePage(page, mustReachServer).catch(err => {
+      const message = (err as Error).message ?? 'Erreur de sauvegarde';
+      setWriteError(mustReachServer ? `SAVE_FAILED — ${message}` : message);
       throw err;
     });
   }, [remote, isOnline]);
@@ -363,11 +365,23 @@ export function usePages() {
 
   // ── createPageFromData ───────────────────────────────────────────────────────
 
-  const createPageFromData = useCallback(async (data: Partial<Page> & { title: string; kind?: PageKind }) => {
+  const createPageFromData = useCallback(async (
+    data: Partial<Page> & { title: string; kind?: PageKind },
+    options: { requireServer?: boolean } = {},
+  ) => {
     const page = makePageFromData(data);
-    await save(page);
+    await save(page, options.requireServer);
     setPages(prev => [page, ...prev]);
     setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [page.kind]: (c.byKind[page.kind] ?? 0) + 1 } }));
+    return page;
+  }, [save]);
+
+  // Persist an already-created page immediately and publish that exact version
+  // to React state. Capture uses this to make INDEX_FAILED/READY durable without
+  // waiting for the normal editor debounce.
+  const persistPage = useCallback(async (page: Page, options: { requireServer?: boolean } = {}) => {
+    await save(page, options.requireServer);
+    setPages(prev => prev.map(existing => existing.id === page.id ? page : existing));
     return page;
   }, [save]);
 
@@ -523,7 +537,7 @@ export function usePages() {
   return {
     pages, loading, writeError, isOnline,
     pageCounts, allMetaLoaded, pageContentLoading,
-    createPage, createPageFromData, updatePage, upsertPage, removePage, createLink, removeLink,
+    createPage, createPageFromData, persistPage, updatePage, upsertPage, removePage, createLink, removeLink,
     flushSave, flushAllSaves,
     reloadFromServer,
     loadPage, loadAllMeta, loadAllPagesForReindex,

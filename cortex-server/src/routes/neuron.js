@@ -98,14 +98,31 @@ export function createNeuronRoute({ services, logger }) {
   // PUT /api/neuron/:id — save/update full page (sync from frontend)
   route.put('/neuron/:id', async (c) => {
     const id = c.req.param('id');
+    let captureId;
+    const started = performance.now();
     try {
       const body = await c.req.json();
       if (!body?.page?.id || body.page.id !== id) {
         return c.json({ error: 'payload invalide' }, 400);
       }
+      captureId = typeof body.page.metadata?.captureId === 'string' ? body.page.metadata.captureId : undefined;
+      const captureStatus = body.page.metadata?.captureStatus;
+      const previousStatus = captureId ? getPageFromStore(id)?.metadata?.captureStatus : undefined;
+      const captureTransition = !!captureId && captureStatus !== previousStatus;
+      if (captureTransition && logger) logger.info({ captureId, neuronId: id, elapsedMs: 0 }, 'CAPTURE_SAVE_START');
       const saved = savePageToStoreIfNewer(body.page);
+      if (captureTransition && logger) {
+        const elapsedMs = Math.round(performance.now() - started);
+        logger.info({ captureId, neuronId: id, elapsedMs, skipped: !saved }, 'CAPTURE_SAVE_DONE');
+        if (captureStatus === 'READY') {
+          logger.info({ captureId, neuronId: id, elapsedMs }, 'CAPTURE_READY');
+        }
+      }
       return c.json({ ok: true, skipped: !saved });
     } catch (error) {
+      if (captureId && logger) {
+        logger.error({ captureId, neuronId: id, elapsedMs: Math.round(performance.now() - started), error: error.message }, 'SAVE_FAILED');
+      }
       return c.json({ error: error.message }, 500);
     }
   });

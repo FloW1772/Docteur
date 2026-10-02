@@ -1,4 +1,5 @@
 import { parseOpdsEntries } from './kiwix-client.js';
+import { safeFetch } from './web-egress-guard.js';
 
 const CATALOG_BASE = 'https://library.kiwix.org/catalog/v2/entries';
 const TIMEOUT_MS = 15_000;
@@ -16,7 +17,8 @@ export async function searchCatalog({ q, lang, count = 40 } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): constant https host; redirects revalidated per hop.
+    const res = await safeFetch(url, { signal: ctrl.signal, trustedHosts: ['library.kiwix.org'], maxBytes: 8 * 1024 * 1024, purpose: 'kiwix-catalog' });
     if (!res.ok) throw new Error(`catalogue Kiwix a répondu ${res.status}`);
     const xml = await res.text();
     return parseOpdsEntries(xml);

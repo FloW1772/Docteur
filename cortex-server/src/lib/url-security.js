@@ -1,47 +1,25 @@
 /**
- * SSRF protection — rejects URLs that target private/internal network addresses.
- * Checks the hostname as supplied (no async DNS resolution, so DNS rebinding
- * is out of scope for this local tool). Covers the main attack vectors:
- * localhost, IPv4 private ranges, IPv6 loopback.
+ * SSRF protection — STATIC pre-check kept for its ~36 existing callers.
+ *
+ * Since WEB EGRESS GUARD V1 this is a thin wrapper over the central guard
+ * (web-egress-guard.js): same parser (WHATWG URL only), same byte-level address
+ * classification (IPv4, IPv6, IPv4-mapped IPv6, NAT64, 6to4…), same scheme / userinfo / port policy.
+ * The previous string-prefix implementation let `http://[::ffff:127.0.0.1]/`, `http://[::]/`,
+ * `http://100.64.0.1/`, multicast, `localhost.` and userinfo URLs through (and wrongly
+ * blocked every hostname starting with "fd", e.g. fdic.gov).
+ *
+ * This function is SYNCHRONOUS and does NOT resolve DNS: a hostname that resolves to an
+ * internal address passes it. It is only a fast, early refusal. The authoritative check —
+ * DNS validation of every address, a pinned connection and per-hop redirect revalidation —
+ * happens inside `safeFetch` (web-egress-guard.js); every code path that actually fetches
+ * a user-influenced URL must go through it.
  */
-
-function isInternalHost(hostname) {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 brackets
-
-  // Named loopback / link-local
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h === '0.0.0.0') return true;
-
-  // IPv6 loopback & link-local
-  if (h === '::1' || h.startsWith('fc00:') || h.startsWith('fe80:') || h.startsWith('fd')) return true;
-
-  // IPv4 — check private ranges
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) {
-    const [a, b] = h.split('.').map(Number);
-    if (a === 0)   return true;  // 0.x.x.x
-    if (a === 127) return true;  // 127.x.x.x (loopback)
-    if (a === 10)  return true;  // 10.x.x.x
-    if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16–31.x
-    if (a === 192 && b === 168) return true;            // 192.168.x.x
-    if (a === 169 && b === 254) return true;            // 169.254.x.x (link-local)
-  }
-
-  return false;
-}
+import { validateOutboundUrl, reportEgressBlock } from './web-egress-guard.js';
 
 /**
- * Throws an Error if the URL targets an internal / private address.
- * Call this before any outbound HTTP request triggered by user input.
+ * Throws an EgressDeniedError (an Error whose `.message` is the legacy user-facing text and whose
+ * `.code` is a structured BLOCKED_* reason) if the URL is not an acceptable public Web target.
  */
 export function assertSafeUrl(url) {
-  let parsed;
-  try { parsed = new URL(url); }
-  catch { throw new Error('URL invalide'); }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Protocole non autorisé (http/https uniquement)');
-  }
-
-  if (isInternalHost(parsed.hostname)) {
-    throw new Error('URL bloquée : les adresses internes ne sont pas autorisées');
-  }
+  try { validateOutboundUrl(url); } catch (error) { reportEgressBlock(error, 'static-check'); throw error; }
 }

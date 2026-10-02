@@ -8,7 +8,8 @@
 //   3. If the routing guard in answerQuestion works correctly, the sentinel
 //      never appears in cloud payloads. This is a belt-and-suspenders check.
 
-import { insertPrivacyViolation, getPrivacyViolations as dbGetViolations } from './sqlite.js';
+import { insertPrivacyViolation, getPrivacyViolations as dbGetViolations, getRouterSettings } from './sqlite.js';
+import { enforceCloudAi } from './root-policy/index.js';
 
 // Plain-text sentinel — deliberately NOT a raw control character. A raw
 // null byte here would be escaped by JSON.stringify() into the literal
@@ -59,6 +60,13 @@ export function guardCloudCall({ messages, provider, functionCalled, simulate = 
       try { insertPrivacyViolation({ functionCalled, providerTargeted: provider }); } catch { /* db might not be ready */ }
     }
     throw new PrivacyViolationError(provider, functionCalled);
+  }
+  // ROOT POLICY (rules 1, 2, 9): AI_CLOUD_REQUEST — strict local, explicit cloud opt-in, no secret in the payload, fail closed on an
+  // untrusted policy. The synthetic self-test (simulate) never reaches a provider and is not a real request.
+  if (!simulate) {
+    let settings = null;
+    try { settings = getRouterSettings(); } catch { /* db not ready: defaults below */ }
+    enforceCloudAi({ provider, messages, strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled !== false });
   }
 }
 

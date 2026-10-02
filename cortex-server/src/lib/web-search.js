@@ -1,4 +1,5 @@
 import { JSDOM } from 'jsdom';
+import { safeFetch } from './web-egress-guard.js';
 
 const DDG_HTML   = 'https://html.duckduckgo.com/html/';
 const TIMEOUT_MS = 14_000;
@@ -17,8 +18,12 @@ export async function searchDuckDuckGo(query, limit = 10, offset = 0) {
 
   let html;
   try {
-    const res = await fetch(`${DDG_HTML}?${params}`, {
+    // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): constant https host; redirects revalidated per hop.
+    const res = await safeFetch(`${DDG_HTML}?${params}`, {
       signal: ctrl.signal,
+      trustedHosts: ['html.duckduckgo.com'],
+      maxBytes: 4 * 1024 * 1024,
+      purpose: 'web-search',
       headers: {
         'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept':          'text/html,application/xhtml+xml',

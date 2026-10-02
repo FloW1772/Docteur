@@ -1,0 +1,331 @@
+{
+  "generatedAt": "2026-09-30T12:51:58.034Z",
+  "model": "nomic-embed-text",
+  "corpus": {
+    "memories": 34,
+    "queries": 50,
+    "positives": 31,
+    "negativesAndTraps": 18,
+    "leakOnlyTraps": 1
+  },
+  "corpusState": {
+    "active": 30,
+    "superseded": 2,
+    "revoked": 2,
+    "vectors": 32
+  },
+  "gridSize": 144,
+  "gridSeconds": 5.7,
+  "embedCalls": 78,
+  "leakageAcrossAllConfigs": {
+    "wrongProject": 0,
+    "wrongNotebook": 0,
+    "revoked": 0,
+    "superseded": 0,
+    "sensitive": 0
+  },
+  "currentDefaults": {
+    "vectorThreshold": 0.7,
+    "minLexicalCoverage": 0.34,
+    "vectorWeight": 0.5,
+    "topK": 5,
+    "hitAtK": 0.839,
+    "mrr": 0.806,
+    "noisePerPositive": 0.65,
+    "falsePositiveRate": 0.111,
+    "leaks": {
+      "wrongProject": 0,
+      "wrongNotebook": 0,
+      "revoked": 0,
+      "superseded": 0,
+      "sensitive": 0
+    },
+    "misses": 5,
+    "fps": 2
+  },
+  "best5": [
+    {
+      "vectorThreshold": 0.75,
+      "minLexicalCoverage": 0.34,
+      "vectorWeight": 0.5,
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 5,
+      "fps": 0
+    },
+    {
+      "vectorThreshold": 0.75,
+      "minLexicalCoverage": 0.34,
+      "vectorWeight": 1,
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 5,
+      "fps": 0
+    },
+    {
+      "vectorThreshold": 0.75,
+      "minLexicalCoverage": 0.5,
+      "vectorWeight": 0.5,
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 5,
+      "fps": 0
+    },
+    {
+      "vectorThreshold": 0.75,
+      "minLexicalCoverage": 0.5,
+      "vectorWeight": 1,
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 5,
+      "fps": 0
+    },
+    {
+      "vectorThreshold": 0.8,
+      "minLexicalCoverage": 0.34,
+      "vectorWeight": 0.5,
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 5,
+      "fps": 0
+    }
+  ],
+  "worst3": [
+    {
+      "vectorThreshold": 0.6,
+      "minLexicalCoverage": 0.6,
+      "vectorWeight": 1,
+      "topK": 8,
+      "hitAtK": 0.903,
+      "mrr": 0.829,
+      "noisePerPositive": 3.45,
+      "falsePositiveRate": 0.833,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 3,
+      "fps": 15
+    },
+    {
+      "vectorThreshold": 0.6,
+      "minLexicalCoverage": 0.6,
+      "vectorWeight": 0.5,
+      "topK": 3,
+      "hitAtK": 0.871,
+      "mrr": 0.823,
+      "noisePerPositive": 1.68,
+      "falsePositiveRate": 0.833,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 4,
+      "fps": 15
+    },
+    {
+      "vectorThreshold": 0.6,
+      "minLexicalCoverage": 0.6,
+      "vectorWeight": 1,
+      "topK": 3,
+      "hitAtK": 0.871,
+      "mrr": 0.823,
+      "noisePerPositive": 1.68,
+      "falsePositiveRate": 0.833,
+      "leaks": {
+        "wrongProject": 0,
+        "wrongNotebook": 0,
+        "revoked": 0,
+        "superseded": 0,
+        "sensitive": 0
+      },
+      "misses": 4,
+      "fps": 15
+    }
+  ],
+  "defaultsDetail": {
+    "misses": [
+      {
+        "q": "Peut-on ajouter des fonctions à OMEGA ?",
+        "got": []
+      },
+      {
+        "q": "Le Notebook peut-il appeler internet ?",
+        "got": []
+      },
+      {
+        "q": "Le système peut-il faire des requêtes vers l'extérieur ?",
+        "got": []
+      },
+      {
+        "q": "Que faire avant de livrer ?",
+        "got": []
+      },
+      {
+        "q": "Que faire avant de supprimer des fichiers ?",
+        "got": []
+      }
+    ],
+    "falsePositives": [
+      {
+        "q": "Quelle base de données pour la boutique ?",
+        "got": [
+          "d12"
+        ]
+      },
+      {
+        "q": "Explique la différence entre TCP et UDP.",
+        "got": [
+          "d1",
+          "d2"
+        ]
+      }
+    ]
+  },
+  "recommended": {
+    "vectorThreshold": 0.75,
+    "minLexicalCoverage": 0.34,
+    "vectorWeight": 0.5,
+    "topK": 3,
+    "hitAtK": 0.839,
+    "mrr": 0.806,
+    "noisePerPositive": 0.32,
+    "falsePositiveRate": 0,
+    "leaks": {
+      "wrongProject": 0,
+      "wrongNotebook": 0,
+      "revoked": 0,
+      "superseded": 0,
+      "sensitive": 0
+    },
+    "misses": 5,
+    "fps": 0
+  },
+  "recommendedDetail": {
+    "misses": [
+      {
+        "q": "Peut-on ajouter des fonctions à OMEGA ?",
+        "got": []
+      },
+      {
+        "q": "Le Notebook peut-il appeler internet ?",
+        "got": []
+      },
+      {
+        "q": "Le système peut-il faire des requêtes vers l'extérieur ?",
+        "got": []
+      },
+      {
+        "q": "Que faire avant de livrer ?",
+        "got": []
+      },
+      {
+        "q": "Que faire avant de supprimer des fichiers ?",
+        "got": []
+      }
+    ],
+    "falsePositives": []
+  },
+  "topKSweep": [
+    {
+      "topK": 3,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.32,
+      "falsePositiveRate": 0
+    },
+    {
+      "topK": 5,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.48,
+      "falsePositiveRate": 0
+    },
+    {
+      "topK": 8,
+      "hitAtK": 0.839,
+      "mrr": 0.806,
+      "noisePerPositive": 0.58,
+      "falsePositiveRate": 0
+    }
+  ],
+  "ftsOnly": {
+    "hitAtK": 0.839,
+    "falsePositiveRate": 0
+  },
+  "lancedbParity": {
+    "compared": 50,
+    "identical": 49,
+    "differing": [
+      {
+        "q": "Comment est généré le blog ?",
+        "exact": [
+          "g1",
+          "g4",
+          "g3"
+        ],
+        "lancedb": [
+          "g1",
+          "g3",
+          "g2"
+        ]
+      }
+    ]
+  }
+}

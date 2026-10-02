@@ -622,14 +622,20 @@ export async function routedCompletion(client, { action, input, context = {}, me
 
   // Essayer PAIR en premier (priorité 1 pour les providers locaux)
   let pairAttempted = false;
+  let pairAttemptMs = 0;
+  let pairStarted = 0;
   try {
     const pairConfigured = await pairProvider.isConfigured();
     if (pairConfigured) {
       logger?.info({ endpoint: pairProvider.endpoint }, 'PAIR_ATTEMPT');
       pairAttempted = true;
+      pairStarted = performance.now();
       const pairHealth = await pairProvider.getHealth();
+      pairAttemptMs = Math.round(performance.now() - pairStarted);
       if (pairHealth.status === 'connected') {
+        const generationStarted = performance.now();
         const result = await pairProvider.generate({ messages });
+        pairAttemptMs += Math.round(performance.now() - generationStarted);
         logRoute(action, 'pair', result.model ?? 'pair', logger);
         return {
           response: result.text,
@@ -638,11 +644,16 @@ export async function routedCompletion(client, { action, input, context = {}, me
           provider: 'pair',
           quotaHit: false,
           routingReason: localReason,
+          pairAttempted,
+          pairAttemptMs,
         };
       }
       logger?.warn({ reason: pairHealth.error }, 'PAIR_FAILED');
     }
   } catch (err) {
+    if (pairAttempted && pairStarted > 0 && pairAttemptMs === 0) {
+      pairAttemptMs = Math.round(performance.now() - pairStarted);
+    }
     errors.push(`pair: ${err.message}`);
     if (pairAttempted) logger?.warn({ reason: err.message }, 'PAIR_FAILED');
   }
@@ -656,7 +667,10 @@ export async function routedCompletion(client, { action, input, context = {}, me
       const response = await chatCompletion(client, model, messages);
       logRoute(action, 'local', model, logger, { fallback: pairAttempted });
       if (pairAttempted) logger?.info({ model }, 'OLLAMA_SUCCESS');
-      return { response, model, level, provider: 'local', quotaHit: false, routingReason: localReason };
+      return {
+        response, model, level, provider: 'local', quotaHit: false, routingReason: localReason,
+        pairAttempted, pairAttemptMs,
+      };
     } catch (err) {
       errors.push(`niveau ${level} (${model}): ${err.message}`);
     }
