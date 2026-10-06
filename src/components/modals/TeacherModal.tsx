@@ -1,10 +1,18 @@
-import { useEffect, useState, useCallback } from 'react';
-import { GraduationCap, X, Plus, Trash2, ArrowLeft, ArrowRight, Check, RefreshCw, Settings } from 'lucide-react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { GraduationCap, X, Plus, Trash2, ArrowLeft, ArrowRight, Check, RefreshCw, Settings, Dumbbell } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import type {
   TeacherSettings, TeacherQuotaInfo, TeacherRegister, LearningPath, LearningPathStep,
   LearningPlanStep, ReviewItem, TeacherStats, TeacherAvailableModels,
+  DualTrackLearningPath, DualTrackLearningStep,
 } from '../../lib/cortex/client';
+import DualTrackLessonView from './TeacherDualTrack';
+import { SportProfileForm, SportProgramPreview } from './TeacherSportCoach';
+
+// [Professeur V2 — PROF-3] dual-track parcours (schema_version 2) get the THÉORIE | PRATIQUE view; V1 ones are unchanged.
+const isDualTrack = (p: LearningPath) => ((p as Partial<DualTrackLearningPath>).schema_version ?? 1) >= 2;
+// [Professeur V2 — PROF-5] Sport Coach parcours (mode sport) reuse the same dual-track engine and lesson view.
+const isSport = (p: LearningPath) => (p as Partial<DualTrackLearningPath>).mode === 'sport';
 
 interface Props {
   onClose: () => void;
@@ -350,6 +358,11 @@ function LessonView({ path, steps, onRefresh, onFinished }: {
   // requested (Strict Local, or a runtime fallback after a cloud failure) —
   // never left implying the originally-selected cloud provider answered.
   const [fallbackNotice, setFallbackNotice] = useState<{ requested: string; actual: string; reason: string | null } | null>(null);
+  // Latest path/steps for async callbacks: loadExplanation is memoised on path.id, so without this it would answer
+  // with the path/steps of the render that created it — after a validated answer advanced the parcours, the next
+  // step's explanation would re-inject the previous current_step_index and snap the view back one step.
+  const latest = useRef({ path, steps });
+  latest.current = { path, steps };
 
   const loadExplanation = useCallback(async (stepId: string) => {
     setLoadingExplain(true);
@@ -364,7 +377,8 @@ function LessonView({ path, steps, onRefresh, onFinished }: {
         // render as-is.
         setFallbackNotice({ requested: requested_provider, actual: 'Ollama (local)', reason: fallback_reason ?? null });
       }
-      onRefresh(path, steps.map(s => s.id === step.id ? step : s));
+      const current = latest.current;
+      onRefresh(current.path, current.steps.map(s => s.id === step.id ? step : s));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -476,12 +490,16 @@ function LessonView({ path, steps, onRefresh, onFinished }: {
 
 // ── Onglet Apprentissage (liste + création + vue active) ────────────────
 
-function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) {
+function LearningTab({ defaultRegister, onWideChange }: { defaultRegister: TeacherRegister; onWideChange?: (wide: boolean) => void }) {
   const [paths, setPaths] = useState<LearningPath[]>([]);
   const [openPath, setOpenPath] = useState<{ path: LearningPath; steps: LearningPathStep[] } | null>(null);
   const [subject, setSubject] = useState('');
   const [register, setRegister] = useState<TeacherRegister>(defaultRegister);
+  const [dualTrack, setDualTrack] = useState(true);
+  const [createMode, setCreateMode] = useState<'course' | 'sport'>('course');
   const [creating, setCreating] = useState(false);
+  const wideLesson = !!openPath && (openPath.path.status === 'active' || openPath.path.status === 'completed') && isDualTrack(openPath.path);
+  useEffect(() => { onWideChange?.(wideLesson); }, [wideLesson, onWideChange]);
   const [error, setError] = useState<string | null>(null);
   const [recapNotice, setRecapNotice] = useState<string | null>(null);
 
@@ -498,7 +516,9 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
     setCreating(true);
     setError(null);
     try {
-      const { path } = await cortexClient.createLearningPath(subject.trim(), register);
+      const { path } = dualTrack
+        ? await cortexClient.createDualTrackLearningPath(subject.trim(), register)
+        : await cortexClient.createLearningPath(subject.trim(), register);
       setSubject('');
       await reload();
       setOpenPath({ path, steps: [] });
@@ -543,7 +563,11 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <button type="button" style={btnGhostStyle} onClick={() => setOpenPath(null)}><ArrowLeft size={12} /> Retour à la liste</button>
 
-        {path.status === 'planning' && (
+        {path.status === 'planning' && isSport(path) && (
+          <SportProgramPreview path={path as DualTrackLearningPath} onStarted={(p, s) => setOpenPath({ path: p, steps: s })} />
+        )}
+
+        {path.status === 'planning' && !isSport(path) && (
           <PlanEditor
             path={path}
             onStarted={(p, s) => setOpenPath({ path: p, steps: s })}
@@ -551,7 +575,16 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
           />
         )}
 
-        {path.status === 'active' && (
+        {path.status === 'active' && isDualTrack(path) && (
+          <DualTrackLessonView
+            path={path as DualTrackLearningPath}
+            steps={steps as DualTrackLearningStep[]}
+            onRefresh={(p, s) => setOpenPath({ path: p, steps: s })}
+            onFinished={(p, s) => { setOpenPath({ path: p, steps: s }); void reload(); }}
+          />
+        )}
+
+        {path.status === 'active' && !isDualTrack(path) && (
           <LessonView
             path={path}
             steps={steps}
@@ -571,6 +604,16 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
               </button>
             )}
             {recapNotice && <div style={{ fontSize: 12, color: '#3dffaa' }}>{recapNotice}</div>}
+            {isDualTrack(path) && steps.length > 0 && (
+              // [Professeur V2 — PROF-4] completed dual-track parcours: every module, verdict and history stays readable
+              <DualTrackLessonView
+                path={path as DualTrackLearningPath}
+                steps={steps as DualTrackLearningStep[]}
+                onRefresh={(p, s) => setOpenPath({ path: p, steps: s })}
+                onFinished={(p, s) => setOpenPath({ path: p, steps: s })}
+                reviewOnly
+              />
+            )}
           </div>
         )}
 
@@ -583,6 +626,22 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div role="tablist" aria-label="Type de parcours" style={{ display: 'flex', gap: 6 }}>
+        <button type="button" role="tab" aria-selected={createMode === 'course'} data-testid="teacher-mode-course" style={createMode === 'course' ? btnStyle : btnGhostStyle} onClick={() => setCreateMode('course')}>
+          <GraduationCap size={13} /> Cours
+        </button>
+        <button type="button" role="tab" aria-selected={createMode === 'sport'} data-testid="teacher-mode-sport" style={createMode === 'sport' ? btnStyle : btnGhostStyle} onClick={() => setCreateMode('sport')}>
+          <Dumbbell size={13} /> Sport Coach
+        </button>
+      </div>
+
+      {createMode === 'sport' && (
+        <div style={cardStyle}>
+          <SportProfileForm defaultRegister={defaultRegister} onCreated={(p) => { void reload(); setOpenPath({ path: p, steps: [] }); }} />
+        </div>
+      )}
+
+      {createMode === 'course' && (
       <div style={cardStyle}>
         <span style={labelStyle}>APPRENDS-MOI…</span>
         <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -602,15 +661,37 @@ function LearningTab({ defaultRegister }: { defaultRegister: TeacherRegister }) 
             {creating ? <RefreshCw size={13} className="spin" /> : <Plus size={13} />} Créer le plan
           </button>
         </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8, fontSize: 12, color: '#e2e8f0', cursor: 'pointer' }}>
+          <input type="checkbox" data-testid="teacher-dual-track-toggle" checked={dualTrack} onChange={e => setDualTrack(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>
+            Théorie + Pratique
+            <span style={{ display: 'block', color: '#64748b', fontSize: 11 }}>
+              Chaque module a une voie théorique et une voie pratique, évaluées séparément ; le module suivant s'ouvre quand les deux sont validées.
+            </span>
+          </span>
+        </label>
         {error && <div style={{ fontSize: 12, color: '#ff4d58', marginTop: 6 }}>{error}</div>}
       </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {paths.length === 0 && <div style={{ fontSize: 12, color: '#64748b' }}>Aucun parcours pour l'instant.</div>}
         {paths.map(p => (
           <div key={p.id} style={{ ...cardStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ cursor: 'pointer', flex: 1 }} onClick={() => void handleOpen(p)}>
-              <div style={{ fontSize: 13, color: '#e2e8f0' }}>{p.subject}</div>
+              <div style={{ fontSize: 13, color: '#e2e8f0' }}>
+                {p.subject}
+                {isSport(p) && (
+                  <span data-testid="teacher-path-sport-badge" style={{ marginLeft: 8, fontSize: 10, color: '#3dffaa', border: '1px solid rgba(61,255,170,0.35)', borderRadius: 999, padding: '1px 6px' }}>
+                    Sport Coach
+                  </span>
+                )}
+                {isDualTrack(p) && !isSport(p) && (
+                  <span data-testid="teacher-path-dual-badge" style={{ marginLeft: 8, fontSize: 10, color: '#a78bfa', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 999, padding: '1px 6px' }}>
+                    Théorie + Pratique
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: 11, color: '#64748b' }}>
                 {REGISTER_LABELS[p.register]} · {p.status} · maj {formatDate(p.updated_at)}
               </div>
@@ -754,6 +835,7 @@ function StatsTab() {
 export default function TeacherModal({ onClose, strictLocalMode }: Props) {
   const [tab, setTab] = useState<Tab>('apprentissage');
   const [defaultRegister, setDefaultRegister] = useState<TeacherRegister>('standard');
+  const [wide, setWide] = useState(false); // PROF-3: room for the THÉORIE | PRATIQUE columns
 
   useEffect(() => {
     void cortexClient.getTeacherSettings().then(s => setDefaultRegister(s.defaultRegister));
@@ -761,7 +843,7 @@ export default function TeacherModal({ onClose, strictLocalMode }: Props) {
 
   return (
     <div style={modalStyle} onClick={onClose}>
-      <div style={panelStyle} onClick={e => e.stopPropagation()}>
+      <div style={wide && tab === 'apprentissage' ? { ...panelStyle, width: 1100 } : panelStyle} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <GraduationCap size={18} color="#a78bfa" />
@@ -778,7 +860,7 @@ export default function TeacherModal({ onClose, strictLocalMode }: Props) {
         </div>
 
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
-          {tab === 'apprentissage' && <LearningTab defaultRegister={defaultRegister} />}
+          {tab === 'apprentissage' && <LearningTab defaultRegister={defaultRegister} onWideChange={setWide} />}
           {tab === 'revision' && <ReviewTab />}
           {tab === 'stats' && <StatsTab />}
           {tab === 'reglages' && <SettingsTab strictLocalMode={strictLocalMode} />}

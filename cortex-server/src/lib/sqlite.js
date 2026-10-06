@@ -465,6 +465,20 @@ export function initSqlite(sqlitePath) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Professeur V2 (PROF-2) — append-only history of every theory / practice
+    -- attempt of a dual-track module. Never updated nor pruned on a new attempt.
+    CREATE TABLE IF NOT EXISTS learning_track_attempts (
+      id TEXT PRIMARY KEY,
+      path_id TEXT NOT NULL,
+      step_id TEXT NOT NULL,
+      track TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      verdict TEXT NOT NULL DEFAULT '{}',
+      passed INTEGER NOT NULL DEFAULT 0,
+      evidence TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS review_items (
       id TEXT PRIMARY KEY,
       source_type TEXT NOT NULL,
@@ -817,6 +831,13 @@ export function initSqlite(sqlitePath) {
     'ALTER TABLE preference_facts ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE preference_facts ADD COLUMN last_used_at TEXT',
     'ALTER TABLE preference_facts ADD COLUMN updated_at TEXT',
+    // Professeur V2 (PROF-2) — additive only. Existing parcours keep
+    // schema_version=1 / mode="standard" / no tracks: they are never rewritten
+    // and keep their historical single-track behaviour (see teacher-legacy.js).
+    'ALTER TABLE learning_paths ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE learning_paths ADD COLUMN mode TEXT NOT NULL DEFAULT "standard"',
+    'ALTER TABLE learning_paths ADD COLUMN profile TEXT',
+    'ALTER TABLE learning_path_steps ADD COLUMN tracks TEXT',
   ]) {
     try { database.exec(col); } catch { /* already exists */ }
   }
@@ -881,6 +902,8 @@ export function initSqlite(sqlitePath) {
       ON learning_paths(status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_learning_path_steps_path_id
       ON learning_path_steps(path_id, step_index ASC);
+    CREATE INDEX IF NOT EXISTS idx_learning_track_attempts_step
+      ON learning_track_attempts(step_id, track, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_review_items_next_review_at
       ON review_items(next_review_at ASC);
     CREATE INDEX IF NOT EXISTS idx_review_items_source
@@ -4753,16 +4776,21 @@ function parseLearningPath(row) {
   if (!row) return null;
   let plan = [];
   try { plan = JSON.parse(row.plan); } catch { plan = []; }
-  return { ...row, plan };
+  // Professeur V2: profile is nullable JSON (rows created before PROF-2 have NULL)
+  let profile = null;
+  if (row.profile != null) { try { profile = JSON.parse(row.profile); } catch { profile = null; } }
+  return { ...row, plan, profile };
 }
 
-export function insertLearningPath({ id, subject, register, teacher_model, status = 'planning', plan = [] }) {
+// schema_version / mode / profile default to the V1 values: every caller that
+// does not ask for a dual-track (V2) parcours keeps creating exactly what it did.
+export function insertLearningPath({ id, subject, register, teacher_model, status = 'planning', plan = [], schema_version = 1, mode = 'standard', profile = null }) {
   if (!database) return;
   const now = new Date().toISOString();
   database.prepare(`
-    INSERT INTO learning_paths (id, subject, register, teacher_model, status, plan, current_step_index, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
-  `).run(id, subject, register, teacher_model, status, JSON.stringify(plan), now, now);
+    INSERT INTO learning_paths (id, subject, register, teacher_model, status, plan, current_step_index, created_at, updated_at, schema_version, mode, profile)
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+  `).run(id, subject, register, teacher_model, status, JSON.stringify(plan), now, now, schema_version, mode, profile == null ? null : JSON.stringify(profile));
 }
 
 export function updateLearningPath(id, updates) {
@@ -4777,6 +4805,7 @@ export function updateLearningPath(id, updates) {
   if (updates.current_step_index  !== undefined) { fields.push('current_step_index = ?');  vals.push(updates.current_step_index); }
   if (updates.completed_at        !== undefined) { fields.push('completed_at = ?');        vals.push(updates.completed_at); }
   if (updates.recap_neuron_id     !== undefined) { fields.push('recap_neuron_id = ?');     vals.push(updates.recap_neuron_id); }
+  if (updates.profile             !== undefined) { fields.push('profile = ?');             vals.push(updates.profile == null ? null : JSON.stringify(updates.profile)); }
   fields.push('updated_at = ?');
   vals.push(new Date().toISOString());
   vals.push(id);
@@ -4798,6 +4827,7 @@ export function getAllLearningPaths({ status } = {}) {
 
 export function deleteLearningPath(id) {
   if (!database) return;
+  database.prepare('DELETE FROM learning_track_attempts WHERE path_id = ?').run(id);
   database.prepare('DELETE FROM learning_path_steps WHERE path_id = ?').run(id);
   database.prepare('DELETE FROM learning_paths WHERE id = ?').run(id);
 }
@@ -4808,16 +4838,19 @@ function parseLearningPathStep(row) {
   if (!row) return null;
   let comprehension_check = [];
   try { comprehension_check = JSON.parse(row.comprehension_check); } catch { comprehension_check = []; }
-  return { ...row, comprehension_check };
+  // Professeur V2: tracks is NULL for single-track (V1) steps — never invented for them
+  let tracks = null;
+  if (row.tracks != null) { try { tracks = JSON.parse(row.tracks); } catch { tracks = null; } }
+  return { ...row, comprehension_check, tracks };
 }
 
-export function insertLearningPathStep({ id, path_id, step_index, title, content = '', status = 'pending', comprehension_check = [] }) {
+export function insertLearningPathStep({ id, path_id, step_index, title, content = '', status = 'pending', comprehension_check = [], tracks = null }) {
   if (!database) return;
   const now = new Date().toISOString();
   database.prepare(`
-    INSERT INTO learning_path_steps (id, path_id, step_index, title, content, status, comprehension_check, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, path_id, step_index, title, content, status, JSON.stringify(comprehension_check), now, now);
+    INSERT INTO learning_path_steps (id, path_id, step_index, title, content, status, comprehension_check, created_at, updated_at, tracks)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, path_id, step_index, title, content, status, JSON.stringify(comprehension_check), now, now, tracks == null ? null : JSON.stringify(tracks));
 }
 
 export function updateLearningPathStep(id, updates) {
@@ -4828,6 +4861,7 @@ export function updateLearningPathStep(id, updates) {
   if (updates.content              !== undefined) { fields.push('content = ?');              vals.push(updates.content); }
   if (updates.status               !== undefined) { fields.push('status = ?');               vals.push(updates.status); }
   if (updates.comprehension_check  !== undefined) { fields.push('comprehension_check = ?');  vals.push(JSON.stringify(updates.comprehension_check)); }
+  if (updates.tracks               !== undefined) { fields.push('tracks = ?');               vals.push(updates.tracks == null ? null : JSON.stringify(updates.tracks)); }
   fields.push('updated_at = ?');
   vals.push(new Date().toISOString());
   vals.push(id);
@@ -4842,6 +4876,29 @@ export function getStepsByPathId(pathId) {
 export function getLearningPathStepById(id) {
   if (!database) return null;
   return parseLearningPathStep(database.prepare('SELECT * FROM learning_path_steps WHERE id = ?').get(id));
+}
+
+// ── Module Professeur V2 — historique des tentatives (ajout seul) ─────────────
+
+export function insertTrackAttempt({ id, path_id, step_id, track, payload = {}, verdict = {}, passed = false, evidence = null }) {
+  if (!database) return;
+  database.prepare(`
+    INSERT INTO learning_track_attempts (id, path_id, step_id, track, payload, verdict, passed, evidence, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, path_id, step_id, track, JSON.stringify(payload), JSON.stringify(verdict), passed ? 1 : 0, evidence, new Date().toISOString());
+}
+
+export function getTrackAttempts(stepId, track) {
+  if (!database) return [];
+  const rows = track
+    ? database.prepare('SELECT * FROM learning_track_attempts WHERE step_id = ? AND track = ? ORDER BY created_at ASC, rowid ASC').all(stepId, track)
+    : database.prepare('SELECT * FROM learning_track_attempts WHERE step_id = ? ORDER BY created_at ASC, rowid ASC').all(stepId);
+  return rows.map(r => {
+    let payload = {}; let verdict = {};
+    try { payload = JSON.parse(r.payload); } catch { payload = {}; }
+    try { verdict = JSON.parse(r.verdict); } catch { verdict = {}; }
+    return { ...r, payload, verdict, passed: r.passed === 1 };
+  });
 }
 
 // ── Module Professeur — révision espacée ──────────────────────────────────────

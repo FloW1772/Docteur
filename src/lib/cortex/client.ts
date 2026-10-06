@@ -2218,6 +2218,127 @@ export interface TeacherStats {
   paths_abandoned: number;
 }
 
+// ── [Professeur V2 — PROF-2] dual-track (théorie + pratique) — additive types, existing ones untouched ──────────
+export type TeacherTrackName = 'theory' | 'practice';
+export type TeacherTrackState = 'LOCKED' | 'ACTIVE' | 'PASSED' | 'REMEDIATION';
+export type TeacherPracticeEvidence = 'VERIFIED' | 'MODEL_ASSESSED' | 'SELF_REPORTED';
+export interface TeacherVerdict {
+  passed: boolean;
+  score: number;
+  criteria: { name: string; met: boolean; comment?: string }[];
+  feedback: string;
+  inconsistent?: true;
+  invalid?: true;
+  selfReported?: true;
+}
+export interface TeacherTracks {
+  version: number;
+  theory: { state: TeacherTrackState; evaluation: { kind: string }; lastVerdict: TeacherVerdict | null; passedAt: string | null; attempts: number };
+  practice: {
+    state: TeacherTrackState;
+    spec: { kind: string; instructions: string; checklist?: string[]; rubric?: string[]; generated?: boolean };
+    evidence: TeacherPracticeEvidence | null; lastVerdict: TeacherVerdict | null; passedAt: string | null; attempts: number;
+  };
+}
+/** What the server returns for any parcours (V1 rows have schema_version 1, legacy true, no tracks). */
+export type DualTrackLearningPath = LearningPath & { schema_version: number; mode: string; profile: unknown; legacy: boolean };
+export type DualTrackLearningStep = LearningPathStep & {
+  tracks: TeacherTracks | null;
+  legacy: boolean;
+  track_view: TeacherTracks | { theory: { state: TeacherTrackState; source: string }; practice: { state: 'NOT_APPLICABLE' } } | null;
+};
+export interface TeacherEvaluationResult {
+  evaluated: boolean;
+  verdict: TeacherVerdict;
+  can_advance: boolean;
+  path: DualTrackLearningPath;
+  steps: DualTrackLearningStep[];
+}
+export interface TeacherTrackAttempt {
+  id: string; path_id: string; step_id: string; track: TeacherTrackName;
+  payload: Record<string, unknown>; verdict: TeacherVerdict; passed: boolean; evidence: TeacherPracticeEvidence | null; created_at: string;
+}
+// ── [/Professeur V2 — PROF-2] ─────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Professeur V2 — PROF-3] UI théorie / pratique — additive types ────────────────────────────────────────────────
+export type TeacherPracticeMode = 'self_report' | 'deliverable';
+export interface TeacherPracticeSpecResult {
+  generated: boolean;
+  cached?: boolean;
+  reason?: string;
+  path: DualTrackLearningPath;
+  steps: DualTrackLearningStep[];
+}
+export interface TeacherDualTrackAdvanceResult { path: DualTrackLearningPath; steps: DualTrackLearningStep[]; finished: boolean }
+// ── [/Professeur V2 — PROF-3] ─────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Professeur V2 — PROF-4] remédiation ciblée + historique — additive types ──────────────────────────────────────
+export interface TeacherRemediation { focus: string; why: string; retry: string; source: 'model' | 'criteria' | 'checklist' }
+// Declaration merging: a failing verdict may carry a targeted remediation (advisory, never changes `passed`).
+export interface TeacherVerdict { remediation?: TeacherRemediation }
+/** Learner-facing view of one stored attempt (GET …/attempts). `verdict` is null and `corrupted` true for an unreadable row. */
+export interface TeacherAttemptView {
+  id: string | null;
+  track: TeacherTrackName | null;
+  index: number;
+  created_at: string | null;
+  passed: boolean;
+  evidence: TeacherPracticeEvidence | null;
+  payload: { answer?: string; mode?: 'self_report' | 'deliverable'; submission?: string; confirmations?: boolean[]; note?: string; checkin?: SportCheckin };
+  verdict: TeacherVerdict | null;
+  corrupted?: true;
+}
+// ── [/Professeur V2 — PROF-4] ─────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Professeur V2 — PROF-5] Sport Coach — additive types ─────────────────────────────────────────────────────────
+export interface SportProfileInput {
+  goal: string; goal_custom?: string; level: string; sport_history?: string;
+  locations: string[]; equipment: string[]; custom_equipment?: string[];
+  sessions_per_week: number; session_minutes: number; weeks?: number; days: string[];
+  preferences?: string; liked?: string[]; disliked?: string[];
+  limitations?: { declared?: string; areas?: string[] };
+  pain?: { present: boolean; areas?: string[]; intensity?: number; worsening?: boolean };
+  age?: number | null; progression?: string;
+}
+export interface SportOptions {
+  goals: string[]; levels: string[]; locations: string[]; equipment: string[]; areas: string[]; days: string[]; progression: string[];
+  labels: Record<'goals' | 'levels' | 'locations' | 'equipment' | 'areas' | 'progression', Record<string, string>>;
+  limits: { sessionsPerWeek: [number, number]; sessionMinutes: [number, number]; weeks: [number, number]; maxSessions: number; age: [number, number]; painStop: number };
+}
+export interface SportExercise {
+  id: string | null; name: string; pattern: string; type: 'reps' | 'duration'; equipment: string[]; areas: string[];
+  sets: number; reps: number | null; duration_sec: number | null; rest_sec: number; tempo: string | null; rpe: number;
+  cues: string[]; mistakes: string[]; easier: string | null; harder: string | null;
+  substitution: { name: string; equipment: string[] } | null; note?: string;
+}
+export interface SportSession {
+  index: number; week: number; day: string; template: string; title: string; summary: string;
+  warmup: { name: string; duration_sec: number }[]; exercises: SportExercise[]; cooldown: { name: string; duration_sec: number }[];
+  estimated_minutes: number;
+}
+export interface SportProgram {
+  source: 'model' | 'catalog'; fallback_reason: string | null; youth: boolean; excluded_areas: string[]; notice: string | null;
+  sessions?: SportSession[]; session_count?: number;
+}
+export interface SportPathProfile { version: number; athlete: SportProfileInput; program: SportProgram }
+export interface SportCreateError extends Error { code?: string; errors?: { field: string; code: string }[] }
+// ── [/Professeur V2 — PROF-5] ─────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Professeur V2 — PROF-6] Sport Coach adaptation — additive types ──────────────────────────────────────────────
+export interface SportCheckin {
+  completed: boolean; rpe: number | null; unusual_pain: boolean; pain_areas: string[]; pain_worsening: boolean;
+  technique_confidence: number; energy: number; unavailable_equipment: string[]; comment: string;
+}
+export interface SportAdaptation {
+  id: string; at: string; kind: 'adjust' | 'observe' | 'pause'; rule: string; reason: string; after_session_index: number;
+  changes: { session_index: number; exercise: string; field: string; from: unknown; to: unknown }[]; summary?: string[]; rejected?: number;
+}
+export interface SportPause { reason: string; at: string; after_session_index: number }
+export interface SportProgramState { adaptations?: SportAdaptation[]; pause?: SportPause | null; excluded_areas?: string[]; unavailable_equipment?: string[] }
+export type SportProgramWithState = SportProgram & SportProgramState;
+export interface SportLoopResult { decision: { kind: 'adjust' | 'observe' | 'pause' | 'none'; rule: string; reason: string }; adaptation: SportAdaptation | null; pause: SportPause | null }
+// ── [/Professeur V2 — PROF-6] ─────────────────────────────────────────────────────────────────────────────────────
+
 export type RassilonWorkerState = 'DISABLED' | 'IDLE' | 'WORKING' | 'PAUSED' | 'AUTO_PAUSED' | 'ERROR';
 
 export interface RassilonSettings {
@@ -6140,4 +6261,105 @@ export const cortexClient = {
     const res = await apiFetch('/api/teacher/stats', { method: 'GET' });
     return await res.json() as TeacherStats;
   },
+
+  // ── [Professeur V2 — PROF-2] dual-track endpoints (the UI arrives in PROF-3) ──────────────────────────────────
+  async createDualTrackLearningPath(subject: string, register: TeacherRegister): Promise<{ path: DualTrackLearningPath; model_used: string; forced_local: boolean }> {
+    const res = await apiFetch('/api/teacher/paths', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, register, schema_version: 2 }),
+    }, 60_000);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  },
+
+  async submitTheoryAnswer(pathId: string, stepId: string, answer: string): Promise<TeacherEvaluationResult> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/theory/answer`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer }),
+    }, 60_000);
+    const data = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+
+  async submitPractice(pathId: string, stepId: string, submission: { mode: 'self_report'; confirmations: boolean[]; note?: string } | { mode: 'deliverable'; submission: string }): Promise<TeacherEvaluationResult> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/practice/submit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(submission),
+    }, 60_000);
+    const data = await res.json();
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+
+  async getTrackAttempts(pathId: string, stepId: string, track?: TeacherTrackName): Promise<{ attempts: TeacherTrackAttempt[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/attempts${track ? `?track=${track}` : ''}`, { method: 'GET' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  },
+  // ── [/Professeur V2 — PROF-2] ─────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Professeur V2 — PROF-3] exercice pratique généré + avance contrôlée (erreurs du verrou serveur remontées) ──
+  async generatePracticeSpec(pathId: string, stepId: string): Promise<TeacherPracticeSpecResult> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/practice/spec`, { method: 'POST' }, 60_000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+
+  async advanceDualTrackStep(pathId: string, stepId: string): Promise<TeacherDualTrackAdvanceResult> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/advance`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+  // ── [/Professeur V2 — PROF-3] ─────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Professeur V2 — PROF-4] historique des tentatives (lecture seule) ────────────────────────────────────────
+  async getTrackHistory(pathId: string, stepId: string): Promise<{ attempts: TeacherAttemptView[] }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/attempts`, { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+  // ── [/Professeur V2 — PROF-4] ─────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Professeur V2 — PROF-5] Sport Coach ──────────────────────────────────────────────────────────────────────
+  async getSportOptions(): Promise<SportOptions> {
+    const res = await apiFetch('/api/teacher/sport/options', { method: 'GET' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  },
+
+  async createSportPath(register: TeacherRegister, profile: SportProfileInput): Promise<{ path: DualTrackLearningPath; program_source: 'model' | 'catalog'; fallback_reason: string | null }> {
+    const res = await apiFetch('/api/teacher/sport/paths', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ register, profile }),
+    }, 90_000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code, errors: data.errors }) as SportCreateError;
+    return data;
+  },
+  // ── [/Professeur V2 — PROF-5] ─────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Professeur V2 — PROF-6] séance déclarée + check-in, reprise après pause ──────────────────────────────────
+  async submitWorkout(pathId: string, stepId: string, body: { confirmations: boolean[]; note?: string; checkin: Omit<SportCheckin, 'comment' | 'pain_worsening' | 'unavailable_equipment' | 'pain_areas'> & Partial<SportCheckin> }): Promise<TeacherEvaluationResult & { sport?: SportLoopResult }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/steps/${stepId}/practice/submit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'self_report', ...body }),
+    }, 60_000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code, errors: data.errors }) as SportCreateError;
+    return data;
+  },
+
+  async resumeSport(pathId: string): Promise<{ path: DualTrackLearningPath; steps: DualTrackLearningStep[]; sport: { adaptation: SportAdaptation | null; pause: null } }> {
+    const res = await apiFetch(`/api/teacher/paths/${pathId}/sport/resume`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ no_pain: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.code });
+    return data;
+  },
+  // ── [/Professeur V2 — PROF-6] ─────────────────────────────────────────────────────────────────────────────────
 };

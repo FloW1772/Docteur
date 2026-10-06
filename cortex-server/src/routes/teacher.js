@@ -11,7 +11,29 @@ import {
   insertLearningPathStep, updateLearningPathStep, getStepsByPathId, getLearningPathStepById,
   insertReviewItem, updateReviewItem, getReviewItemById, getDueReviewItems, countDueReviewItems,
   insertReviewAttempt, getReviewStats, deleteReviewItem,
+  insertTrackAttempt, getTrackAttempts,
 } from '../lib/sqlite.js';
+import {
+  createTracks, canAdvance, canAttempt, applyVerdict, activateTracks, deriveStepStatus, EVIDENCE, TRACK_NAMES,
+  allowedPracticeModes, canReplacePracticeSpec, PRACTICE_MODES,
+} from '../lib/teacher-progress.js';
+import {
+  validateVerdict, invalidEvaluationVerdict, buildTheoryEvaluationPrompt, buildPracticeAssessmentPrompt,
+  selfReportVerdict, deterministicPracticeCheck, validatePracticeSpec, buildPracticeSpecPrompt, withRemediation,
+} from '../lib/teacher-evaluation.js';
+import { isDualTrackPath, presentPath, presentStep, SCHEMA_V1, SCHEMA_V2 } from '../lib/teacher-legacy.js';
+import { presentHistory } from '../lib/teacher-history.js';
+import {
+  validateSportProfile, screenSportProfile, isYouthContext, SPORT_GOALS, SPORT_LEVELS, SPORT_LOCATIONS, SPORT_EQUIPMENT,
+  BODY_AREAS, WEEK_DAYS, PROGRESSION_PACES, SPORT_LABELS, LIMITS as SPORT_LIMITS,
+} from '../lib/sport-profile.js';
+import {
+  sportContext, catalogTemplates, validateModelTemplates, buildSportProgramPrompt, expandProgram, workoutPracticeSpec,
+  buildSportLessonPrompt, deterministicSportLesson, sportSafetyScan,
+} from '../lib/sport-program.js';
+import {
+  validateCheckin, programContext, sessionTargetRpe, decideAdaptation, adaptSession, describeChanges,
+} from '../lib/sport-adaptation.js';
 import { normalizeTeacherRegister, teacherRegisterInstruction, TEACHER_REGISTERS, TEACHER_REGISTER_LABELS } from '../lib/teacher-register.js';
 import { isStrictLocalMode } from '../lib/strict-local.js';
 import { ErrorCategory } from '../lib/provider-errors.js';
@@ -414,6 +436,20 @@ function computeNextSchedule({ ease_factor, interval_days }, wasCorrect) {
   return { ease_factor: Math.max(ease_factor - 0.2, 1.3), interval_days: 1 };
 }
 
+// Professeur V2 — every parcours response goes through the compatibility layer: stored fields are returned unchanged,
+// plus schema_version / mode / legacy on the path and a read-only track_view on each step (V1: practice NOT_APPLICABLE).
+function pathWithSteps(pathId) {
+  const path = getLearningPathById(pathId);
+  return { path: presentPath(path), steps: getStepsByPathId(pathId).map(s => presentStep(path, s)) };
+}
+
+// PROF-5: the list endpoint never ships whole Sport Coach programs (the detail endpoint does)
+function compactSportProfile(path) {
+  if (path?.mode !== 'sport' || !path.profile?.program) return path;
+  const { templates, sessions, ...program } = path.profile.program;
+  return { ...path, profile: { ...path.profile, program: { ...program, session_count: Array.isArray(sessions) ? sessions.length : 0 } } };
+}
+
 function addDays(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
@@ -585,12 +621,63 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     registers: TEACHER_REGISTERS.map(r => ({ id: r, label: TEACHER_REGISTER_LABELS[r] })),
   }));
 
+  // ── PROF-5 Sport Coach — options + création d'un programme ─────────────────────────────────────────────
+  route.get('/teacher/sport/options', (c) => c.json({
+    goals: SPORT_GOALS, levels: SPORT_LEVELS, locations: SPORT_LOCATIONS, equipment: SPORT_EQUIPMENT, areas: BODY_AREAS,
+    days: WEEK_DAYS, progression: PROGRESSION_PACES, labels: SPORT_LABELS, limits: SPORT_LIMITS,
+  }));
+
+  route.post('/teacher/sport/paths', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const register = normalizeTeacherRegister(body?.register ?? getTeacherSettings().defaultRegister);
+    const checked = validateSportProfile(body?.profile);
+    if (!checked.ok) return c.json({ error: 'Profil sportif incomplet ou invalide.', code: 'SPORT_PROFILE_INVALID', errors: checked.errors }, 400);
+    const profile = checked.profile;
+    const screen = screenSportProfile(profile);
+    if (!screen.allowed) return c.json({ error: screen.message, code: screen.code }, 422);
+
+    const youth = isYouthContext(profile, register);
+    const ctx = sportContext(profile, { excludedAreas: screen.excludedAreas, youth });
+    let templates = null; let source = 'model'; let fallbackReason = null; let modelUsed = null;
+    try {
+      const { result, parsed } = await callTeacherModelForJson({
+        messages: buildSportProgramPrompt({ profile, ctx, registerInstruction: teacherRegisterInstruction(register) }),
+        ollamaClient, logger, label: 'sport program',
+      });
+      modelUsed = result.model;
+      const v = parsed === null ? { ok: false, reason: 'not_json' } : validateModelTemplates(parsed, ctx);
+      if (v.ok) templates = v.templates; else fallbackReason = v.reason;
+    } catch (err) {
+      logger?.warn({ err: err.message }, 'teacher: sport program generation failed — catalog program used');
+      fallbackReason = err.isQuota ? 'quota' : 'provider_unavailable';
+    }
+    if (!templates) { templates = catalogTemplates(ctx); source = 'catalog'; }
+    if (templates.some(t => t.exercises.length < ctx.bounds.exercises[0])) {
+      return c.json({ error: 'Aucune séance complète n’est possible avec ces contraintes (matériel, lieu, zones à épargner). Élargis le matériel ou le lieu.', code: 'SPORT_NO_FEASIBLE_PROGRAM' }, 422);
+    }
+    const sessions = expandProgram(templates, ctx);
+    const id = crypto.randomUUID();
+    const goalLabel = profile.goal === 'libre' ? profile.goal_custom : SPORT_LABELS.goals[profile.goal];
+    insertLearningPath({
+      id, subject: `Sport Coach — ${goalLabel}`, register, teacher_model: modelUsed ?? 'catalog', status: 'planning',
+      plan: sessions.map(s => ({ title: s.title, summary: s.summary })), schema_version: SCHEMA_V2, mode: 'sport',
+      profile: {
+        version: 1, athlete: profile,
+        program: { source, fallback_reason: fallbackReason, youth, excluded_areas: screen.excludedAreas, notice: screen.notice, templates, sessions },
+      },
+    });
+    return c.json({ path: presentPath(getLearningPathById(id)), program_source: source, fallback_reason: fallbackReason }, 201);
+  });
+
   // ── Parcours — création (plan) ────────────────────────────────────────
   route.post('/teacher/paths', async (c) => {
     const body = await c.req.json().catch(() => null);
     const subject = String(body?.subject ?? '').trim();
     if (!subject) return c.json({ error: 'subject requis' }, 400);
     const register = normalizeTeacherRegister(body?.register ?? getTeacherSettings().defaultRegister);
+    // Professeur V2: dual-track parcours are opt-in (schema_version: 2). Without it, exactly the historical V1 parcours.
+    const schemaVersion = body?.schema_version === undefined ? SCHEMA_V1 : Number(body.schema_version);
+    if (schemaVersion !== SCHEMA_V1 && schemaVersion !== SCHEMA_V2) return c.json({ error: 'schema_version doit valoir 1 ou 2' }, 400);
 
     let planResult;
     let plan;
@@ -622,10 +709,11 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       teacher_model: planResult.model,
       status: 'planning',
       plan: cleanPlan,
+      schema_version: schemaVersion,
     });
 
     return c.json({
-      path: getLearningPathById(id),
+      path: presentPath(getLearningPathById(id)),
       model_used: planResult.model,
       forced_local: planResult.forcedLocal,
       requested_provider: planResult.requestedProvider,
@@ -640,6 +728,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     const path = getLearningPathById(id);
     if (!path) return c.json({ error: 'Parcours introuvable' }, 404);
     if (path.status !== 'planning') return c.json({ error: 'Le plan ne peut plus être modifié — le parcours a déjà commencé' }, 409);
+    if (path.mode === 'sport') return c.json({ error: 'Le programme Sport Coach se modifie en recréant un profil, pas séance par séance.', code: 'SPORT_PLAN_LOCKED' }, 409);
 
     const body = await c.req.json().catch(() => null);
     const plan = Array.isArray(body?.plan) ? body.plan : null;
@@ -660,6 +749,11 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     if (path.status !== 'planning') return c.json({ error: 'Ce parcours a déjà démarré' }, 409);
     if (!path.plan?.length) return c.json({ error: 'Le plan est vide' }, 400);
 
+    const dualTrack = isDualTrackPath(path);
+    const sportSessions = path.mode === 'sport' ? path.profile?.program?.sessions : null;
+    if (path.mode === 'sport' && (!Array.isArray(sportSessions) || sportSessions.length !== path.plan.length)) {
+      return c.json({ error: 'Programme Sport Coach introuvable ou incohérent.', code: 'SPORT_PROGRAM_MISSING' }, 409);
+    }
     path.plan.forEach((step, index) => {
       insertLearningPathStep({
         id: crypto.randomUUID(),
@@ -667,23 +761,25 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         step_index: index,
         title: step.title,
         status: index === 0 ? 'active' : 'pending',
+        // V2 only: theory + practice tracks, the first module unlocked, the others LOCKED. V1 steps get none.
+        ...(dualTrack ? { tracks: createTracks({ active: index === 0, planStep: step, ...(sportSessions ? { practiceSpec: workoutPracticeSpec(sportSessions[index]) } : {}) }) } : {}),
       });
     });
 
     updateLearningPath(id, { status: 'active', current_step_index: 0 });
-    return c.json({ path: getLearningPathById(id), steps: getStepsByPathId(id) });
+    return c.json(pathWithSteps(id));
   });
 
   // ── Parcours — liste et détail ───────────────────────────────────────
   route.get('/teacher/paths', (c) => {
     const status = c.req.query('status') || undefined;
-    return c.json({ paths: getAllLearningPaths({ status }) });
+    return c.json({ paths: getAllLearningPaths({ status }).map(p => presentPath(compactSportProfile(p))) });
   });
 
   route.get('/teacher/paths/:id', (c) => {
     const path = getLearningPathById(c.req.param('id'));
     if (!path) return c.json({ error: 'Parcours introuvable' }, 404);
-    return c.json({ path, steps: getStepsByPathId(path.id) });
+    return c.json(pathWithSteps(path.id));
   });
 
   route.delete('/teacher/paths/:id', (c) => {
@@ -707,8 +803,37 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     const step = getLearningPathStepById(c.req.param('stepId'));
     if (!step || step.path_id !== path.id) return c.json({ error: 'Étape introuvable' }, 404);
 
+    // V2 steps go through the presentation layer (PROF-3: never expose a server-side expected answer); V1 unchanged.
+    const respondStep = (s) => (isDualTrackPath(path) ? presentStep(path, s) : s);
     if (step.content) {
-      return c.json({ step, model_used: path.teacher_model, cached: true });
+      return c.json({ step: respondStep(step), model_used: path.teacher_model, cached: true });
+    }
+
+    // PROF-5 Sport Coach: the theory of a session explains it (goal, why, technique, RPE, general safety). The model
+    // text is scanned in code; unsafe or unavailable → deterministic lesson built from the validated session.
+    if (path.mode === 'sport') {
+      const session = path.profile?.program?.sessions?.[step.step_index];
+      if (!session) return c.json({ error: 'Séance introuvable dans le programme.', code: 'SPORT_PROGRAM_MISSING' }, 409);
+      let text = null; let lessonSource = 'model'; let result = null;
+      try {
+        result = await callTeacherModel({
+          messages: buildSportLessonPrompt({ session, registerInstruction: teacherRegisterInstruction(path.register), youth: path.profile?.program?.youth === true }),
+          ollamaClient,
+        });
+        text = String(result.text ?? '').trim();
+      } catch (err) {
+        if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+        logger?.warn({ err: err.message }, 'teacher: sport lesson failed — deterministic lesson used');
+      }
+      const unsafe = text ? sportSafetyScan(text) : null;
+      if (!text || unsafe) { text = deterministicSportLesson(session); lessonSource = unsafe ? 'catalog_unsafe_model_output' : 'catalog'; }
+      updateLearningPathStep(step.id, { content: text });
+      return c.json({
+        step: respondStep(getLearningPathStepById(step.id)),
+        model_used: result?.model ?? 'catalog', forced_local: result?.forcedLocal ?? false, lesson_source: lessonSource,
+        requested_provider: result?.requestedProvider ?? null, fallback_reason_code: result?.fallbackReasonCode ?? null, fallback_reason: result?.fallbackReasonLabel ?? null,
+        sources_used: [],
+      });
     }
 
     const neurons = await findRelevantNeurons(services, `${path.subject} — ${step.title}`);
@@ -728,7 +853,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
 
     updateLearningPathStep(step.id, { content: result.text.trim() });
     return c.json({
-      step: getLearningPathStepById(step.id),
+      step: respondStep(getLearningPathStepById(step.id)),
       model_used: result.model,
       forced_local: result.forcedLocal,
       // Never let the UI imply the originally-selected cloud provider
@@ -753,6 +878,10 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     if (!path) return c.json({ error: 'Parcours introuvable' }, 404);
     const step = getLearningPathStepById(c.req.param('stepId'));
     if (!step || step.path_id !== path.id) return c.json({ error: 'Étape introuvable' }, 404);
+    // V2: the free-text "VALIDÉ" rule must never validate a dual-track module (it also matched "non VALIDÉ").
+    if (isDualTrackPath(path)) {
+      return c.json({ error: 'Parcours théorie + pratique : utilise les évaluations dédiées (theory/answer, practice/submit).', code: 'USE_DUAL_TRACK_ENDPOINTS' }, 409);
+    }
 
     const body = await c.req.json().catch(() => null);
     const userAnswer = String(body?.answer ?? '').trim();
@@ -806,18 +935,36 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     const step = steps.find(s => s.id === c.req.param('stepId'));
     if (!step) return c.json({ error: 'Étape introuvable' }, 404);
 
+    const dualTrack = isDualTrackPath(path);
+    // V2 SERVER GATE (no UI can bypass it): the next module unlocks only when theory AND practice are both passed.
+    // V1 parcours keep their historical behaviour unchanged.
+    if (path.mode === 'sport' && path.profile?.program?.pause) {
+      return c.json({ error: 'Programme en pause (douleur signalée) : reprends seulement quand la douleur a disparu.', code: 'SPORT_PAUSED_FOR_PAIN', pause: path.profile.program.pause }, 409);
+    }
+    if (dualTrack && !canAdvance(step)) {
+      return c.json({
+        error: 'Module non validé : la théorie ET la pratique doivent être réussies avant de passer au suivant.',
+        code: 'TRACKS_NOT_PASSED',
+        theory: step.tracks?.theory?.state ?? null,
+        practice: step.tracks?.practice?.state ?? null,
+      }, 409);
+    }
+
     updateLearningPathStep(step.id, { status: 'done' });
     const nextIndex = step.step_index + 1;
     const nextStep = steps.find(s => s.step_index === nextIndex);
 
     if (!nextStep) {
       updateLearningPath(path.id, { status: 'completed', completed_at: new Date().toISOString(), current_step_index: step.step_index });
-      return c.json({ path: getLearningPathById(path.id), steps: getStepsByPathId(path.id), finished: true });
+      return c.json({ ...pathWithSteps(path.id), finished: true });
     }
 
-    updateLearningPathStep(nextStep.id, { status: 'active' });
+    updateLearningPathStep(nextStep.id, {
+      status: 'active',
+      ...(dualTrack && nextStep.tracks ? { tracks: activateTracks(nextStep.tracks) } : {}),
+    });
     updateLearningPath(path.id, { current_step_index: nextIndex });
-    return c.json({ path: getLearningPathById(path.id), steps: getStepsByPathId(path.id), finished: false });
+    return c.json({ ...pathWithSteps(path.id), finished: false });
   });
 
   route.post('/teacher/paths/:id/steps/:stepId/back', (c) => {
@@ -834,7 +981,259 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     updateLearningPathStep(step.id, { status: 'pending' });
     updateLearningPathStep(prevStep.id, { status: 'active' });
     updateLearningPath(path.id, { current_step_index: prevIndex, status: 'active' });
-    return c.json({ path: getLearningPathById(path.id), steps: getStepsByPathId(path.id) });
+    // V2: going back never resets any track (passed stays passed — the gate re-checks on the next /advance)
+    return c.json(pathWithSteps(path.id));
+  });
+
+  // ── Professeur V2 — évaluations par voie (théorie / pratique) ───────────────────────────────────────────────
+  const TRACK_ERROR_LABELS = {
+    TRACK_LOCKED: 'Ce module n\'est pas encore débloqué.',
+    TRACK_ALREADY_PASSED: 'Cette voie est déjà validée pour ce module.',
+    SPEC_FROZEN: 'L\'exercice ne peut plus changer : une tentative a déjà été enregistrée.',
+    SPEC_NOT_DEFAULT: 'Cet exercice est déjà défini et ne sera pas remplacé.',
+  };
+
+  function loadDualTrackStep(c) {
+    const path = getLearningPathById(c.req.param('id'));
+    if (!path) return { error: c.json({ error: 'Parcours introuvable' }, 404) };
+    const step = getLearningPathStepById(c.req.param('stepId'));
+    if (!step || step.path_id !== path.id) return { error: c.json({ error: 'Étape introuvable' }, 404) };
+    if (!isDualTrackPath(path) || !step.tracks) return { error: c.json({ error: 'Ce parcours n\'a pas de voies théorie / pratique.', code: 'NOT_DUAL_TRACK' }, 409) };
+    return { path, step };
+  }
+
+  // One evaluation = one appended attempt. A valid verdict moves ONLY its own track (teacher-progress.applyVerdict);
+  // an unusable model output is recorded as such and changes nothing (fail closed, never "passed").
+  // PROF-4: a failing verdict carries a targeted remediation (model-provided if valid, else deterministic).
+  function recordEvaluation({ path, step, track, payload, checked: rawChecked, evidence, rawRemediation }) {
+    const checked = rawChecked.ok ? { ...rawChecked, verdict: withRemediation(rawChecked.verdict, { track, rawRemediation }) } : rawChecked;
+    if (!checked.ok) {
+      const verdict = invalidEvaluationVerdict(checked.reason);
+      insertTrackAttempt({ id: crypto.randomUUID(), path_id: path.id, step_id: step.id, track, payload, verdict, passed: false, evidence });
+      return { evaluated: false, verdict, can_advance: canAdvance(step), ...pathWithSteps(path.id) };
+    }
+    const tracks = applyVerdict(step.tracks, track, checked.verdict, { evidence });
+    updateLearningPathStep(step.id, { tracks, status: deriveStepStatus({ tracks }, { isCurrent: step.step_index === path.current_step_index }) });
+    insertTrackAttempt({ id: crypto.randomUUID(), path_id: path.id, step_id: step.id, track, payload, verdict: checked.verdict, passed: checked.verdict.passed, evidence });
+    return { evaluated: true, verdict: checked.verdict, can_advance: canAdvance({ tracks }), ...pathWithSteps(path.id) };
+  }
+
+  function evaluationFailure(c, err, label) {
+    logger?.warn({ err: err.message, stack: err.stack }, `teacher: ${label} failed`);
+    if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+    return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
+  }
+
+  route.post('/teacher/paths/:id/steps/:stepId/theory/answer', async (c) => {
+    const ctx = loadDualTrackStep(c);
+    if (ctx.error) return ctx.error;
+    const { path, step } = ctx;
+    const allowed = canAttempt(step.tracks, 'theory');
+    if (!allowed.ok) return c.json({ error: TRACK_ERROR_LABELS[allowed.code] ?? allowed.code, code: allowed.code }, 409);
+    const body = await c.req.json().catch(() => null);
+    const answer = String(body?.answer ?? '').trim();
+    if (!answer) return c.json({ error: 'answer requis' }, 400);
+    if (answer.length > 8000) return c.json({ error: 'Réponse trop longue (8000 caractères maximum).' }, 400);
+
+    let parsed;
+    try {
+      ({ parsed } = await callTeacherModelForJson({
+        messages: buildTheoryEvaluationPrompt({
+          subject: path.subject, registerInstruction: teacherRegisterInstruction(path.register), stepTitle: step.title,
+          question: step.content ? step.content.slice(-1500) : '', userAnswer: answer,
+        }),
+        ollamaClient, logger, label: 'theory evaluation',
+      }));
+    } catch (err) { return evaluationFailure(c, err, 'theory evaluation'); }
+
+    let checked = parsed === null ? { ok: false, reason: 'not_json' } : validateVerdict(parsed);
+    // PROF-6: in Sport Coach, an evaluation that tells to push through pain, diagnoses or prescribes is refused in code
+    if (path.mode === 'sport' && checked.ok && sportSafetyScan(JSON.stringify({ v: checked.verdict, r: parsed?.remediation ?? null }))) {
+      checked = { ok: false, reason: 'unsafe_output' };
+    }
+    return c.json(recordEvaluation({ path, step, track: 'theory', payload: { answer }, checked, evidence: null, rawRemediation: parsed?.remediation }));
+  });
+
+  // Practice: the server alone decides the evidence — a client-supplied "evidence" is never read.
+  //   mode "self_report"  → checklist confirmations, SELF_REPORTED (never upgraded to VERIFIED)
+  //   mode "deliverable"  → deterministic check if the spec has a server-side expected result (VERIFIED),
+  //                         otherwise a structured model verdict on the submitted text (MODEL_ASSESSED)
+  route.post('/teacher/paths/:id/steps/:stepId/practice/submit', async (c) => {
+    const ctx = loadDualTrackStep(c);
+    if (ctx.error) return ctx.error;
+    const { path, step } = ctx;
+    const allowed = canAttempt(step.tracks, 'practice');
+    if (!allowed.ok) return c.json({ error: TRACK_ERROR_LABELS[allowed.code] ?? allowed.code, code: allowed.code }, 409);
+    const body = await c.req.json().catch(() => null);
+    const spec = step.tracks.practice.spec;
+    // PROF-3: the spec decides how it can be validated (e.g. a checkable result can't be merely self-declared).
+    if (PRACTICE_MODES.includes(body?.mode) && !allowedPracticeModes(spec).includes(body.mode)) {
+      return c.json({ error: 'Ce type d\'exercice ne se valide pas de cette façon.', code: 'PRACTICE_MODE_NOT_ALLOWED', allowed_modes: allowedPracticeModes(spec) }, 409);
+    }
+
+    if (body?.mode === 'self_report') {
+      let checked = selfReportVerdict(spec, body.confirmations);
+      if (!checked.ok) return c.json({ error: 'confirmations : un booléen par point de la checklist est requis.', code: checked.reason }, 400);
+      const note = String(body.note ?? '').slice(0, 2000);
+      // PROF-6 Sport Coach: every workout declaration carries a check-in (validated) — it drives the adaptation loop
+      let checkin = null;
+      if (spec?.kind === 'workout') {
+        const v = validateCheckin(body.checkin);
+        if (!v.ok) return c.json({ error: 'Check-in de séance incomplet ou invalide.', code: 'SPORT_CHECKIN_INVALID', errors: v.errors }, 400);
+        checkin = v.checkin;
+        if (!checkin.completed) {
+          checked = { ok: true, verdict: { ...checked.verdict, passed: false, feedback: 'Séance non terminée : refais-la quand tu peux, en version allégée si besoin.' } };
+        }
+      }
+      const result = recordEvaluation({ path, step, track: 'practice', payload: { mode: 'self_report', confirmations: body.confirmations, ...(note ? { note } : {}), ...(checkin ? { checkin } : {}) }, checked, evidence: EVIDENCE.SELF_REPORTED });
+      if (!checkin || path.mode !== 'sport') return c.json(result);
+      const sport = runSportAdaptation(path.id);
+      return c.json({ ...result, ...pathWithSteps(path.id), sport });
+    }
+
+    if (body?.mode === 'deliverable') {
+      const submission = String(body.submission ?? '').trim();
+      if (!submission) return c.json({ error: 'submission requis' }, 400);
+      if (submission.length > 20000) return c.json({ error: 'Livrable trop long (20000 caractères maximum).' }, 400);
+      const deterministic = deterministicPracticeCheck(spec, submission);
+      if (deterministic) {
+        return c.json(recordEvaluation({ path, step, track: 'practice', payload: { mode: 'deliverable', submission }, checked: validateVerdict(deterministic), evidence: EVIDENCE.VERIFIED }));
+      }
+      let parsed;
+      try {
+        ({ parsed } = await callTeacherModelForJson({
+          messages: buildPracticeAssessmentPrompt({ subject: path.subject, registerInstruction: teacherRegisterInstruction(path.register), stepTitle: step.title, spec, submission }),
+          ollamaClient, logger, label: 'practice assessment',
+        }));
+      } catch (err) { return evaluationFailure(c, err, 'practice assessment'); }
+      return c.json(recordEvaluation({ path, step, track: 'practice', payload: { mode: 'deliverable', submission }, checked: parsed === null ? { ok: false, reason: 'not_json' } : validateVerdict(parsed), evidence: EVIDENCE.MODEL_ASSESSED, rawRemediation: parsed?.remediation }));
+    }
+
+    return c.json({ error: 'mode requis : "self_report" ou "deliverable".' }, 400);
+  });
+
+  // PROF-3 — the module's practical exercise, generated once by the teacher model and validated (bounded, kinds that
+  // can never claim VERIFIED). Fail closed: any failure keeps the generic default spec (generated:false), which stays
+  // fully usable. A spec is frozen as soon as one practice attempt exists, so the history always matches its exercise.
+  route.post('/teacher/paths/:id/steps/:stepId/practice/spec', async (c) => {
+    const ctx = loadDualTrackStep(c);
+    if (ctx.error) return ctx.error;
+    const { path, step } = ctx;
+    if (step.tracks.practice?.spec?.generated === true) {
+      return c.json({ generated: true, cached: true, ...pathWithSteps(path.id) });
+    }
+    const allowed = canReplacePracticeSpec(step.tracks);
+    if (!allowed.ok) return c.json({ error: TRACK_ERROR_LABELS[allowed.code] ?? allowed.code, code: allowed.code }, 409);
+
+    const planStep = (path.plan ?? [])[step.step_index] ?? {};
+    let parsed;
+    try {
+      ({ parsed } = await callTeacherModelForJson({
+        messages: buildPracticeSpecPrompt({
+          subject: path.subject, registerInstruction: teacherRegisterInstruction(path.register), stepTitle: step.title,
+          stepSummary: planStep.summary ?? '', lessonExcerpt: step.content ? step.content.slice(0, 3000) : '',
+        }),
+        ollamaClient, logger, label: 'practice spec generation',
+      }));
+    } catch (err) { return evaluationFailure(c, err, 'practice spec generation'); }
+
+    const checked = parsed === null ? { ok: false, reason: 'not_json' } : validatePracticeSpec(parsed);
+    if (!checked.ok) return c.json({ generated: false, reason: checked.reason, ...pathWithSteps(path.id) });
+
+    // The model call is slow: re-read and re-check so an attempt submitted meanwhile is never orphaned from its spec.
+    const fresh = getLearningPathStepById(step.id);
+    const stillAllowed = canReplacePracticeSpec(fresh?.tracks);
+    if (!stillAllowed.ok || fresh.tracks.practice.spec?.generated === true) {
+      return c.json({ generated: fresh?.tracks?.practice?.spec?.generated === true, reason: stillAllowed.ok ? 'already_generated' : stillAllowed.code, ...pathWithSteps(path.id) });
+    }
+    updateLearningPathStep(step.id, { tracks: { ...fresh.tracks, practice: { ...fresh.tracks.practice, spec: checked.spec } } });
+    return c.json({ generated: true, cached: false, ...pathWithSteps(path.id) });
+  });
+
+  // ── PROF-6 Sport Coach — adaptation loop ───────────────────────────────────────────────────────────────────────
+  // All check-ins of the parcours (append-only attempts), oldest first.
+  function sportCheckins(pathId) {
+    const program = getLearningPathById(pathId)?.profile?.program;
+    return getStepsByPathId(pathId)
+      .flatMap(s => getTrackAttempts(s.id, 'practice').filter(a => a.payload?.checkin).map(a => ({ at: a.created_at, step_index: s.step_index, checkin: a.payload.checkin })))
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+      .map(e => ({ ...e, target_rpe: program?.sessions?.[e.step_index] ? sessionTargetRpe(program.sessions[e.step_index]) : 6 }));
+  }
+
+  // Applies one decision to every FUTURE session not started yet (step spec + stored program), bounded, with a reason.
+  function applyToFutureSessions(path, program, decision) {
+    const ctx = programContext(path.profile.athlete, program);
+    const changes = [];
+    let rejected = 0;
+    for (const s of getStepsByPathId(path.id)) {
+      if (s.step_index <= path.current_step_index || !s.tracks?.practice || (s.tracks.practice.attempts ?? 0) > 0) continue;
+      const session = program.sessions[s.step_index];
+      if (!session) continue;
+      const adapted = adaptSession(session, decision, ctx);
+      if (!adapted) { rejected += 1; continue; }
+      program.sessions[s.step_index] = adapted.session;
+      updateLearningPathStep(s.id, { tracks: { ...s.tracks, practice: { ...s.tracks.practice, spec: workoutPracticeSpec(adapted.session) } } });
+      for (const ch of adapted.changes) if (changes.length < 60) changes.push({ session_index: s.step_index, ...ch });
+    }
+    return { changes, rejected };
+  }
+
+  function appendAdaptation(program, record) {
+    const previous = Array.isArray(program.adaptations) ? program.adaptations.filter(a => a && typeof a === 'object' && !Array.isArray(a)) : [];
+    program.adaptations = [...previous, { id: crypto.randomUUID(), at: new Date().toISOString(), ...record }].slice(-100);
+  }
+
+  function runSportAdaptation(pathId) {
+    const path = getLearningPathById(pathId);
+    const program = structuredClone(path.profile.program);
+    const all = sportCheckins(pathId);
+    const cursor = Number.isInteger(program.adaptation_cursor) && program.adaptation_cursor >= 0 ? program.adaptation_cursor : 0;
+    const window = all.slice(cursor);
+    const previousPain = all.length >= 2 && all.at(-2).checkin.unusual_pain === true;
+    const decision = decideAdaptation({ entries: window, previousPain });
+    const after = path.current_step_index;
+    if (decision.kind === 'pause') {
+      program.pause = { reason: decision.reason, at: new Date().toISOString(), after_session_index: after };
+      program.excluded_areas = [...new Set([...(program.excluded_areas ?? []), ...all.at(-1).checkin.pain_areas])];
+      appendAdaptation(program, { kind: 'pause', rule: decision.rule, reason: decision.reason, after_session_index: after, changes: [] });
+      program.adaptation_cursor = all.length;
+    } else if (decision.kind === 'adjust') {
+      if (decision.rule === 'pain_reduce') program.excluded_areas = [...new Set([...(program.excluded_areas ?? []), ...decision.params.areas])];
+      if (decision.rule === 'equipment_unavailable') program.unavailable_equipment = [...new Set([...(program.unavailable_equipment ?? []), ...decision.params.equipment])];
+      const { changes, rejected } = applyToFutureSessions(path, program, decision);
+      appendAdaptation(program, { kind: 'adjust', rule: decision.rule, reason: decision.reason, after_session_index: after, changes, summary: describeChanges(changes), rejected });
+      program.adaptation_cursor = all.length;
+    } else if (decision.kind === 'observe') {
+      appendAdaptation(program, { kind: 'observe', rule: decision.rule, reason: decision.reason, after_session_index: after, changes: [] });
+    }
+    if (decision.kind !== 'none') updateLearningPath(pathId, { profile: { ...path.profile, program } });
+    return { decision: { kind: decision.kind, rule: decision.rule, reason: decision.reason }, adaptation: decision.kind === 'none' ? null : program.adaptations.at(-1), pause: program.pause ?? null };
+  }
+
+  route.post('/teacher/paths/:id/sport/resume', async (c) => {
+    const path = getLearningPathById(c.req.param('id'));
+    if (!path) return c.json({ error: 'Parcours introuvable' }, 404);
+    if (path.mode !== 'sport') return c.json({ error: 'Parcours non sportif.', code: 'NOT_SPORT' }, 409);
+    const program = structuredClone(path.profile?.program ?? {});
+    if (!program.pause) return c.json({ error: 'Le programme n’est pas en pause.', code: 'SPORT_NOT_PAUSED' }, 409);
+    const body = await c.req.json().catch(() => null);
+    if (body?.no_pain !== true) return c.json({ error: 'Reprends seulement quand la douleur a disparu (confirmation requise).', code: 'SPORT_RESUME_CONFIRM_REQUIRED' }, 400);
+    program.pause = null;
+    const decision = { rule: 'resume', reason: 'Reprise après une pause : séances allégées (une série et un point de RPE de moins) pour reprendre en douceur.' };
+    const { changes, rejected } = applyToFutureSessions(path, program, decision);
+    appendAdaptation(program, { kind: 'adjust', rule: 'resume', reason: decision.reason, after_session_index: path.current_step_index, changes, summary: describeChanges(changes), rejected });
+    program.adaptation_cursor = sportCheckins(path.id).length;
+    updateLearningPath(path.id, { profile: { ...path.profile, program } });
+    return c.json({ ...pathWithSteps(path.id), sport: { adaptation: program.adaptations.at(-1), pause: null } });
+  });
+
+  route.get('/teacher/paths/:id/steps/:stepId/attempts', (c) => {
+    const ctx = loadDualTrackStep(c);
+    if (ctx.error) return ctx.error;
+    const track = c.req.query('track');
+    if (track !== undefined && !TRACK_NAMES.includes(track)) return c.json({ error: 'track doit valoir theory ou practice' }, 400);
+    // PROF-4: learner-facing view of the append-only history (no internal fields; corrupted rows flagged, not fatal)
+    return c.json({ attempts: presentHistory(getTrackAttempts(ctx.step.id, track)) });
   });
 
   // ── Parcours terminé — créer la fiche de synthèse (neurone recap) ───────
