@@ -186,7 +186,9 @@ export function getModelStatuses(installedNames) {
 // ── Cloud provider ordered by priority ────────────────────────────────────────
 // Each entry: { providerId, level, paid, call(messages) → { text, model, quotaModels? } }
 
-async function cloudCandidates(keys, settings, logger, preferredModel = null) {
+// Exported for the Model Router registry (model-router.js): the single source of
+// truth for "which cloud provider is configured and usable" — never duplicated.
+export async function cloudCandidates(keys, settings, logger, preferredModel = null) {
   const candidates = [];
 
   // L4 free providers (priority order)
@@ -321,7 +323,7 @@ function withStateTracking(candidate) {
   };
 }
 
-const TASK_CAPABILITIES = {
+export const TASK_CAPABILITIES = {
   local:     new Set(['text', 'json', 'structured_output', 'fast', 'cheap', 'local']),
   pair:      new Set(['text', 'json', 'structured_output', 'fast', 'cheap', 'local']),
   gemini:    new Set(['text', 'json', 'structured_output', 'vision', 'long_context', 'tools', 'fast', 'cheap']),
@@ -356,6 +358,13 @@ async function buildTaskCandidates({ keys, settings, preferredProvider, preferre
   const localPreferredModel = preferredProvider === 'local' ? preferredModel : null;
   const local = makeLocalTaskCandidate({ settings, preferredModel: localPreferredModel, requiredCapabilities, installedNames, client, messages });
   const candidates = local ? [local] : [];
+  // [Model Router V1] No silent local → cloud fallback. When local is the choice
+  // (explicit, or the default) and a local model can serve the task, cloud
+  // candidates are never appended: a local failure is reported, not sent to the
+  // cloud. Cloud is reached only when explicitly preferred (opt-in; the
+  // cloud → local fallback is kept) or, decided up front, when no local
+  // candidate can serve the required capabilities.
+  if (local && (!preferredProvider || preferredProvider === 'local')) return candidates;
   if (!allowCloud || settings?.strict_local_mode === true || settings?.cloud_enabled === false) return candidates;
 
   const cloud = (await cloudCandidates(keys, settings, logger, preferredModel))

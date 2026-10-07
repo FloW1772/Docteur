@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
 import { X, Cpu, RefreshCw, CheckCircle, AlertTriangle, Download, Merge, Eye, EyeOff, Zap, Upload, Link2, Trash2, Plus, ShieldCheck, Mic, HardDrive, ShieldAlert, FileText } from 'lucide-react';
 import { FreeAiFinder } from '../settings/FreeAiFinder';
 import { LocalModelsSettingsSection } from '../settings/LocalModelsSettingsSection';
+import { ModelRouterSection } from '../settings/ModelRouterSection'; // [Model Router V1]
 import { NotebookLmSettingsSection } from '../settings/NotebookLmSettingsSection';
 import { BrowserSettingsSection } from '../settings/BrowserSettingsSection';
 import { exportAllToServer } from '../../lib/storage';
@@ -1386,6 +1387,9 @@ export default function SettingsModal({
                 </span>
                 <LocalModelsSettingsSection />
               </div>
+
+              {/* [Model Router V1] unified registry + routing tester */}
+              <ModelRouterSection />
 
 
               {/* Cloud preference selector */}

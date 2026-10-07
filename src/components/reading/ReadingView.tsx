@@ -177,12 +177,14 @@ function ReadingImage({ content }: { content: string }) {
 interface Props {
   blocks:       Block[];
   onPlayVideo?: (videoId: string) => void;
+  /** Media Reader: "open in Docteur" on every http(s) link */
+  onOpenMedia?: (url: string) => void;
   alwaysOn:     boolean;
   onToggleAlwaysOn: () => void;
   onClose?:      () => void;
 }
 
-function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onClose }: Props) {
+function ReadingViewInner({ blocks, onPlayVideo, onOpenMedia, alwaysOn, onToggleAlwaysOn, onClose }: Props) {
   // Compute TOC and rendered content — once per [blocks] identity change.
   const { toc, content } = useMemo(() => {
     const tocEntries = extractToc(blocks);
@@ -201,7 +203,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onC
         const st  = block.type === 'h1' ? READING_STYLE.heading[1] : READING_STYLE.heading[2];
         nodes.push(
           <Tag key={key} id={blockHeadingId(key)} style={st}>
-            {renderInline(block.content, onPlayVideo, key)}
+            {renderInline(block.content, onPlayVideo, key, onOpenMedia)}
           </Tag>,
         );
         continue;
@@ -219,7 +221,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onC
               textDecoration: block.checked ? 'line-through' : 'none',
               margin:         0,
             }}>
-              {renderInline(block.content, onPlayVideo, key)}
+              {renderInline(block.content, onPlayVideo, key, onOpenMedia)}
             </span>
           </div>,
         );
@@ -231,7 +233,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onC
           <div key={key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, margin: '0.25rem 0' }}>
             <span style={{ flexShrink: 0, color: '#5ee7ff', fontSize: 14, marginTop: 4, lineHeight: 1 }}>▸</span>
             <span style={{ ...READING_STYLE.text, margin: 0 }}>
-              {renderInline(block.content, onPlayVideo, key)}
+              {renderInline(block.content, onPlayVideo, key, onOpenMedia)}
             </span>
           </div>,
         );
@@ -252,6 +254,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onC
             if (level <= 2) return paraHeadingId(key, localHeadingIdx++);
             return undefined;
           },
+          onOpenMedia,
         );
         nodes.push(
           <div key={key} style={{ margin: '0 0 0.75rem' }}>
@@ -263,7 +266,7 @@ function ReadingViewInner({ blocks, onPlayVideo, alwaysOn, onToggleAlwaysOn, onC
 
     return { toc: tocEntries, content: nodes };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocks, onPlayVideo]);
+  }, [blocks, onPlayVideo, onOpenMedia]);
 
   const showToc = toc.length >= 3;
 

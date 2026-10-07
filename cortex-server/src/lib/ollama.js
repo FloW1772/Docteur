@@ -36,7 +36,10 @@ export async function embedText(client, modelName, text, keepAlive = '30m') {
   return vector;
 }
 
-export async function chatCompletion(client, modelName, messages) {
+// `extra` (Model Router V1, optional): real Ollama runtime options validated by
+// the caller (num_ctx, num_gpu) and `format` for structured output. Callers
+// that pass nothing keep the exact previous request.
+export async function chatCompletion(client, modelName, messages, extra = {}) {
   const response = await client.chat({
     model:      modelName,
     messages,
@@ -44,7 +47,9 @@ export async function chatCompletion(client, modelName, messages) {
     keep_alive: '15m',  // keep model in VRAM between requests — avoids 10-13s reload
     options: {
       temperature: 0.2,
+      ...(extra.options ?? {}),
     },
+    ...(extra.format ? { format: extra.format } : {}),
   });
 
   return response?.message?.content ?? response?.response ?? '';

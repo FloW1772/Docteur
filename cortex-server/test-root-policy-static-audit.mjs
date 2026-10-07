@@ -157,6 +157,7 @@ test('SUBPROCESS REGISTRY: every file that can start a process is classified; WI
     // WIRED to Root Policy in V1
     'lib/external-agent-process.js': 'WIRED:PROCESS_START',
     'lib/ytdlp.js': 'WIRED:MEDIA', 'lib/youtube-discovery.js': 'WIRED:MEDIA', 'lib/whisper.js': 'WIRED:MEDIA', 'lib/video-audio-download.js': 'WIRED:MEDIA',
+    'lib/media-studio.js': 'WIRED:MEDIA', // Media Studio V1: enforce(MEDIA_TRANSCODE) before every ffprobe/ffmpeg start, fixed binaries, argv, shell:false
     'lib/providers/claude-oauth.js': 'WIRED:AI_CLOUD(guardCloudCall)', 'lib/providers/codex.js': 'WIRED:AI_CLOUD(guardCloudCall)',
     // TYPED_INTERNAL: fixed binary in code, typed argv, shell:false, no model-controlled string (Phase C: progressive wiring)
     'lib/browser.js': 'TYPED_INTERNAL', 'lib/code-intel-git.js': 'TYPED_INTERNAL', 'lib/code-intel-search.js': 'TYPED_INTERNAL', 'lib/comfyui-install-manager.js': 'TYPED_INTERNAL',

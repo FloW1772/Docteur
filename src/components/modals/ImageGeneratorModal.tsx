@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import { Image as ImageIcon, X, Wand2, RefreshCw, Settings as SettingsIcon } from 'lucide-react';
 import { cortexClient, getImageUrl } from '../../lib/cortex/client';
 import type { ImageGenProvidersStatus, ImageGenerationRow, ImageGenCapabilities } from '../../lib/cortex/client';
+import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
+import OperationProgress from '../loading/OperationProgress';
 
 interface Props {
   onClose: () => void;
@@ -77,8 +79,9 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
   const [steps, setSteps] = useState(20);
   const [seedMode, setSeedMode] = useState<'random' | 'fixed'>('random');
   const [seedValue, setSeedValue] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // [Global Loading V1] step, elapsed time, "slower than expected", finite timeout, error + retry.
+  const generation = useLongOperation('imageGeneration');
+  const generating = generation.running;
   const [result, setResult] = useState<ImageGenerationRow | null>(null);
   const [history, setHistory] = useState<ImageGenerationRow[]>([]);
 
@@ -104,11 +107,9 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
 
   async function handleGenerate() {
     if (!prompt.trim() || generating) return;
-    setGenerating(true);
-    setError(null);
     setResult(null);
     const size = SIZE_OPTIONS[sizeIndex];
-    try {
+    const generated = await generation.run('Génération d’image', async ({ setStep }) => {
       const params: Parameters<typeof cortexClient.generateImage>[0] = {
         prompt: prompt.trim(),
         width: size.width,
@@ -119,14 +120,15 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
       if (capabilities.seed && seedMode === 'fixed' && seedValue.trim()) params.seed = Number(seedValue.trim());
       if (provider === 'comfyui' || provider === 'auto') params.steps = steps;
 
+      setStep(provider === 'comfyui' || provider === 'auto' ? 'Génération par le moteur d’images (chargement du modèle possible)…' : 'Génération par le fournisseur…');
       const res = await cortexClient.generateImage(params);
+      setStep('Récupération de l’image…');
       const gen = await cortexClient.getImageGeneration(res.generation_id);
-      setResult(gen.generation);
+      return gen.generation;
+    }, { step: 'Préparation…' });
+    if (generated) {
+      setResult(generated);
       await reload();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setGenerating(false);
     }
   }
 
@@ -253,9 +255,15 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
             {generating ? 'Génération en cours…' : 'Générer'}
           </button>
 
-          {error && (
-            <div style={{ ...cardStyle, borderColor: 'rgba(248,113,113,0.4)', color: '#f87171', fontSize: 12 }}>{error}</div>
-          )}
+          <OperationProgress
+            state={generation.state}
+            policy={generation.policy}
+            elapsedMs={generation.elapsedMs}
+            slow={generation.slow}
+            onRetry={() => { void handleGenerate(); }}
+            onDismiss={generation.reset}
+            compact
+          />
 
           {result?.image_id && (
             <div style={cardStyle}>

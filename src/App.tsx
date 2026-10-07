@@ -13,6 +13,9 @@ import type { FeatureKey } from './content/capabilities';
 import { useGestureCamera, getGestureSensitivity, setGestureSensitivity, getEasterEggEnabled, setEasterEggEnabled } from './hooks/useGestureCamera';
 import { useScreenShare } from './hooks/useScreenShare';
 import { useCortexState } from './hooks/useCortexState';
+import { useOperationClock } from './hooks/useLongOperation'; // [Global Loading V1]
+import OperationProgress from './components/loading/OperationProgress'; // [Global Loading V1]
+import { IDLE_OPERATION, OPERATION_POLICIES, isSlow, type OperationState } from './lib/loading/operation'; // [Global Loading V1]
 import type { ActivityEntry } from './components/layout/ActivityPanel';
 import ActivityPanel from './components/layout/ActivityPanel';
 import Dashboard from './components/hud/Dashboard';
@@ -51,6 +54,9 @@ import TeacherModal from './components/modals/TeacherModal';
 const NotebookModal = lazy(() => import('./components/modals/NotebookModal'));
 const ImageGeneratorModal = lazy(() => import('./components/modals/ImageGeneratorModal'));
 const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioModal'));
+const AgencyStudioModal = lazy(() => import('./components/modals/AgencyStudioModal')); // [Agency V1]
+const DocumentToolboxModal = lazy(() => import('./components/modals/DocumentToolboxModal')); // [Document Toolbox PDF V1]
+const MediaStudioModal = lazy(() => import('./components/modals/MediaStudioModal')); // [Media Studio V1]
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 const SalesStudioModal = lazy(() => import('./components/modals/SalesStudioModal'));
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
@@ -77,6 +83,10 @@ import type { Page, PageKind, Block } from './lib/types';
 import { KIND_META } from './lib/types';
 import { generateId } from './lib/generateId';
 import { cortexClient, onConnectionError, DETAIL_LEVEL_LABELS } from './lib/cortex/client';
+import type { CanonicalArticleDuplicate } from './lib/cortex/client'; // [Article Canonical V1]
+// [Media Reader V1] one "open in Docteur" reader for every kind of link (YouTube player included)
+import MediaReader, { MediaReaderBoundary, type CapturedPageView, type MediaReaderRequest } from './components/media/MediaReader';
+import type { MediaStudioImportRequest } from './components/modals/MediaStudioModal'; // [Media Studio V1] type only: the modal stays lazy
 import { detectYouTubeDiscoveryInput } from './lib/youtube/discovery-input';
 import { applyDiscoveryEvent, createDiscoveryView, failureView, MODE_LABEL, type DiscoveryView } from './lib/youtube/discovery-view';
 import YouTubeDiscoveryPanel from './components/panels/YouTubeDiscoveryPanel';
@@ -381,7 +391,17 @@ function CaptureModal({
   const isBatch     = urlCount > 1;
   const isRunning   = busy && capturePhase !== null;
   const youtubeDiscovery = detectYouTubeDiscoveryInput(value);
-
+  // [Global Loading V1] The capture lifecycle is driven by App (phases, abort);
+  // the modal only adds elapsed time, the "slower than expected" notice and ARIA.
+  const captureClock = useOperationClock(isRunning);
+  const capturePolicy = OPERATION_POLICIES.articleCapture;
+  const captureOperation: OperationState = {
+    ...IDLE_OPERATION,
+    status: isRunning ? 'running' : 'idle',
+    label: isPaste ? 'Analyse du texte collé' : 'Capture d’article',
+    step: capturePhase,
+    startedAt: captureClock.startedAt ?? captureClock.now,
+  };
   useEffect(() => {
     if (!isRunning) inputRef.current?.focus();
     function onKey(e: KeyboardEvent) {
@@ -446,23 +466,15 @@ function CaptureModal({
 
         {/* Progress view when deep capture is running */}
         {isRunning ? (
-          <div className="flex flex-col items-center gap-4 py-6">
-            <div
-              className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
-              style={{ borderColor: 'rgba(167,139,250,0.3)', borderTopColor: '#a78bfa' }}
+          <div className="py-4">
+            <OperationProgress
+              state={captureOperation}
+              policy={capturePolicy}
+              elapsedMs={captureClock.now - (captureOperation.startedAt ?? captureClock.now)}
+              slow={isSlow(captureOperation, capturePolicy, captureClock.now)}
+              onCancel={onCancelDeep}
+              cancelAriaLabel="Annuler la capture"
             />
-            <p className="font-mono text-sm text-center px-2" style={{ color: '#c4b5fd', lineHeight: 1.5 }}>
-              {capturePhase}
-            </p>
-            <button
-              type="button"
-              aria-label="Annuler la capture"
-              className="font-mono text-xs px-4 py-1.5 rounded"
-              style={{ background: 'rgba(255,77,88,0.1)', border: '1px solid rgba(255,77,88,0.2)', color: '#ff4d58', cursor: 'pointer' }}
-              onClick={onCancelDeep}
-            >
-              Annuler
-            </button>
           </div>
         ) : (
           <>
@@ -1287,6 +1299,7 @@ export function PageEditor({
   onDeepAnalyze,
   onResummarise,
   onPlayVideo,
+  onOpenMedia,
   maxVideoSelect = 10,
   transferImages = false,
   onCvAnalyze,
@@ -1320,6 +1333,8 @@ export function PageEditor({
   onDeepAnalyze?:   (ids: string[]) => Promise<void>;
   onResummarise?:   () => void;
   onPlayVideo?:     (videoId: string, title: string) => void;
+  /** [Media Reader V1] "open in Docteur" for any link; the neuron title is passed only for the neuron's own source URL */
+  onOpenMedia?:     (url: string, title?: string) => void;
   maxVideoSelect?:  number;
   transferImages?:  boolean;
   onCvAnalyze?:     (powerful?: boolean) => Promise<void>;
@@ -2055,6 +2070,7 @@ export function PageEditor({
         <ReadingView
           blocks={page.blocks}
           onPlayVideo={onPlayVideo ? (videoId) => onPlayVideo(videoId, page.title) : undefined}
+          onOpenMedia={onOpenMedia ? (url) => onOpenMedia(url, page.metadata?.url === url ? page.title : undefined) : undefined}
           alwaysOn={alwaysReading}
           onToggleAlwaysOn={() => {
             const next = !alwaysReading;
@@ -2083,6 +2099,7 @@ export function PageEditor({
                 if (!videoId) return;
                 onPlayVideo(videoId, page.title);
               } : undefined}
+              onOpenMedia={onOpenMedia ? (url) => onOpenMedia(url, page.metadata?.url === url ? page.title : undefined) : undefined}
             />
           ))}
           <div
@@ -2295,8 +2312,17 @@ export default function App() {
   const [reindexProgress, setReindexProgress]  = useState(0);
   const [consoleOpen, setConsoleOpen]          = useState(false);
   useModalOpenTracking(consoleOpen);
-  const [activeVideo, setActiveVideo]          = useState<{ videoId: string; title: string } | null>(null);
-  useModalOpenTracking(!!activeVideo);
+  // [Media Reader V1] single reader (replaces the YouTube-only activeVideo overlay; YouTube keeps the same embed inside it)
+  const [mediaReader, setMediaReader]          = useState<MediaReaderRequest | null>(null);
+  const mediaRequestSeqRef                     = useRef(0);
+  useModalOpenTracking(!!mediaReader);
+  const openInDocteurReader = useCallback((resource: { url: string; title?: string | null; mimeType?: string | null }) => {
+    mediaRequestSeqRef.current += 1; // every open = fresh reader state (reopen / switch media)
+    setMediaReader({ requestId: mediaRequestSeqRef.current, ...resource });
+  }, []);
+  const openYouTubeInReader = useCallback((videoId: string, title: string) => {
+    openInDocteurReader({ url: `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`, title });
+  }, [openInDocteurReader]);
   const [sourceHighlights, setSourceHighlights] = useState<Set<string>>(new Set());
   const [backupOpen, setBackupOpen]            = useState(false);
   useModalOpenTracking(backupOpen);
@@ -2334,6 +2360,15 @@ export default function App() {
   const [imageGeneratorOpen, setImageGeneratorOpen] = useState(false);
   const [metaGptStudioOpen, setMetaGptStudioOpen] = useState(false);
   useModalOpenTracking(metaGptStudioOpen);
+  const [agencyOpen, setAgencyOpen] = useState(false); // [Agency V1]
+  useModalOpenTracking(agencyOpen);
+  const [toolboxOpen, setToolboxOpen] = useState(false); // [Document Toolbox PDF V1]
+  const [toolboxInitialDoc, setToolboxInitialDoc] = useState<string | null>(null); // [Browser Media Bridge V1]
+  useModalOpenTracking(toolboxOpen);
+  const [mediaStudioOpen, setMediaStudioOpen] = useState(false); // [Media Studio V1]
+  const [mediaStudioImport, setMediaStudioImport] = useState<MediaStudioImportRequest | null>(null);
+  const mediaStudioImportSeq = useRef(0);
+  useModalOpenTracking(mediaStudioOpen);
   useModalOpenTracking(imageGeneratorOpen);
   // Activity panel is a lightweight, non-blocking overlay (role="dialog"
   // aria-modal="false") — deliberately NOT registered with
@@ -2399,6 +2434,9 @@ export default function App() {
       case 'skills':          setSkillsOpen(true); break;
       case 'images':          setImageGeneratorOpen(true); break;
       case 'metagpt':         setMetaGptStudioOpen(true); break;
+      case 'agency':          setAgencyOpen(true); break;
+      case 'document-toolbox': setToolboxOpen(true); break;
+      case 'media-studio':    setMediaStudioOpen(true); break;
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sales':           setSalesStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
@@ -3018,6 +3056,20 @@ export default function App() {
     if (captureWarnsLimited(response)) setToast('Capture limitée, parent non identifié');
   }
 
+  // [Article Canonical V1] The server identified the same article (canonical URL
+  // or content hash). Nothing is ever deleted: either open the existing neuron,
+  // or — only on explicit request — capture a new version next to it.
+  function resolveDuplicateArticle(
+    existing: NonNullable<CanonicalArticleDuplicate['existing']>,
+    mode: 'ask' | 'skip',
+  ): 'recapture' | 'open' | 'skip' {
+    if (mode === 'skip') return 'skip';
+    const label = existing.title ? `« ${existing.title} »` : 'Cet article';
+    return window.confirm(`${label} est déjà dans Docteur.\n\nCapturer quand même une nouvelle version ? (Le neurone existant est conservé.)`)
+      ? 'recapture'
+      : 'open';
+  }
+
   async function deepCaptureOne(
     url: string,
     ctrl: AbortController,
@@ -3025,7 +3077,8 @@ export default function App() {
     batchParents: Map<string, string>,
     allowWhisper = false,
     extraChildBlocks: Block[] = [],
-  ): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed'> {
+    duplicateMode: 'ask' | 'skip' = 'skip',
+  ): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed' | 'duplicate'> {
     if (ctrl.signal.aborted) return 'abort';
     setCapturePhase(`${label} — Récupération…`);
     const phaseTimers = [
@@ -3033,10 +3086,21 @@ export default function App() {
       setTimeout(() => { if (!ctrl.signal.aborted) setCapturePhase(`${label} — Analyse locale…`); }, 5_000),
     ];
     const clearPhaseTimers = () => phaseTimers.forEach(clearTimeout);
-    const attemptCapture = async (): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed'> => {
-      const response = await cortexClient.captureDeep(url, ctrl.signal, captureImages);
+    let checkDuplicate = true;
+    const attemptCapture = async (): Promise<'ok' | 'fallback' | 'abort' | 'needs_whisper' | 'failed' | 'duplicate'> => {
+      const response = await cortexClient.captureDeep(url, ctrl.signal, captureImages, { checkDuplicate });
       clearPhaseTimers();
       if (ctrl.signal.aborted) return 'abort';
+      if (response.duplicate && response.existing) {
+        const choice = resolveDuplicateArticle(response.existing, duplicateMode);
+        if (choice === 'recapture') {
+          checkDuplicate = false;
+          setCapturePhase(`${label} — Nouvelle version…`);
+          return attemptCapture();
+        }
+        if (choice === 'open') setSelectedId(response.existing.id);
+        return 'duplicate';
+      }
       if (response.fallback) {
         if (response.needs_whisper && allowWhisper) {
           setWhisperRequest({ url, title: response.title ?? '', duration: response.video_duration ?? null, groqAvailable: groqActive });
@@ -3111,7 +3175,7 @@ export default function App() {
     const total      = urls.length;
     const lotTotal   = Math.ceil(total / batchSize);
     const batchParents = batchParentsRef.current;
-    let okCount = 0, fbCount = 0, errCount = 0;
+    let okCount = 0, fbCount = 0, errCount = 0, dupCount = 0;
     const startedAt  = Date.now();
 
     const ctrl = new AbortController();
@@ -3154,6 +3218,7 @@ export default function App() {
         if (outcome === 'abort' || ctrl.signal.aborted) break;
         if (outcome === 'ok') okCount++;
         else if (outcome === 'fallback') fbCount++;
+        else if (outcome === 'duplicate') dupCount++;
         else errCount++;
 
         setBatchProgress(prev => prev ? { ...prev, current: i + 1, okCount, fallbackCount: fbCount, errorCount: errCount } : null);
@@ -3170,6 +3235,7 @@ export default function App() {
         if (okCount > 0) parts.push(`${okCount} analyse${okCount > 1 ? 's' : ''} réussie${okCount > 1 ? 's' : ''}`);
         if (fbCount > 0) parts.push(`${fbCount} capture${fbCount > 1 ? 's' : ''} simple${fbCount > 1 ? 's' : ''}`);
         if (errCount > 0) parts.push(`${errCount} échec${errCount > 1 ? 's' : ''}`);
+        if (dupCount > 0) parts.push(`${dupCount} déjà présent${dupCount > 1 ? 's' : ''}`);
         setToast(parts.join(', ') || 'Aucun neurone créé');
       }
     } finally {
@@ -3761,12 +3827,29 @@ export default function App() {
       if (deepMatch.mode === 'paste') {
         try {
           setCapturePhase(`${deepMatch.source} — Analyse…`);
-          const response = await cortexClient.captureDeepPaste(
+          let response = await cortexClient.captureDeepPaste(
             deepMatch.text,
             deepMatch.source,
             deepMatch.url,
             ctrl.signal,
+            { checkDuplicate: true },
           );
+          if (!ctrl.signal.aborted && response.duplicate && response.existing) {
+            if (resolveDuplicateArticle(response.existing, 'ask') === 'recapture') {
+              setCapturePhase(`${deepMatch.source} — Nouvelle version…`);
+              response = await cortexClient.captureDeepPaste(deepMatch.text, deepMatch.source, deepMatch.url, ctrl.signal);
+            } else {
+              setSelectedId(response.existing.id);
+              setToast('Article déjà présent — neurone existant ouvert, aucun doublon créé');
+              return;
+            }
+          }
+          if (!ctrl.signal.aborted && response.fallback) {
+            setToast(response.reason === 'empty_content'
+              ? 'Analyse impossible — aucun contenu d’article dans le texte collé'
+              : `Analyse impossible — ${response.error || response.reason || 'erreur inconnue'}`);
+            return;
+          }
           if (!ctrl.signal.aborted) {
             await applyCapturResponse(
               response as unknown as CaptureResult,
@@ -3806,9 +3889,12 @@ export default function App() {
         try {
           const url     = urls[0];
           const host    = (() => { try { return new URL(url).hostname; } catch { return url.slice(0, 30); } })();
-          const outcome = await deepCaptureOne(url, ctrl, host, batchParents, true, extraChildBlocks);
+          const outcome = await deepCaptureOne(url, ctrl, host, batchParents, true, extraChildBlocks, 'ask');
           if (!ctrl.signal.aborted && outcome === 'ok') {
             setToast('Terminé — article enregistré et indexé');
+          }
+          if (!ctrl.signal.aborted && outcome === 'duplicate') {
+            setToast('Article déjà présent — neurone existant ouvert, aucun doublon créé');
           }
           if (!ctrl.signal.aborted && outcome === 'fallback') {
             setToast(url.includes('youtube')
@@ -3816,7 +3902,7 @@ export default function App() {
               : 'PARTIAL_EXTRACTION — capture conservée avec avertissement');
           }
           // needs_whisper: modal is shown, capture modal closes, whisper takes over
-          if (!ctrl.signal.aborted && (outcome === 'ok' || outcome === 'fallback')) { setCaptureOpen(false); setCaptureValue(''); }
+          if (!ctrl.signal.aborted && (outcome === 'ok' || outcome === 'fallback' || outcome === 'duplicate')) { setCaptureOpen(false); setCaptureValue(''); }
           if (outcome === 'needs_whisper') { setCaptureOpen(false); setCaptureValue(''); }
         } catch (err) {
           if ((err as Error).name !== 'AbortError') setToast('Capture impossible');
@@ -4073,18 +4159,21 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cortex.available]);
 
-  // On mount, pick up any pending outputs from scheduled agent runs
+  // Pick up pending outputs from agent runs: on mount (scheduled agents) and,
+  // [Agency V1], right after a human approved an Agency save.
+  const importPendingAgentOutputs = useCallback(async (): Promise<number> => {
+    const outputs = await cortexClient.getPendingAgentOutputs();
+    if (outputs.length === 0) return 0;
+    for (const out of outputs) {
+      try { await handleAgentOutput(out); } catch { /* non-fatal */ }
+    }
+    setToast(`${outputs.length} neurone${outputs.length > 1 ? 's' : ''} créé${outputs.length > 1 ? 's' : ''} par agents planifiés.`);
+    return outputs.length;
+  }, [handleAgentOutput]);
+
   useEffect(() => {
     if (!cortex.available) return;
-    cortexClient.getPendingAgentOutputs().then(outputs => {
-      if (outputs.length === 0) return;
-      (async () => {
-        for (const out of outputs) {
-          try { await handleAgentOutput(out); } catch { /* non-fatal */ }
-        }
-        setToast(`${outputs.length} neurone${outputs.length > 1 ? 's' : ''} créé${outputs.length > 1 ? 's' : ''} par agents planifiés.`);
-      })();
-    }).catch(() => {});
+    importPendingAgentOutputs().catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cortex.available]);
 
@@ -4958,7 +5047,8 @@ export default function App() {
             regenerateLoading={regeneratingId === selectedPage.id}
             onDeepAnalyze={deepAnalyzeNeurons}
             onResummarise={(selectedPage.metadata?.deep_capture === true || selectedPage.metadata?.deep_analyzed === true) && selectedPage.kind === 'video' ? () => setResummariseId(selectedPage.id) : undefined}
-            onPlayVideo={(videoId, title) => { setActiveVideo({ videoId, title }); }}
+            onPlayVideo={openYouTubeInReader}
+            onOpenMedia={(url, title) => openInDocteurReader({ url, title })}
             maxVideoSelect={groqActive ? 30 : 10}
             transferImages={transferImages}
             onCvAnalyze={selectedPage.kind === 'cv' ? (powerful) => handleCvAnalyze(selectedPage, powerful) : undefined}
@@ -5266,6 +5356,9 @@ export default function App() {
         </Suspense>
       )}
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
+      {agencyOpen && <Suspense fallback={null}><AgencyStudioModal onClose={() => setAgencyOpen(false)} onOutputsSaved={importPendingAgentOutputs} /></Suspense>}
+      {mediaStudioOpen && <Suspense fallback={null}><MediaStudioModal pendingImport={mediaStudioImport} onClose={() => { setMediaStudioOpen(false); setMediaStudioImport(null); }} /></Suspense>}
+      {toolboxOpen && <Suspense fallback={null}><DocumentToolboxModal initialDocId={toolboxInitialDoc} onClose={() => { setToolboxOpen(false); setToolboxInitialDoc(null); }} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
       {salesStudioOpen && <Suspense fallback={null}><SalesStudioModal onClose={() => setSalesStudioOpen(false)} /></Suspense>}
       {sherlockStudioOpen && <Suspense fallback={null}><SherlockStudioModal onClose={() => setSherlockStudioOpen(false)} onJobUpdate={setLastSherlockJobId} /></Suspense>}
@@ -5858,7 +5951,7 @@ export default function App() {
         onVoiceContextClose={voiceLifecycle.cancelVoiceInteraction}
         isListeningActive={voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'wake-listening'}
         onNavigate={(id) => { setSelectedId(id); setConsoleOpen(false); }}
-        onPlayVideo={(videoId, title) => { setActiveVideo({ videoId, title }); setConsoleOpen(false); }}
+        onPlayVideo={(videoId, title) => { openYouTubeInReader(videoId, title); setConsoleOpen(false); }}
         onCreatePage={() => { handleNewPage(); setConsoleOpen(false); }}
         onHighlightSources={(ids) => setSourceHighlights(new Set(ids))}
         onClearHighlights={() => setSourceHighlights(new Set())}
@@ -6199,46 +6292,43 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Global video player overlay (triggered by "lis" console command) ── */}
-      {activeVideo && (
-        <div
-          onClick={() => setActiveVideo(null)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 200,
-            background: 'rgba(4,2,12,0.88)',
-            backdropFilter: 'blur(12px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 16,
+      {/* ── [Media Reader V1] "open in Docteur" reader (links ▶, console "lis" command): video, audio, image, PDF, text, web, YouTube ── */}
+      {mediaReader && (
+        <MediaReaderBoundary key={mediaReader.requestId} onClose={() => setMediaReader(null)}>
+        <MediaReader
+          key={mediaReader.requestId}
+          request={mediaReader}
+          onClose={() => setMediaReader(null)}
+          resolveCapturedPage={async (url): Promise<CapturedPageView | null> => {
+            // [Browser Media Bridge V1] original link or the canonical URL recorded by Article Canonical V1
+            const canonicalOf = (p: Page) => (p.metadata?.canonical_article as { canonicalUrl?: string } | undefined)?.canonicalUrl;
+            const find = () => pagesRef.current.find(p => (p.metadata?.url === url || canonicalOf(p) === url) && p.kind !== 'video' && p.kind !== 'channel');
+            const stub = find();
+            if (!stub) return null;
+            if (stub.blocks.length === 0) { // lazy stub: load its content with the existing loader, then let React commit it
+              await loadPage(stub.id);
+              for (let i = 0; i < 40 && (find()?.blocks.length ?? 0) === 0; i++) await new Promise(r => setTimeout(r, 25));
+            }
+            const page = find() ?? stub;
+            return { id: page.id, title: page.title, text: page.blocks.filter(b => b.type !== 'image').map(b => b.content).join('\n\n') };
           }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{ maxWidth: 720, width: '100%' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ color: '#b0a0d0', fontSize: 13, fontFamily: 'Space Grotesk, sans-serif', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8 }}>
-                {activeVideo.title}
-              </span>
-              <button
-                type="button"
-                onClick={() => setActiveVideo(null)}
-                style={{ background: 'none', border: 'none', color: '#7060a0', cursor: 'pointer', fontSize: 22, lineHeight: 1, padding: '0 4px', flexShrink: 0 }}
-                onMouseEnter={e => { e.currentTarget.style.color = '#ff4dcb'; }}
-                onMouseLeave={e => { e.currentTarget.style.color = '#7060a0'; }}
-                title="Fermer"
-              >×</button>
-            </div>
-            <div style={{ position: 'relative', paddingBottom: '56.25%', height: 0, borderRadius: 10, overflow: 'hidden', boxShadow: '0 24px 64px rgba(0,0,0,0.7)' }}>
-              <iframe
-                src={`https://www.youtube-nocookie.com/embed/${activeVideo.videoId}?autoplay=1`}
-                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-                title={activeVideo.title}
-              />
-            </div>
-          </div>
-        </div>
+          onNavigateToPage={id => { setMediaReader(null); setSelectedId(id); }}
+          onOpenInBrowser={async url => { await cortexClient.openInBrowser(url); }}
+          onOpenPdfInToolbox={async file => {
+            const { doc } = await cortexClient.toolboxUpload(file); // local workshop, same validation as a manual import
+            setMediaReader(null);
+            setToolboxInitialDoc(doc.id);
+            setToolboxOpen(true);
+          }}
+          onCaptureUrl={url => { setMediaReader(null); setCaptureValue(`info ${url}`); setCaptureOpen(true); }}
+          onSendToMediaStudio={({ url, title }) => { // [Media Studio V1] the studio imports it (F2 progress, server-side type check)
+            setMediaReader(null);
+            mediaStudioImportSeq.current += 1;
+            setMediaStudioImport({ requestId: mediaStudioImportSeq.current, url, title });
+            setMediaStudioOpen(true);
+          }}
+        />
+        </MediaReaderBoundary>
       )}
 
       {/* ── Gesture camera overlay ───────────────────────────────────────────── */}

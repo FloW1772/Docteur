@@ -102,7 +102,7 @@ function isVideoPlayerGarbage(text) {
   return markers.filter(m => text.includes(m)).length >= 2;
 }
 
-function truncateForModel(text) {
+export function truncateForModel(text) {
   const words = text.trim().split(/\s+/);
   if (words.length <= MAX_WORDS) return { text, truncated: false };
   const half = Math.floor(MAX_WORDS / 2);
@@ -352,6 +352,20 @@ function metricFor(candidates, source) {
   return { chars: found?.quality.chars ?? 0, words: found?.quality.words ?? 0, paragraphs: found?.quality.paragraphs ?? 0 };
 }
 
+// Page-level article metadata (Article Canonical V1). Read once from the same
+// HTML as the body so the canonical article needs no second fetch.
+function extractPageMeta(doc, candidates) {
+  const meta = (selector) => doc.querySelector(selector)?.getAttribute('content')?.replace(/\s+/g, ' ').trim() ?? '';
+  const structured = candidates.find(candidate => candidate.source === 'json-ld' && (candidate.author || candidate.datePublished));
+  const metaAuthor = meta('meta[name="author"]') || meta('meta[property="article:author"]');
+  return {
+    siteName: meta('meta[property="og:site_name"]') || meta('meta[name="application-name"]'),
+    author: (typeof structured?.author === 'string' && structured.author.trim()) || (/^https?:/i.test(metaAuthor) ? '' : metaAuthor),
+    publishedAt: (typeof structured?.datePublished === 'string' && structured.datePublished.trim()) || meta('meta[property="article:published_time"]') || meta('meta[itemprop="datePublished"]'),
+    declaredCanonical: doc.querySelector('link[rel="canonical"]')?.getAttribute('href')?.trim() ?? '',
+  };
+}
+
 export function extractArticleCandidatesFromHtml(html, url) {
   try {
     // Extract images before Readability mutates the DOM and strips lazy attributes.
@@ -420,6 +434,7 @@ export function extractArticleCandidatesFromHtml(html, url) {
     return {
       best,
       candidates,
+      page: extractPageMeta(doc, candidates),
       metrics: {
         rawChars: String(html ?? '').length,
         readability: metricFor(candidates, 'readability'),
@@ -433,7 +448,7 @@ export function extractArticleCandidatesFromHtml(html, url) {
       },
     };
   } catch {
-    return { best: null, candidates: [], metrics: { rawChars: String(html ?? '').length, chosenExtractor: null, finalChars: 0, finalWords: 0, finalParagraphs: 0, qualityStatus: 'NO_CONTENT' } };
+    return { best: null, candidates: [], page: null, metrics: { rawChars: String(html ?? '').length, chosenExtractor: null, finalChars: 0, finalWords: 0, finalParagraphs: 0, qualityStatus: 'NO_CONTENT' } };
   }
 }
 
@@ -888,6 +903,9 @@ async function extractArticle(url) {
   return {
     fallback: false, text, title: chosen.title, source_type: 'web', word_count, truncated,
     imageUrls: chosen.imageUrls ?? [],
+    // Article Canonical V1: untruncated body + page metadata for the canonical article.
+    fullText: chosen.text,
+    page: staticInspection?.page ?? null,
     extraction,
     timings,
   };

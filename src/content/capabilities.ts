@@ -19,7 +19,7 @@ export type FeatureKey =
   | 'video-summary' | 'metagpt' | 'investment' | 'sherlock' | 'cyber-audit'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
-  | 'settings-external' | 'settings-connections' | 'maitre' | 'code-intel' | 'sales';
+  | 'settings-external' | 'settings-connections' | 'maitre' | 'code-intel' | 'sales' | 'agency' | 'document-toolbox' | 'media-studio';
 
 export type FeatureState = 'disponible' | 'local' | 'a_configurer' | 'partiel';
 
@@ -42,6 +42,9 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     emoji: '🤖',
     title: 'IA',
     items: [
+      { name: 'Atelier PDF', description: 'Atelier PDF 100 % local : inspecter, fusionner, séparer, extraire, réordonner, pivoter, supprimer ou dupliquer des pages, images ↔ PDF, texte, métadonnées, filigrane, OCR local. Chaque action crée un nouveau document : les originaux ne sont jamais modifiés. Optimisation de taille limitée (COMPRESSION_LIMITED). Aucun envoi cloud.', feature: 'document-toolbox', state: 'local', keywords: ['pdf', 'fusionner', 'séparer', 'pages', 'filigrane', 'ocr', 'documents'] },
+      { name: 'Media Studio', description: 'Montage vidéo/audio 100 % local et non destructif : projets enregistrés, import vidéo/audio/image (fichiers ou Media Reader), timeline (rogner, couper, réordonner, déplacer, supprimer), volume, muet, fondus, aperçu de la séquence, export MP4 par FFmpeg avec progression et annulation. Vos fichiers d’origine ne sont jamais modifiés. Aucun envoi cloud.', feature: 'media-studio', state: 'local', keywords: ['vidéo', 'montage', 'audio', 'timeline', 'ffmpeg', 'export', 'mp4', 'clip', 'media'] },
+      { name: 'Agency', description: 'Orchestration d’agents : un objectif devient un plan de tâches (dépendances, parallélisme borné), exécutées par des agents aux outils limités (recherche en lecture seule dans vos neurones, raisonnement IA). Synthèse finale. Enregistrement comme neurone uniquement après votre approbation. STOP toujours disponible. Strict Local par défaut. Aucun outil shell, fichier, réseau ou processus.', feature: 'agency', state: 'local', keywords: ['agents', 'orchestration', 'plan', 'tâches', 'objectif', 'multi-agent'] },
       { name: 'Studio MetaGPT', description: 'Ollama local : PRD, Design, Tasks, génération de code texte, diff et application dans un sample isolé après approbation du hash et des fichiers exacts. V1 : aucun Terminal, Bash, Browser, Git, Internet externe, cloud, exécution de code, installation de packages ou auto-apply.', feature: 'metagpt', state: 'local', keywords: ['studio', 'code', 'diff', 'approbation', 'plan'] },
       { name: 'Code Intelligence', description: 'Recherche texte/fichier/symbole dans le dépôt Docteur et consultation Git en lecture seule (status, diff, log, show). Local, aucun réseau. Aucune édition, aucun commit/checkout/reset, aucun terminal, aucune exécution de code.', feature: 'code-intel', state: 'local', keywords: ['recherche', 'code', 'git', 'diff', 'symboles', 'read-only', 'lecture seule'] },
       { name: 'Studio Investissement', description: 'Recherche, analyse fondamentale, valorisation (multiples/DCF) et portefeuille simulé (paper trading) avec provenance systématique des données. V1 : aucun broker réel, aucun ordre réel, aucune clé broker, aucune transaction réelle — analyse et simulation uniquement.', feature: 'investment', state: 'local', keywords: ['bourse', 'action', 'etf', 'portefeuille', 'paper trading', 'dcf', 'valorisation', 'finance'] },

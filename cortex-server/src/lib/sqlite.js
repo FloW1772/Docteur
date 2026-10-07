@@ -437,6 +437,104 @@ export function initSqlite(sqlitePath) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Agency V1 — orchestration d'agents (objectif → plan → tâches → synthèse).
+    -- Additif uniquement. Les tâches interrompues par un redémarrage passent
+    -- en UNKNOWN (jamais COMPLETED) ; rien ne reprend automatiquement.
+    CREATE TABLE IF NOT EXISTS agency_runs (
+      id TEXT PRIMARY KEY,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL,
+      strict_local INTEGER NOT NULL DEFAULT 1,
+      max_concurrency INTEGER NOT NULL DEFAULT 2,
+      save_result INTEGER NOT NULL DEFAULT 0,
+      plan TEXT NOT NULL DEFAULT '{}',
+      synthesis TEXT,
+      error TEXT,
+      stop_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS agency_tasks (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_key TEXT NOT NULL,
+      ord INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      tools TEXT NOT NULL DEFAULT '[]',
+      depends_on TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 2,
+      result TEXT,
+      error TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      UNIQUE (run_id, task_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agency_tasks_run ON agency_tasks(run_id, ord);
+    CREATE TABLE IF NOT EXISTS agency_artifacts (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_id TEXT,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      output_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agency_artifacts_run ON agency_artifacts(run_id);
+    CREATE TABLE IF NOT EXISTS agency_approvals (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      decided_at TEXT,
+      consumed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_agency_approvals_run ON agency_approvals(run_id);
+    CREATE TABLE IF NOT EXISTS agency_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      task_id TEXT,
+      type TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '{}',
+      at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agency_events_run ON agency_events(run_id, id);
+
+    -- Media Studio V1 — projets non destructifs (le JSON décrit la timeline ; les
+    -- fichiers médias ne sont jamais modifiés) et jobs d'export FFmpeg.
+    CREATE TABLE IF NOT EXISTS media_projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS media_export_jobs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      progress REAL NOT NULL DEFAULT 0,
+      duration_ms INTEGER,
+      output_file TEXT,
+      output_size INTEGER,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_export_jobs_project ON media_export_jobs(project_id, created_at);
+
     -- Module Professeur — apprentissage pas-à-pas + révision espacée.
     -- Stockage entièrement séparé des neurones (pas un neurone par étape).
     CREATE TABLE IF NOT EXISTS learning_paths (

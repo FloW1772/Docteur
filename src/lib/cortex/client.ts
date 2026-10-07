@@ -791,7 +791,18 @@ export interface VeilleSettings {
   detailLevel: DetailLevel;
 }
 
-export interface DeepCaptureResult {
+// [Article Canonical V1] Same article already in Docteur (opt-in check on new captures).
+export interface CanonicalArticleDuplicate {
+  duplicate?: boolean;
+  existing?: { id: string; title: string; matchedBy: 'canonical_url' | 'content_hash' };
+  canonical?: { canonicalUrl: string | null; contentHash: string | null; title: string };
+}
+
+export interface CaptureDeepOptions {
+  checkDuplicate?: boolean;
+}
+
+export interface DeepCaptureResult extends CanonicalArticleDuplicate {
   fallback: boolean;
   needs_whisper?: boolean;
   video_duration?: number | null;
@@ -2679,6 +2690,194 @@ async function rassilonJson<T>(path: string, method = 'GET', body?: unknown): Pr
 
 // ── Singleton client ───────────────────────────────────────────────────────
 
+// ── [Agency V1] types ─────────────────────────────────────────────────────────────────────────────────────────────
+export type AgencyRunStatus = 'PLANNING' | 'QUEUED' | 'RUNNING' | 'WAITING' | 'WAITING_APPROVAL' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'REVOKED';
+export type AgencyTaskStatus = 'QUEUED' | 'RUNNING' | 'WAITING' | 'WAITING_APPROVAL' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'REVOKED' | 'BLOCKED' | 'UNKNOWN';
+export interface AgencyRun {
+  id: string; objective: string; status: AgencyRunStatus; strictLocal: boolean; maxConcurrency: number; saveResult: boolean;
+  plan: { source?: 'model' | 'fallback'; warnings?: string[]; model?: string | null; autoStart?: boolean; taskCount?: number };
+  synthesis: string | null; error: string | null; stopReason: string | null; createdAt: string; updatedAt: string; finishedAt: string | null;
+}
+export interface AgencyTask {
+  id: string; runId: string; key: string; ord: number; title: string; instructions: string; agent: string; tools: string[];
+  dependsOn: string[]; status: AgencyTaskStatus; attempt: number; maxAttempts: number; result: string | null; error: string | null;
+  startedAt: string | null; finishedAt: string | null;
+}
+export interface AgencyArtifact { id: string; runId: string; taskId: string | null; kind: 'task_result' | 'synthesis' | 'saved_output'; title: string; content: string; sha256: string; outputId: string | null; createdAt: string }
+export interface AgencyApproval {
+  id: string; runId: string; taskId: string; action: string; digest: string; summary: { title?: string; chars?: number; excerpt?: string };
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CONSUMED' | 'EXPIRED' | 'REVOKED'; createdAt: string; expiresAt: string; decidedAt: string | null; consumedAt: string | null;
+}
+export interface AgencyEvent { id: number; taskId: string | null; type: string; detail: Record<string, unknown>; at: string }
+export interface AgencyAgent { label: string; description: string; tools: string[]; systemOnly?: boolean }
+export interface AgencyTool { impact: 'low' | 'high'; label: string; readOnly?: boolean; requiresApproval?: boolean }
+export interface AgencySnapshot {
+  run: AgencyRun; tasks: AgencyTask[]; artifacts: AgencyArtifact[]; approvals: AgencyApproval[]; events: AgencyEvent[];
+  agents: Record<string, AgencyAgent>; tools: Record<string, AgencyTool>;
+}
+export type AgencyError = Error & { code?: string; status?: number };
+
+/** Mutating Agency calls are never retried automatically (a retry could create a second run). */
+async function agencyCall<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetchTimeout(`${BASE}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } }, 30_000);
+  const data = await res.json().catch(() => ({})) as { error?: string };
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `HTTP ${res.status}`), { code: data.error, status: res.status }) as AgencyError;
+  return data as T;
+}
+// ── [/Agency V1] types ────────────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Model Router V1] types ───────────────────────────────────────────────────────────────────────────────────────
+export type ModelCapability = 'TEXT' | 'VISION' | 'AUDIO' | 'EMBEDDING' | 'TOOL_USE' | 'STRUCTURED_OUTPUT' | 'IMAGE_GENERATION' | 'LONG_CONTEXT';
+export interface ModelFact<T> { value: T | null; source: 'runtime' | 'catalog' | 'unknown' | string }
+export interface ModelRouterProvider {
+  id: string; label: string; location: 'LOCAL' | 'LAN' | 'CLOUD'; runtime: string; kind: 'llm' | 'image'; paid: boolean;
+  configured: boolean | null; available: boolean | null; status: string; reason: string | null;
+}
+export interface ModelRouterModel {
+  id: string; provider: string; name: string; location: 'LOCAL' | 'CLOUD'; runtime: string; installed: boolean | null; available: boolean;
+  capabilities: ModelCapability[]; capabilitiesKnown: boolean; capabilitiesSource: string;
+  contextLength: ModelFact<number>; family: ModelFact<string>; parameterSize: ModelFact<string>;
+  lowVram: null | {
+    quantization: ModelFact<string>; sizeBytes: ModelFact<number>; gpuLayers: ModelFact<number>;
+    loaded: null | { sizeBytes: number | null; vramBytes: number | null; ramOffloadBytes: number | null };
+    fit: null | { rating: string; estimates: { ramBytes: number | null; vramBytes: number | null; diskBytes: number | null }; confidence: string; source: string };
+  };
+  catalog: null | { canonicalId: string; license: string | null; trustLevel: string };
+}
+export interface ModelRouterRegistry {
+  ok: boolean; strictLocal: boolean; cloudEnabled: boolean; cloudAllowed: boolean;
+  hardware: null | { gpus: Array<{ name: string | null; vramBytes: number | null }>; totalVramBytes: number | null; ramBytes: number | null };
+  providers: ModelRouterProvider[]; models: ModelRouterModel[]; pendingIdentity: Array<{ target: string; status: string }>;
+}
+export interface ModelRouterError { code: string; message: string; hint: string | null }
+export interface ModelRouteDecision {
+  ok: boolean; mode: 'auto' | 'manual'; required?: ModelCapability[];
+  decision?: { provider: string; model: string; modelId: string; location: string; reason: string };
+  rejected: Array<{ id: string; reason: string }>; warnings?: string[]; error?: ModelRouterError;
+}
+export interface ModelRouteRequest {
+  capabilities: ModelCapability[]; mode: 'auto' | 'manual'; provider?: string | null; model?: string | null;
+  prompt?: string; responseFormat?: 'text' | 'json'; runtimeOptions?: { num_ctx?: number; num_gpu?: number }; timeoutMs?: number;
+}
+export interface ModelRunResult {
+  ok: boolean; decision?: ModelRouteDecision['decision']; warnings?: string[]; error?: ModelRouterError;
+  rejected?: ModelRouteDecision['rejected'];
+  result?: { text: string; json: unknown; provider: string; model: string; location: string; durationMs: number };
+}
+
+async function modelRouterCall<T>(path: string, init: RequestInit = {}, timeoutMs = 30_000): Promise<T> {
+  // Never retried automatically: a run is a real model call.
+  const res = await fetchTimeout(`${BASE}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } }, timeoutMs);
+  const data = await res.json().catch(() => ({ ok: false, error: { code: `HTTP_${res.status}`, message: `HTTP ${res.status}`, hint: null } }));
+  return data as T; // 4xx/5xx carry a structured { ok:false, error } body shown as is
+}
+// ── [/Model Router V1] types ──────────────────────────────────────────────────────────────────────────────────────
+
+// ── [Document Toolbox PDF V1] types ───────────────────────────────────────────────────────────────────────────────
+export interface ToolboxDoc {
+  id: string; name: string; kind: 'pdf' | 'png' | 'jpeg' | 'webp' | 'gif'; size: number; pageCount: number | null; createdAt: string;
+  origin: null | { op: string; sources?: string[]; pages?: number[]; before?: number; after?: number; status?: string };
+  info?: ToolboxPdfInfo;
+}
+export interface ToolboxPdfInfo {
+  pageCount: number;
+  pages: Array<{ page: number; width: number; height: number; rotation: number }>;
+  metadata: { title: string | null; author: string | null; subject: string | null; keywords: string | null; creator: string | null; producer: string | null; creationDate: string | null; modificationDate: string | null };
+}
+export interface ToolboxError { code: string; message: string }
+export type ToolboxOperation =
+  | { op: 'merge'; docIds: string[] }
+  | { op: 'split'; docId: string; ranges?: string; every?: number }
+  | { op: 'extract' | 'delete' | 'duplicate'; docId: string; pages: number[] }
+  | { op: 'reorder'; docId: string; order: number[] }
+  | { op: 'rotate'; docId: string; pages: number[]; angle: 90 | 180 | 270 }
+  | { op: 'metadata'; docId: string; metadata: { title?: string; author?: string; subject?: string; keywords?: string } }
+  | { op: 'watermark'; docId: string; watermark: { text: string; opacity?: number; size?: number; angle?: number; pages?: number[] } }
+  | { op: 'images_to_pdf'; docIds: string[]; fit?: 'image' | 'a4' }
+  | { op: 'pdf_to_images'; docId: string; pages?: number[]; scale?: number }
+  | { op: 'compress'; docId: string };
+export interface ToolboxOperationResult {
+  ok: boolean; outputs?: ToolboxDoc[]; error?: ToolboxError;
+  compression?: { status: 'COMPRESSION_LIMITED'; before: number; after: number; smaller: boolean };
+}
+
+/** Local PDF workshop calls: no automatic retry (each operation creates documents). */
+async function toolboxCall<T>(path: string, init: RequestInit = {}, timeoutMs = 180_000): Promise<T> {
+  const res = await fetchTimeout(`${BASE}${path}`, init, timeoutMs);
+  const data = await res.json().catch(() => ({ ok: false, error: { code: `HTTP_${res.status}`, message: `HTTP ${res.status}` } })) as { ok?: boolean; error?: ToolboxError };
+  if (!res.ok || data.ok === false) throw Object.assign(new Error(data.error?.message ?? `HTTP ${res.status}`), { code: data.error?.code ?? `HTTP_${res.status}` });
+  return data as T;
+}
+// ── [/Document Toolbox PDF V1] types ──────────────────────────────────────────────────────────────────────────────
+
+// ── [Media Studio V1] types ───────────────────────────────────────────────────────────────────────────────────────
+export type MediaAssetKind = 'video' | 'audio' | 'image';
+export interface MediaAsset {
+  id: string; name: string; file: string; kind: MediaAssetKind; size: number; durationMs: number | null;
+  hasVideo: boolean; hasAudio: boolean; width: number | null; height: number | null; sha256: string;
+  source: { type: 'upload' | 'media-reader' | 'docteur-image'; url?: string; imageId?: string }; addedAt: string;
+}
+export interface MediaClip {
+  id: string; trackId: 'V1' | 'A1'; assetId: string; inMs: number; outMs: number;
+  volume: number; muted: boolean; fadeInMs: number; fadeOutMs: number; startMs?: number;
+}
+export interface MediaTrack { id: 'V1' | 'A1'; kind: 'video' | 'audio'; name: string; muted: boolean; volume: number }
+export type MediaResolution = '640x360' | '1280x720' | '1920x1080' | '1080x1920';
+export interface MediaProject {
+  id: string; name: string; version: number;
+  settings: { resolution: MediaResolution; fps: 24 | 25 | 30 };
+  assets: MediaAsset[]; tracks: MediaTrack[]; clips: MediaClip[];
+  exportConfig: { format: 'mp4'; crf: number; preset: string }; createdAt: string; updatedAt: string;
+}
+export type MediaExportStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+export interface MediaExportJob {
+  id: string; projectId: string; status: MediaExportStatus; progress: number; durationMs: number | null;
+  outputFile: string | null; outputSize: number | null; error: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null;
+}
+export interface MediaProjectView {
+  project: MediaProject;
+  timeline: { video: Array<MediaClip & { startMs: number }>; audio: MediaClip[]; durationMs: number };
+  jobs: MediaExportJob[];
+}
+export interface MediaProjectSummary { id: string; name: string; assetCount: number; clipCount: number; createdAt: string; updatedAt: string }
+export type MediaEdit =
+  | { op: 'add'; assetId: string; trackId?: 'V1' | 'A1'; startMs?: number }
+  | { op: 'trim'; clipId: string; inMs: number; outMs: number }
+  | { op: 'split'; clipId: string; atMs: number }
+  | { op: 'reorder'; clipId: string; toIndex: number }
+  | { op: 'move'; clipId: string; startMs: number }
+  | { op: 'update'; clipId: string; volume?: number; muted?: boolean; fadeInMs?: number; fadeOutMs?: number; durationMs?: number }
+  | { op: 'delete'; clipId: string }
+  | { op: 'track'; trackId: 'V1' | 'A1'; muted?: boolean; volume?: number }
+  | { op: 'settings'; resolution?: MediaResolution; fps?: 24 | 25 | 30; name?: string };
+export interface MediaUploadProgress { sent: number; total: number }
+export const MEDIA_STUDIO_MAX_BYTES = 1024 * 1024 * 1024;
+const MEDIA_CHECKSUM_MAX_BYTES = 256 * 1024 * 1024; // above, the browser would hold the whole file in memory to hash it
+
+/** Local media studio calls: no automatic retry (edits / uploads / exports are not idempotent). */
+async function mediaStudioCall<T>(path: string, init: RequestInit = {}, timeoutMs = 120_000): Promise<T> {
+  const headers = init.body instanceof Blob ? init.headers : { 'Content-Type': 'application/json', ...(init.headers ?? {}) };
+  const res = await fetchTimeout(`${BASE}${path}`, { ...init, headers }, timeoutMs);
+  const data = await res.json().catch(() => ({ ok: false, error: { code: `HTTP_${res.status}`, message: `HTTP ${res.status}` } })) as { ok?: boolean; error?: { code: string; message: string } };
+  if (!res.ok || data.ok === false) throw Object.assign(new Error(data.error?.message ?? `HTTP ${res.status}`), { code: data.error?.code ?? `HTTP_${res.status}` });
+  return data as T;
+}
+async function sha256Hex(blob: Blob): Promise<string | null> {
+  if (blob.size > MEDIA_CHECKSUM_MAX_BYTES || !globalThis.crypto?.subtle) return null;
+  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+}
+/** Docteur image route (/api/image/<id>) → its id: imported server-side, the bytes never transit through the browser. */
+export function docteurImageIdOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.origin !== new URL(BASE).origin) return null;
+    const m = /^\/api\/image\/([^/]+)$/.exec(u.pathname);
+    return m ? decodeURIComponent(m[1]) : null;
+  } catch { return null; }
+}
+// ── [/Media Studio V1] types ──────────────────────────────────────────────────────────────────────────────────────
+
 export const cortexClient = {
   get isAvailable(): boolean { return _available; },
   get lastCheck(): Date | null { return _lastCheck; },
@@ -2970,7 +3169,8 @@ export const cortexClient = {
     source: string,
     url?: string,
     signal?: AbortSignal,
-  ): Promise<CaptureResult & { fallback?: boolean; reason?: string; model_used?: string }> {
+    options: CaptureDeepOptions = {},
+  ): Promise<CaptureResult & CanonicalArticleDuplicate & { fallback?: boolean; reason?: string; error?: string; model_used?: string }> {
     const ctrl  = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), DEEP_CAPTURE_TIMEOUT_MS); // même analyse locale que le mode URL
     signal?.addEventListener('abort', () => ctrl.abort());
@@ -2978,11 +3178,11 @@ export const cortexClient = {
       const res = await fetch(`${BASE}/api/capture/deep`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text, source, ...(url ? { url } : {}) }),
+        body:    JSON.stringify({ text, source, ...(url ? { url } : {}), ...(options.checkDuplicate ? { checkDuplicate: true } : {}) }),
         signal:  ctrl.signal,
       });
       if (!res.ok) throw new Error(`Deep capture text HTTP ${res.status}`);
-      return res.json() as Promise<CaptureResult & { fallback?: boolean; reason?: string; model_used?: string }>;
+      return res.json() as Promise<CaptureResult & CanonicalArticleDuplicate & { fallback?: boolean; reason?: string; error?: string; model_used?: string }>;
     } catch (e) {
       // Deliberately never auto-retried here — this is a mutating call
       // (creates a neuron) and retrying blind could create a duplicate.
@@ -2999,7 +3199,7 @@ export const cortexClient = {
     }
   },
 
-  async captureDeep(url: string, signal?: AbortSignal, captureImages = false): Promise<DeepCaptureResult> {
+  async captureDeep(url: string, signal?: AbortSignal, captureImages = false, options: CaptureDeepOptions = {}): Promise<DeepCaptureResult> {
     const ctrl  = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), DEEP_CAPTURE_TIMEOUT_MS);
     signal?.addEventListener('abort', () => ctrl.abort());
@@ -3007,7 +3207,7 @@ export const cortexClient = {
       const res = await fetch(`${BASE}/api/capture/deep`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ url, captureImages }),
+        body:    JSON.stringify({ url, captureImages, ...(options.checkDuplicate ? { checkDuplicate: true } : {}) }),
         signal:  ctrl.signal,
       });
       if (!res.ok) throw new Error(`Deep capture HTTP ${res.status}`);
@@ -6362,4 +6562,92 @@ export const cortexClient = {
     return data;
   },
   // ── [/Professeur V2 — PROF-6] ─────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Agency V1] orchestration d'agents ────────────────────────────────────────────────────────────────────────
+  agencyListRuns(): Promise<{ runs: AgencyRun[] }> { return agencyCall('/api/agency/runs'); },
+  agencyGetRun(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/runs/${encodeURIComponent(id)}`); },
+  agencyCreateRun(body: { objective: string; strictLocal: boolean; maxConcurrency: number; saveResult: boolean; autoStart?: boolean }): Promise<AgencySnapshot> {
+    return agencyCall('/api/agency/runs', { method: 'POST', body: JSON.stringify(body) });
+  },
+  agencyStartRun(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/runs/${encodeURIComponent(id)}/start`, { method: 'POST' }); },
+  agencyResumeRun(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/runs/${encodeURIComponent(id)}/resume`, { method: 'POST' }); },
+  agencyCancelRun(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); },
+  agencyStopRun(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' }); },
+  agencyStopAll(): Promise<{ stopped: number }> { return agencyCall('/api/agency/stop-all', { method: 'POST' }); },
+  agencyRetryTask(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/tasks/${encodeURIComponent(id)}/retry`, { method: 'POST' }); },
+  agencyCancelTask(id: string): Promise<AgencySnapshot> { return agencyCall(`/api/agency/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); },
+  agencyDecideApproval(id: string, accepted: boolean, digest: string): Promise<AgencySnapshot> {
+    return agencyCall(`/api/agency/approvals/${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify({ accepted, digest }) });
+  },
+  // ── [/Agency V1] ──────────────────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Model Router V1] ─────────────────────────────────────────────────────────────────────────────────────────
+  modelRouterRegistry(): Promise<ModelRouterRegistry> { return modelRouterCall('/api/model-router/registry'); },
+  modelRouterRoute(body: ModelRouteRequest): Promise<ModelRouteDecision> {
+    return modelRouterCall('/api/model-router/route', { method: 'POST', body: JSON.stringify(body) });
+  },
+  modelRouterRun(body: ModelRouteRequest): Promise<ModelRunResult> {
+    return modelRouterCall('/api/model-router/run', { method: 'POST', body: JSON.stringify(body) }, (body.timeoutMs ?? 120_000) + 15_000);
+  },
+  // ── [/Model Router V1] ────────────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Document Toolbox PDF V1] ─────────────────────────────────────────────────────────────────────────────────
+  toolboxUpload(file: File): Promise<{ ok: true; doc: ToolboxDoc }> {
+    return toolboxCall('/api/document-toolbox/files', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) }, body: file });
+  },
+  toolboxList(): Promise<{ ok: true; docs: ToolboxDoc[] }> { return toolboxCall('/api/document-toolbox/files'); },
+  toolboxInfo(id: string): Promise<{ ok: true; doc: ToolboxDoc }> { return toolboxCall(`/api/document-toolbox/files/${encodeURIComponent(id)}`); },
+  toolboxRemove(id: string): Promise<{ ok: true; removed: boolean }> { return toolboxCall(`/api/document-toolbox/files/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
+  toolboxText(id: string): Promise<{ ok: true; pages: Array<{ page: number; text: string }>; empty: boolean }> { return toolboxCall(`/api/document-toolbox/files/${encodeURIComponent(id)}/text`); },
+  toolboxOperation(body: ToolboxOperation): Promise<ToolboxOperationResult> {
+    return toolboxCall('/api/document-toolbox/operations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  },
+  toolboxDownloadUrl(id: string): string { return `${BASE}/api/document-toolbox/files/${encodeURIComponent(id)}/download`; },
+  toolboxPageImageUrl(id: string, page: number, scale = 0.3): string { return `${BASE}/api/document-toolbox/files/${encodeURIComponent(id)}/pages/${page}/image?scale=${scale}`; },
+  // ── [/Document Toolbox PDF V1] ────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Media Studio V1] ─────────────────────────────────────────────────────────────────────────────────────────
+  mediaStudioListProjects(): Promise<{ ok: true; projects: MediaProjectSummary[] }> { return mediaStudioCall('/api/media-studio/projects'); },
+  mediaStudioCreateProject(name?: string): Promise<MediaProjectView> {
+    return mediaStudioCall('/api/media-studio/projects', { method: 'POST', body: JSON.stringify({ name }) });
+  },
+  mediaStudioGetProject(id: string): Promise<MediaProjectView> { return mediaStudioCall(`/api/media-studio/projects/${encodeURIComponent(id)}`); },
+  mediaStudioEdit(id: string, edit: MediaEdit): Promise<MediaProjectView> {
+    return mediaStudioCall(`/api/media-studio/projects/${encodeURIComponent(id)}/edits`, { method: 'POST', body: JSON.stringify(edit) });
+  },
+  mediaStudioRemoveAsset(id: string, assetId: string): Promise<MediaProjectView> {
+    return mediaStudioCall(`/api/media-studio/projects/${encodeURIComponent(id)}/assets/${encodeURIComponent(assetId)}`, { method: 'DELETE' });
+  },
+  /** Chunked upload (each request stays under the local body cap); the server decides the type from the bytes. */
+  async mediaStudioUpload(projectId: string, file: Blob, name: string, opts: { onProgress?: (p: MediaUploadProgress) => void; signal?: AbortSignal; origin?: { type: 'media-reader'; url: string } } = {}): Promise<MediaProjectView & { asset: MediaAsset }> {
+    if (file.size > MEDIA_STUDIO_MAX_BYTES) throw Object.assign(new Error('Fichier trop volumineux (1 Go maximum).'), { code: 'FILE_TOO_LARGE' });
+    const { uploadId, chunkBytes } = await mediaStudioCall<{ uploadId: string; chunkBytes: number }>(`/api/media-studio/projects/${encodeURIComponent(projectId)}/uploads`, {
+      method: 'POST', body: JSON.stringify({ name, size: file.size, origin: opts.origin }),
+    });
+    try {
+      for (let offset = 0; offset < file.size; offset += chunkBytes) {
+        if (opts.signal?.aborted) throw new DOMException('Envoi annulé', 'AbortError');
+        await mediaStudioCall(`/api/media-studio/uploads/${uploadId}?offset=${offset}`, { method: 'PUT', body: file.slice(offset, offset + chunkBytes), headers: { 'Content-Type': 'application/octet-stream' }, signal: opts.signal }, 300_000);
+        opts.onProgress?.({ sent: Math.min(offset + chunkBytes, file.size), total: file.size });
+      }
+      const sha256 = await sha256Hex(file);
+      return await mediaStudioCall(`/api/media-studio/uploads/${uploadId}/complete`, { method: 'POST', body: JSON.stringify({ sha256 }) }, 300_000);
+    } catch (err) {
+      void fetchTimeout(`${BASE}/api/media-studio/uploads/${uploadId}`, { method: 'DELETE' }, 10_000).catch(() => {});
+      throw err;
+    }
+  },
+  mediaStudioImportImage(projectId: string, imageId: string): Promise<MediaProjectView & { asset: MediaAsset }> {
+    return mediaStudioCall(`/api/media-studio/projects/${encodeURIComponent(projectId)}/import-image`, { method: 'POST', body: JSON.stringify({ imageId }) });
+  },
+  mediaStudioExport(projectId: string): Promise<{ ok: true; job: MediaExportJob }> {
+    return mediaStudioCall(`/api/media-studio/projects/${encodeURIComponent(projectId)}/exports`, { method: 'POST' });
+  },
+  mediaStudioGetExport(jobId: string): Promise<{ ok: true; job: MediaExportJob }> { return mediaStudioCall(`/api/media-studio/exports/${encodeURIComponent(jobId)}`); },
+  mediaStudioCancelExport(jobId: string): Promise<{ ok: true; job: MediaExportJob }> {
+    return mediaStudioCall(`/api/media-studio/exports/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  },
+  mediaStudioAssetUrl(projectId: string, assetId: string): string { return `${BASE}/api/media-studio/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/file`; },
+  mediaStudioExportUrl(jobId: string, download = false): string { return `${BASE}/api/media-studio/exports/${encodeURIComponent(jobId)}/file${download ? '?download=1' : ''}`; },
+  // ── [/Media Studio V1] ────────────────────────────────────────────────────────────────────────────────────────
 };

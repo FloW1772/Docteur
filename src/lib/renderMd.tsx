@@ -4,9 +4,11 @@
  * Security: zero dangerouslySetInnerHTML. All output is React nodes.
  * Links: validated to http/https only, with target="_blank" + rel="noopener noreferrer".
  * YouTube: optional onPlayVideo callback for ▶ button on YouTube links.
+ * Media Reader: optional onOpenMedia callback → "open in Docteur" button on EVERY http(s) link (replaces the YouTube-only ▶).
  */
 
 import React from 'react';
+import MediaOpenButton from '../components/media/MediaOpenButton';
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -80,6 +82,7 @@ export function renderInline(
   text: string,
   onPlayVideo?: (id: string) => void,
   keyPrefix: string | number = 0,
+  onOpenMedia?: (url: string) => void,
 ): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   let last = 0;
@@ -119,16 +122,19 @@ export function renderInline(
       );
     } else if (m[11]) {
       // [text](url) — only http/https
-      nodes.push(<InlineLink key={k} href={m[13]}>{m[12]}</InlineLink>);
+      nodes.push(onOpenMedia
+        ? <span key={k}><InlineLink href={m[13]}>{m[12]}</InlineLink><MediaOpenButton href={m[13]} onOpen={onOpenMedia} /></span>
+        : <InlineLink key={k} href={m[13]}>{m[12]}</InlineLink>); // legacy callers: unchanged DOM
     } else if (m[14]) {
       // raw URL
       const href = stripTrail(m[14]);
       const after = m[14].slice(href.length);
-      const ytId = onPlayVideo ? getYouTubeId(href) : null;
+      const ytId = !onOpenMedia && onPlayVideo ? getYouTubeId(href) : null;
       nodes.push(
         <span key={k}>
           <InlineLink href={href}>{href}</InlineLink>
           {ytId && onPlayVideo && <YtButton ytId={ytId} onPlayVideo={onPlayVideo} />}
+          {onOpenMedia && <MediaOpenButton href={href} onOpen={onOpenMedia} />}
           {after || null}
         </span>,
       );
@@ -302,6 +308,7 @@ export function renderTokens(
   style: MdStyle,
   onPlayVideo?: (id: string) => void,
   headingId?: (level: number, text: string, index: number) => string | undefined,
+  onOpenMedia?: (url: string) => void,
 ): React.ReactNode[] {
   return tokens.map((t, idx) => {
     switch (t.kind) {
@@ -310,7 +317,7 @@ export function renderTokens(
         const id  = headingId?.(t.level, t.text, idx);
         return (
           <Tag key={idx} id={id} style={style.heading[t.level]}>
-            {renderInline(t.text, onPlayVideo, idx)}
+            {renderInline(t.text, onPlayVideo, idx, onOpenMedia)}
           </Tag>
         );
       }
@@ -319,7 +326,7 @@ export function renderTokens(
           <ul key={idx} style={{ margin: '4px 0 6px', paddingLeft: 22, listStyleType: 'disc' }}>
             {t.items.map((item, j) => (
               <li key={j} style={style.li}>
-                <span style={style.text}>{renderInline(item, onPlayVideo, `${idx}-${j}`)}</span>
+                <span style={style.text}>{renderInline(item, onPlayVideo, `${idx}-${j}`, onOpenMedia)}</span>
               </li>
             ))}
           </ul>
@@ -329,7 +336,7 @@ export function renderTokens(
           <ol key={idx} style={{ margin: '4px 0 6px', paddingLeft: 22 }}>
             {t.items.map((item, j) => (
               <li key={j} style={style.li}>
-                <span style={style.text}>{renderInline(item, onPlayVideo, `${idx}-${j}`)}</span>
+                <span style={style.text}>{renderInline(item, onPlayVideo, `${idx}-${j}`, onOpenMedia)}</span>
               </li>
             ))}
           </ol>
@@ -338,7 +345,7 @@ export function renderTokens(
         return (
           <blockquote key={idx} style={style.bq}>
             {t.lines.map((l, j) => (
-              <div key={j}>{renderInline(l, onPlayVideo, `${idx}-${j}`)}</div>
+              <div key={j}>{renderInline(l, onPlayVideo, `${idx}-${j}`, onOpenMedia)}</div>
             ))}
           </blockquote>
         );
@@ -349,7 +356,7 @@ export function renderTokens(
       case 'para':
         return (
           <p key={idx} style={{ ...style.text, margin: '0 0 6px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {renderInline(t.text, onPlayVideo, idx)}
+            {renderInline(t.text, onPlayVideo, idx, onOpenMedia)}
           </p>
         );
       default:
@@ -364,16 +371,17 @@ interface MarkdownContentProps {
   text:         string;
   textStyle?:   React.CSSProperties;
   onPlayVideo?: (id: string) => void;
+  onOpenMedia?: (url: string) => void;
   className?:   string;
 }
 
-export function MarkdownContent({ text, textStyle, onPlayVideo, className }: MarkdownContentProps) {
+export function MarkdownContent({ text, textStyle, onPlayVideo, onOpenMedia, className }: MarkdownContentProps) {
   const style: MdStyle = textStyle
     ? { ...DEFAULT_STYLE, text: { ...DEFAULT_STYLE.text, ...textStyle } }
     : DEFAULT_STYLE;
 
   const tokens = tokenize(text);
-  const nodes  = renderTokens(tokens, style, onPlayVideo);
+  const nodes  = renderTokens(tokens, style, onPlayVideo, undefined, onOpenMedia);
 
   return (
     <div

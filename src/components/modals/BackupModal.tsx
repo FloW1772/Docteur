@@ -3,6 +3,9 @@ import { X, Download, Upload, HardDrive, RefreshCw, AlertTriangle, CheckCircle }
 import { cortexClient } from '../../lib/cortex/client';
 import type { BackupEntry, BackupExport } from '../../lib/cortex/client';
 import type { Page } from '../../lib/types';
+import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
+import BlockingOverlay from '../loading/BlockingOverlay';
+import OperationProgress from '../loading/OperationProgress';
 
 interface Props {
   pages:          Page[];
@@ -34,6 +37,7 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
   const [backups, setBackups]   = useState<BackupEntry[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [phase, setPhase]       = useState<Phase>('idle');
+  const restore = useLongOperation('backupImport'); // [Global Loading V1]
   const [status, setStatus]     = useState<{ ok: boolean; message: string } | null>(null);
   const fileInputRef            = useRef<HTMLInputElement>(null);
 
@@ -117,34 +121,56 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
 
     setPhase('importing');
     setStatus(null);
-    try {
+    // [Global Loading V1] Restoring rewrites the neurons the whole app shows: the one
+    // GLOBAL BLOCKING operation (overlay), with real steps and a finite timeout.
+    const restored = await restore.run('Restauration du backup', async ({ setStep, setProgress }) => {
+      setProgress({ current: 0, total: 3, unit: 'étapes' });
       const text = await file.text();
       const data = JSON.parse(text) as BackupExport;
       if (!data.version || !Array.isArray(data.neurons)) {
         throw new Error('Format invalide — ce fichier n\'est pas un backup Docteur');
       }
       // 1. Reindex in LanceDB
+      setStep(`Indexation de ${data.neurons.length} neurone(s)…`);
+      setProgress({ current: 1, total: 3, unit: 'étapes' });
       const result = await cortexClient.backupImport(data);
       // 2. Recreate in IndexedDB (cortex 3D + sidebar) + restore synapses
       const links = Array.isArray(data.links) ? data.links : [];
+      setStep('Restauration des neurones et des synapses…');
+      setProgress({ current: 2, total: 3, unit: 'étapes' });
       await onRestorePages(data.neurons, links);
+      setProgress({ current: 3, total: 3, unit: 'étapes' });
+      return { result, links };
+    }, { step: 'Lecture du fichier…' });
+    setPhase('idle');
+    if (restored) {
+      const { result, links } = restored;
       const linkMsg  = links.length > 0 ? ` · ${links.length} synapses` : '';
       const errMsg   = result.errors.length > 0 ? ` (${result.errors.length} erreurs)` : '';
       const reconMsg = result.reconstructedBlocks && result.reconstructedBlocks > 0
         ? ` · ${result.reconstructedBlocks} neurone(s) d'un backup ancien reconstruit(s) depuis le texte indexé (contenu approximatif)`
         : '';
       setStatus({ ok: result.ok, message: `${result.indexed}/${result.total} neurones restaurés${linkMsg}${errMsg}${reconMsg}` });
-    } catch (e) {
-      setStatus({ ok: false, message: String((e as Error).message ?? e) });
-    } finally {
-      setPhase('idle');
     }
   }
 
   const busy = phase !== 'idle';
   const lastBackup = backups[0] ?? null;
 
+  const restoreVisible = restore.state.status !== 'idle' && restore.state.status !== 'success';
+
   return (
+    <>
+    <BlockingOverlay open={restoreVisible} title="Restauration du backup">
+      <OperationProgress
+        state={restore.state}
+        policy={restore.policy}
+        elapsedMs={restore.elapsedMs}
+        slow={restore.slow}
+        onDismiss={restore.reset}
+        hint="Docteur est temporairement indisponible pendant la restauration des neurones."
+      />
+    </BlockingOverlay>
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
       <div
         className="modal-box"
@@ -299,5 +325,6 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
         </div>
       </div>
     </div>
+    </>
   );
 }

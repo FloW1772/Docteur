@@ -111,11 +111,25 @@ import { checkYtDlp } from './lib/ytdlp.js';
 import { scheduleDailyBackup } from './lib/backup.js';
 import { buildCaptureResult } from './lib/capture.js';
 import { extractContent } from './lib/deep-capture.js';
+import { runCanonicalArticleCapture, articleInputFromExtraction, canonicalizeUrl, findDuplicateArticle } from './lib/canonical-article.js';
+import { getAllPagesMetaFromStore } from './lib/sqlite.js';
+import { insertAgentOutput } from './lib/sqlite.js'; // [Agency V1] reuse of the agent-outputs pipeline
+import { createAgencyService, createRouterComplete, createKnowledgeSearch } from './lib/agency.js';
+import { createAgencyStore } from './lib/agency-store.js';
+import { createAgencyRoute } from './routes/agency.js';
+import { createModelRouterRoute } from './routes/model-router.js'; // [Model Router V1]
+import { createDocumentToolboxRoute } from './routes/document-toolbox.js'; // [Document Toolbox PDF V1]
+import { createMediaStudioService } from './lib/media-studio.js'; // [Media Studio V1]
+import { createMediaStudioStore } from './lib/media-studio-store.js';
+import { createMediaStudioRoute } from './routes/media-studio.js';
+import { validateImageId, getImagePath } from './lib/image.js';
+import { detectLocalHardwareProfile } from './lib/local-hardware-profile.js';
+import { pairProvider } from './lib/providers/pair.js';
 import { transcribeYouTube, ensureTmpDir, cleanTmpDir, TMP_DIR, downloadAudio } from './lib/whisper.js';
 import { transcribeWithGroq } from './lib/whisper-groq.js';
 import { assertSafeUrl } from './lib/url-security.js';
 import { safeFetch, setEgressLogger, setEgressPolicyHook } from './lib/web-egress-guard.js';
-import { initRootPolicy, createRootPolicyMiddleware, webFetchHook } from './lib/root-policy/index.js';
+import { initRootPolicy, createRootPolicyMiddleware, webFetchHook, enforce as enforceRootPolicy } from './lib/root-policy/index.js';
 import { startMediaEgress } from './lib/media-egress.js';
 import { createRootPolicyRoute } from './routes/root-policy.js';
 
@@ -1049,8 +1063,62 @@ const RESUMMARISE_PROMPTS = {
   ].join('\n'),
 };
 
-async function deepCapture(url, captureId) {
+// Shared router call for article deep captures (Article Canonical V1): the
+// URL and pasted-text paths get the same routing, logging and failure shape.
+async function analyzeDeepCaptureMessages({ messages, input, wordCount, captureId, captureStarted }) {
+  const installedNames = await getCachedInstalledModelNames();
+  const routerSettings = getRouterSettings();
+  const aiStarted = performance.now();
+  try {
+    const result = await routedCompletion(ollamaClient, {
+      action:       'deep_capture',
+      input,
+      context:      { word_count: wordCount },
+      messages,
+      installedNames,
+      settings:     routerSettings,
+      logger,
+    });
+    const aiMs = Math.round(performance.now() - aiStarted);
+    const pairAttemptMs = result.pairAttemptMs ?? 0;
+    logger.info({ captureId, elapsedMs: Math.round(performance.now() - captureStarted), aiMs, pairAttemptMs, model: result.model }, 'CAPTURE_AI_DONE');
+    logRouterCall({
+      actionType: 'deep_capture', chosenLevel: result.level, chosenModel: result.model,
+      inputLength: input.length, responseLength: result.response.length,
+      latencyMs: 0, success: true, provider: result.provider ?? 'local',
+      quotaHit: result.quotaHit ?? false,
+    });
+    return { ok: true, response: result.response, model: result.model, aiMs, pairAttemptMs };
+  } catch (err) {
+    logRouterCall({
+      actionType: 'deep_capture', chosenLevel: 0, chosenModel: null,
+      inputLength: input.length, responseLength: 0, latencyMs: 0,
+      success: false, errorMessage: err.message, provider: null,
+    });
+    return { ok: false, error: err.message, aiMs: Math.round(performance.now() - aiStarted), pairAttemptMs: 0 };
+  }
+}
+
+function articleCaptureDeps(captureId, captureStarted) {
+  return {
+    analysisPrompt: DEEP_ANALYSIS_PROMPT,
+    analyze: ({ messages, input, wordCount }) => analyzeDeepCaptureMessages({ messages, input, wordCount, captureId, captureStarted }),
+    generateTitle: (text) => generateNoteTitle(text),
+    resolveStyle: (options) => resolveStyleExamplesBlock(options),
+    personaNote: () => buildPersonaToneNote(getPersonaSettings()),
+    listPages: () => getAllPagesMetaFromStore(),
+  };
+}
+
+async function deepCapture(url, captureId, { checkDuplicate = false } = {}) {
   const captureStarted = performance.now();
+  if (checkDuplicate) {
+    // Cheap identity check before any fetch or model call; the content hash
+    // is checked again by the canonical pipeline once the body is known.
+    const canonicalUrl = canonicalizeUrl(url);
+    const existing = canonicalUrl ? findDuplicateArticle(getAllPagesMetaFromStore(), { canonicalUrl }) : null;
+    if (existing) return { duplicate: true, fallback: false, existing, canonical: { canonicalUrl, contentHash: null, title: '' }, captureId };
+  }
   await ensureOllamaAvailableOrThrow();
 
   // Step 1 — extract content
@@ -1082,6 +1150,19 @@ async function deepCapture(url, captureId) {
       extraction: extraction.extraction ?? null,
       imageUrls: extraction.imageUrls ?? [],
       timings: { ...(extraction.timings ?? {}), totalMs: Math.round(performance.now() - captureStarted) },
+    };
+  }
+
+  // Web articles converge on the canonical article pipeline (same as pasted text).
+  if (extraction.source_type !== 'youtube') {
+    const result = await runCanonicalArticleCapture(
+      articleInputFromExtraction(url, extraction, { captureId, checkDuplicate }),
+      articleCaptureDeps(captureId, captureStarted),
+    );
+    return {
+      ...result,
+      extraction: extraction.extraction ?? null,
+      timings: { ...(extraction.timings ?? {}), ...(result.timings ?? {}), totalMs: Math.round(performance.now() - captureStarted) },
     };
   }
 
@@ -1192,8 +1273,6 @@ async function deepCapture(url, captureId) {
   };
 }
 
-const MAX_TEXT_WORDS = 8_000;
-
 // Résout le bloc d'exemples de style à insérer dans un prompt de résumé, si
 // le réglage global est activé — sinon comportement actuel inchangé (bloc vide).
 async function resolveStyleExamplesBlock({ type, queryText } = {}) {
@@ -1203,102 +1282,23 @@ async function resolveStyleExamplesBlock({ type, queryText } = {}) {
   return { block: buildStyleExamplesBlock(examples), usedExamples: describeUsedExamples(examples) };
 }
 
-async function deepCaptureText(text, source, url, styleExampleType, captureId) {
+// Pasted text ("info <source> <lien>" + texte, for MSN / paywalls) runs the
+// exact same canonical article pipeline as URL extraction.
+async function deepCaptureText(text, source, url, styleExampleType, captureId, { checkDuplicate = false } = {}) {
   const captureStarted = performance.now();
   await ensureOllamaAvailableOrThrow();
-
-  // Truncate if needed (same logic as deep-capture.js)
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
-  let analysisText = text;
-  let truncated = false;
-  if (wordCount > MAX_TEXT_WORDS) {
-    const half = Math.floor(MAX_TEXT_WORDS / 2);
-    analysisText = words.slice(0, half).join(' ') + '\n\n[… contenu tronqué …]\n\n' + words.slice(-half).join(' ');
-    truncated = true;
-  }
-
-  const { block: styleBlock, usedExamples } = await resolveStyleExamplesBlock({ type: styleExampleType, queryText: source });
-  const truncatedNote = truncated ? '\n\n⚠️ Contenu tronqué (source trop longue).' : '';
-  const userContent = `${DEEP_ANALYSIS_PROMPT}${styleBlock}\n\nContenu :\n${analysisText}${truncatedNote}`;
-  const messages = [
-    { role: 'system', content: `Tu es un assistant d'analyse de contenu. Produis une synthèse structurée en français avec du Markdown propre. ${buildPersonaToneNote(getPersonaSettings())}` },
-    { role: 'user', content: userContent },
-  ];
-
-  const installedNames = await getCachedInstalledModelNames();
-  const routerSettings = getRouterSettings();
-
-  let analysisResponse, modelUsed;
-  let pairAttemptMs = 0;
-  let aiMs = 0;
-  const aiStarted = performance.now();
-  try {
-    const result = await routedCompletion(ollamaClient, {
-      action:       'deep_capture',
-      input:        analysisText,
-      context:      { word_count: wordCount },
-      messages,
-      installedNames,
-      settings:     routerSettings,
-      logger,
-    });
-    analysisResponse = result.response;
-    modelUsed        = result.model;
-    pairAttemptMs    = result.pairAttemptMs ?? 0;
-    aiMs             = Math.round(performance.now() - aiStarted);
-    logger.info({ captureId, elapsedMs: Math.round(performance.now() - captureStarted), aiMs, pairAttemptMs, model: modelUsed }, 'CAPTURE_AI_DONE');
-    logRouterCall({
-      actionType: 'deep_capture', chosenLevel: result.level, chosenModel: result.model,
-      inputLength: analysisText.length, responseLength: result.response.length,
-      latencyMs: 0, success: true, provider: result.provider ?? 'local',
-      quotaHit: result.quotaHit ?? false,
-    });
-  } catch (err) {
-    logRouterCall({
-      actionType: 'deep_capture', chosenLevel: 0, chosenModel: null,
-      inputLength: analysisText.length, responseLength: 0, latencyMs: 0,
-      success: false, errorMessage: err.message, provider: null,
-    });
-    return {
-      fallback: true, reason: 'analysis_failed', error: err.message, captureId,
-      timings: { aiMs: Math.round(performance.now() - aiStarted), pairAttemptMs, totalMs: Math.round(performance.now() - captureStarted) },
-    };
-  }
-
-  const titleStarted = performance.now();
-  const title = await generateNoteTitle(analysisText.slice(0, 1000)).catch(() => source);
-  const titleMs = Math.round(performance.now() - titleStarted);
-  const fullContent = analysisResponse.trim() + (url ? `\n\nSource : ${url}` : '');
-
-  return {
-    parent: {
-      title:    source,
-      kind:     'channel',
-      content:  source,
-      metadata: { source },
-    },
-    child: {
-      title,
-      kind:     url ? 'link' : 'note',
-      content:  fullContent,
-      metadata: {
-        source,
-        deep_capture: true,
-        pasted_text:  true,
-        word_count:   wordCount,
-        model_used:   modelUsed,
-        truncated,
-        captureId,
-        captureStatus: 'EXTRACTED',
-        ...(url ? { url } : {}),
-        ...(usedExamples.length > 0 ? { style_examples_used: usedExamples } : {}),
-      },
-    },
-    fallback:   false,
-    model_used: modelUsed,
+  const result = await runCanonicalArticleCapture({
+    path: 'paste',
+    text,
+    source,
+    url,
+    styleExampleType,
     captureId,
-    timings: { aiMs, pairAttemptMs, titleMs, totalMs: Math.round(performance.now() - captureStarted) },
+    checkDuplicate,
+  }, articleCaptureDeps(captureId, captureStarted));
+  return {
+    ...result,
+    timings: { ...(result.timings ?? {}), totalMs: Math.round(performance.now() - captureStarted) },
   };
 }
 
@@ -1647,15 +1647,15 @@ const services = {
     });
     return result;
   },
-  deepCapture: async (url, captureId) => {
+  deepCapture: async (url, captureId, options) => {
     const started = Date.now();
     try {
-      const result  = await deepCapture(url, captureId);
+      const result  = await deepCapture(url, captureId, options);
       result.latency_ms = Date.now() - started;
       insertActivityLog({
         opType: 'capture_deep', item: result?.child?.title ?? url,
         result: result.fallback ? 'failure' : 'success',
-        reason: result.fallback ? (result.reason ?? 'extraction impossible') : null,
+        reason: result.fallback ? (result.reason ?? 'extraction impossible') : (result.duplicate ? 'article déjà présent' : null),
         durationMs: Date.now() - started, modelUsed: result.model_used ?? null,
       });
       return result;
@@ -1664,15 +1664,15 @@ const services = {
       throw err;
     }
   },
-  deepCaptureText: async (text, source, url, styleExampleType, captureId) => {
+  deepCaptureText: async (text, source, url, styleExampleType, captureId, options) => {
     const started = Date.now();
     try {
-      const result  = await deepCaptureText(text, source, url, styleExampleType, captureId);
+      const result  = await deepCaptureText(text, source, url, styleExampleType, captureId, options);
       result.latency_ms = Date.now() - started;
       insertActivityLog({
         opType: 'capture_deep', item: result?.child?.title ?? source ?? 'texte collé',
         result: result.fallback ? 'failure' : 'success',
-        reason: result.fallback ? (result.reason ?? 'extraction impossible') : null,
+        reason: result.fallback ? (result.reason ?? 'extraction impossible') : (result.duplicate ? 'article déjà présent' : null),
         durationMs: Date.now() - started, modelUsed: result.model_used ?? null,
       });
       return result;
@@ -1882,6 +1882,7 @@ app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void Promise.allSettled([
     externalAgents.shutdown(), shutdownSherlock(), stopRassilonLanServer({ persist: false, audit: false }),
+    mediaStudioService.shutdown(), // [Media Studio V1] tree-kills a running FFmpeg export, no orphan on server stop
   ]).finally(() => process.exit(0));
 });
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
@@ -1896,6 +1897,50 @@ app.route('/api', createRassilonRoute({ logger }));
 recoverInterruptedFabricOperations();
 app.route('/api', createDeviceFabricRoute({ logger }));
 app.route('/api', createSkillsRoute({ services, logger }));
+
+// [Agency V1] Orchestration over existing capabilities only: the same router
+// (Strict Local lock + cloud choke point), read-only knowledge search without
+// private neurons, and the agent-outputs pipeline after a human approval.
+const agencyService = createAgencyService({
+  store: createAgencyStore(),
+  logger,
+  complete: createRouterComplete({
+    routedCompletion, client: ollamaClient, getSettings: getRouterSettings,
+    getInstalledNames: getCachedInstalledModelNames, logRouterCall, logger,
+  }),
+  searchKnowledge: createKnowledgeSearch(searchNeuronsEndpoint),
+  saveOutput: ({ title, content, runId }) => {
+    const id = crypto.randomUUID();
+    insertAgentOutput({ id, agent_id: 'agency', run_id: runId, title, content, kind: 'rapport', created_at: new Date().toISOString() });
+    return { outputId: id };
+  },
+});
+{
+  const recovered = agencyService.recoverAfterRestart();
+  if (recovered.interrupted > 0) logger.warn(recovered, 'agency: runs interrupted by restart (tasks UNKNOWN, waiting for the user)');
+}
+app.route('/api', createAgencyRoute({ service: agencyService, logger }));
+// [Model Router V1] Unified registry + deterministic routing over the existing
+// router/providers/catalog/fit/hardware modules. Never downloads a model.
+// [Document Toolbox PDF V1] local PDF workshop (pdf-parse/pdfjs + pdf-lib 1.17.1), in-memory, non-destructive.
+app.route('/api', createDocumentToolboxRoute({ logger }));
+// [Media Studio V1] non-destructive media projects + FFmpeg export jobs (Root Policy MEDIA_TRANSCODE before every process).
+const mediaStudioService = createMediaStudioService({
+  rootDir: path.join(path.dirname(env.SQLITE_PATH), 'media-studio'),
+  store: createMediaStudioStore(),
+  enforce: enforceRootPolicy,
+  resolveDocteurImage: (id) => (validateImageId(id) ? getImagePath(id) : null),
+  logger,
+});
+{
+  const recovered = mediaStudioService.recoverAfterRestart();
+  if (recovered.interrupted > 0) logger.warn(recovered, 'media studio: exports interrupted by restart (reported, not resumed)');
+}
+app.route('/api', createMediaStudioRoute({ service: mediaStudioService, logger }));
+app.route('/api', createModelRouterRoute({
+  client: ollamaClient, getSettings: getRouterSettings, getKeys: getCloudKeys,
+  getHardware: () => detectLocalHardwareProfile(), isPairConfigured: () => pairProvider.isConfigured(), logger,
+}));
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());

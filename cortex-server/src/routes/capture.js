@@ -71,6 +71,9 @@ export function createCaptureRoute({ services, logger }) {
     const url    = String(body?.url  ?? '').trim();
     const text   = String(body?.text ?? '').trim();
     const source = String(body?.source ?? '').trim();
+    // Article Canonical V1: opt-in "is this article already in Docteur?" check
+    // (new captures only — re-analysing an existing neuron must not match itself).
+    const captureOptions = { checkDuplicate: body?.checkDuplicate === true };
 
     // Mode texte collé : text + source requis
     if (text) {
@@ -83,7 +86,7 @@ export function createCaptureRoute({ services, logger }) {
       try {
         const started = Date.now();
         const styleExampleType = body?.style_example_type ? String(body.style_example_type).trim() : undefined;
-        const result  = await services.deepCaptureText(text, source, url || undefined, styleExampleType, captureId);
+        const result  = await services.deepCaptureText(text, source, url || undefined, styleExampleType, captureId, captureOptions);
         c.set('modelUsed', result.model_used ?? 'deep-capture-text');
         if (logger) {
           logger.info({ captureId, source, url, word_count: result.child?.metadata?.word_count, latency_ms: Date.now() - started, timings: result.timings }, 'DEEP_CAPTURE_TEXT_DONE');
@@ -108,7 +111,7 @@ export function createCaptureRoute({ services, logger }) {
 
     try {
       const started = Date.now();
-      const result  = await services.deepCapture(url, captureId);
+      const result  = await services.deepCapture(url, captureId, captureOptions);
       c.set('modelUsed', result.model_used ?? 'deep-capture');
 
       // Feature B: download article images if enabled and capture succeeded

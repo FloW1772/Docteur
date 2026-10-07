@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Send, Plus, Save, Loader2, AlertTriangle } from 'lucide-react';
+import { X, Send, Plus, Save, AlertTriangle } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import type { ChatMessage, ChatSource } from '../../lib/cortex/client';
+import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
+import OperationStatusLine from '../loading/OperationStatusLine';
 
 interface Props {
   onClose: () => void;
@@ -12,7 +14,8 @@ export default function ConversationModal({ onClose, onSaveConversation }: Props
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages]   = useState<ChatMessage[]>([]);
   const [input, setInput]         = useState('');
-  const [loading, setLoading]     = useState(false);
+  const reply = useLongOperation('chatReply'); // [Global Loading V1]
+  const loading = reply.running;
   const [error, setError]         = useState<string | null>(null);
   const [notInstalled, setNotInstalled] = useState(false);
   const [gpuBusy, setGpuBusy]     = useState(false);
@@ -53,7 +56,6 @@ export default function ConversationModal({ onClose, onSaveConversation }: Props
   async function handleSend() {
     const text = input.trim();
     if (!text || loading || !conversationId) return;
-    setLoading(true);
     setError(null);
     setPendingFact(null);
     setFactSaved(false);
@@ -61,26 +63,22 @@ export default function ConversationModal({ onClose, onSaveConversation }: Props
     const optimisticUser: ChatMessage = { id: `local-${Date.now()}`, conversation_id: conversationId, role: 'user', content: text, created_at: new Date().toISOString() };
     setMessages(prev => [...prev, optimisticUser]);
     setInput('');
-    try {
-      const result = await cortexClient.sendChatMessage(conversationId, text);
-      if (!result.ok) {
-        if (result.model_installed === false) setNotInstalled(true);
-        if (result.gpu_busy) setGpuBusy(true);
-        setError(result.error ?? 'Réponse impossible');
-        return;
-      }
-      const reply: ChatMessage = {
-        id: `local-reply-${Date.now()}`, conversation_id: conversationId,
-        role: 'assistant', content: result.answer ?? '', created_at: new Date().toISOString(),
-      };
-      setMessages(prev => [...prev, reply]);
-      setLastSources(result.sources ?? []);
-      if (result.suggested_fact) setPendingFact(result.suggested_fact);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Réponse impossible — utilise le mode Question en attendant.');
-    } finally {
-      setLoading(false);
+    // [Global Loading V1] thrown errors and timeout are shown by the operation line.
+    const result = await reply.run('Réponse de Docteur', () => cortexClient.sendChatMessage(conversationId, text), { step: 'Docteur réfléchit…' });
+    if (!result) return;
+    if (!result.ok) {
+      if (result.model_installed === false) setNotInstalled(true);
+      if (result.gpu_busy) setGpuBusy(true);
+      setError(result.error ?? 'Réponse impossible');
+      return;
     }
+    const answer: ChatMessage = {
+      id: `local-reply-${Date.now()}`, conversation_id: conversationId,
+      role: 'assistant', content: result.answer ?? '', created_at: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, answer]);
+    setLastSources(result.sources ?? []);
+    if (result.suggested_fact) setPendingFact(result.suggested_fact);
   }
 
   async function confirmFact() {
@@ -173,10 +171,9 @@ export default function ConversationModal({ onClose, onSaveConversation }: Props
               </div>
             </div>
           ))}
-          {loading && (
-            <div style={{ alignSelf: 'flex-start' }} className="flex items-center gap-2">
-              <Loader2 size={13} className="animate-spin" style={{ color: '#7a6c9a' }} />
-              <span className="font-mono text-xs" style={{ color: '#7a6c9a' }}>Docteur réfléchit…</span>
+          {reply.state.status !== 'idle' && reply.state.status !== 'success' && (
+            <div style={{ alignSelf: 'flex-start' }}>
+              <OperationStatusLine operation={reply} />
             </div>
           )}
         </div>

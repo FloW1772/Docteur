@@ -3,6 +3,7 @@ import type { Block, BlockType } from '../../lib/types';
 import { BLOCK_PLACEHOLDERS } from '../../lib/types';
 import { MarkdownContent } from '../../lib/renderMd';
 import { getImageUrl } from '../../lib/cortex/client';
+import MediaOpenButton from '../media/MediaOpenButton';
 
 // ── Secure link renderer ──────────────────────────────────────────────────────
 // Only http/https URLs are made clickable. Trailing punctuation is stripped.
@@ -35,6 +36,7 @@ function renderWithLinks(
   onFocus: () => void,
   placeholder?: string,
   onPlayVideo?: (id: string) => void,
+  onOpenMedia?: (url: string) => void,
 ): React.ReactNode {
   if (!text) {
     return (
@@ -62,7 +64,8 @@ function renderWithLinks(
     const href = stripTrailingPunct(m[0]);
     // Put back any stripped chars as plain text
     const after = m[0].slice(href.length);
-    const ytId = onPlayVideo ? getYouTubeId(href) : null;
+    // Media Reader: with onOpenMedia every http(s) link gets "open in Docteur" (any kind); otherwise the historical YouTube-only ▶
+    const ytId = !onOpenMedia && onPlayVideo ? getYouTubeId(href) : null;
     parts.push(
       <span key={m.index} style={{ display: 'inline' }}>
         <a
@@ -107,6 +110,7 @@ function renderWithLinks(
             ▶
           </button>
         )}
+        {onOpenMedia && <MediaOpenButton href={href} onOpen={onOpenMedia} />}
       </span>,
     );
     if (after) parts.push(after);
@@ -208,6 +212,8 @@ interface Props {
   onEnter:          () => void;
   onDelete:         () => void;
   onPlayVideo?:          (videoId: string) => void;
+  /** Media Reader: "open in Docteur" for any http(s) link (takes precedence over the YouTube-only onPlayVideo button) */
+  onOpenMedia?:          (url: string) => void;
   onUploadImage?:        (file: File) => Promise<string>;
   onDownloadImageUrl?:   (url: string) => Promise<string>;
   onDeleteImage?:        (imageId: string) => void;
@@ -544,7 +550,7 @@ function ImageBlock({
   }
 }
 
-function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPlayVideo, onUploadImage, onDownloadImageUrl, onDeleteImage, onAnalyzeImage, transferImages = false }: Props) {
+function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPlayVideo, onOpenMedia, onUploadImage, onDownloadImageUrl, onDeleteImage, onAnalyzeImage, transferImages = false }: Props) {
   const [showMenu, setShowMenu] = useState(false);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -681,7 +687,7 @@ function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPla
                 onFocus={onFocus}
                 autoFocus={block.content === ''}
               />
-            ) : renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS.todo, onPlayVideo)}
+            ) : renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS.todo, onPlayVideo, onOpenMedia)}
           </div>
         ) : block.type === 'list' ? (
           <div className="flex items-start gap-2">
@@ -701,7 +707,7 @@ function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPla
                 onFocus={onFocus}
                 autoFocus={block.content === ''}
               />
-            ) : renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS.list, onPlayVideo)}
+            ) : renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS.list, onPlayVideo, onOpenMedia)}
           </div>
         ) : focused ? (
           <AutoTextarea
@@ -723,10 +729,11 @@ function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPla
               text={block.content}
               textStyle={textStyle}
               onPlayVideo={onPlayVideo}
+              onOpenMedia={onOpenMedia}
             />
           </div>
         ) : (
-          renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS[block.type], onPlayVideo)
+          renderWithLinks(block.content, textStyle, onFocus, BLOCK_PLACEHOLDERS[block.type], onPlayVideo, onOpenMedia)
         )}
       </div>
     </div>

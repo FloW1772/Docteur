@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileText, X, Loader2 } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
+import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
+import OperationStatusLine from '../loading/OperationStatusLine';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -49,7 +51,8 @@ export default function PdfExportModal(props: Props) {
   const [subject, setSubject] = useState(
     props.variant === 'subject' ? (props.initialSubject ?? '') : '',
   );
-  const [loading, setLoading] = useState(false);
+  const pdfExport = useLongOperation('pdfExport'); // [Global Loading V1]
+  const loading = pdfExport.running;
   const [error,   setError]   = useState<string | null>(null);
 
   const subjectRef = useRef<HTMLInputElement>(null);
@@ -65,30 +68,25 @@ export default function PdfExportModal(props: Props) {
 
   async function handleGenerate() {
     setError(null);
-    setLoading(true);
-    try {
-      let blob: Blob;
-      let filename: string;
-      const today = new Date().toISOString().slice(0, 10);
-
-      if (props.variant === 'neuron') {
-        blob     = await cortexClient.exportNeuronPdf(props.pageId, mode);
-        filename = `${safeName(props.title)}_${today}.pdf`;
-      } else {
-        const sub = subject.trim();
-        if (!sub) { setError('Saisis un sujet.'); setLoading(false); return; }
-        blob     = await cortexClient.exportSubjectPdf(sub, mode);
-        filename = `${safeName(sub)}_${today}.pdf`;
-      }
-
-      downloadBlob(blob, filename);
-      onToast?.('PDF téléchargé');
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erreur inconnue');
-    } finally {
-      setLoading(false);
+    const today = new Date().toISOString().slice(0, 10);
+    let request: () => Promise<Blob>;
+    let filename: string;
+    if (props.variant === 'neuron') {
+      const { pageId, title } = props;
+      request  = () => cortexClient.exportNeuronPdf(pageId, mode);
+      filename = `${safeName(title)}_${today}.pdf`;
+    } else {
+      const sub = subject.trim();
+      if (!sub) { setError('Saisis un sujet.'); return; }
+      request  = () => cortexClient.exportSubjectPdf(sub, mode);
+      filename = `${safeName(sub)}_${today}.pdf`;
     }
+    // [Global Loading V1] errors, timeout and retry are shown by the operation line.
+    const blob = await pdfExport.run('Génération du PDF', request);
+    if (!blob) return;
+    downloadBlob(blob, filename);
+    onToast?.('PDF téléchargé');
+    onClose();
   }
 
   const modeData: Array<{ id: PdfMode; label: string; desc: string }> = [
@@ -217,6 +215,12 @@ export default function PdfExportModal(props: Props) {
           <p className="font-mono text-xs mb-4 px-3 py-2 rounded" style={{ color: '#ff4d58', background: 'rgba(255,77,88,0.08)', border: '1px solid rgba(255,77,88,0.2)' }}>
             {error}
           </p>
+        )}
+
+        {pdfExport.state.status !== 'idle' && pdfExport.state.status !== 'success' && (
+          <div className="mb-4">
+            <OperationStatusLine operation={pdfExport} onRetry={() => { void handleGenerate(); }} />
+          </div>
         )}
 
         {/* Actions */}

@@ -37,12 +37,27 @@ try {
       return json(route, articleResponse);
     },
   });
+  // Record every capture phase the modal displays, as it appears. Reading the
+  // modal once at a fixed instant raced the ~250 ms "Enregistrement" window.
+  await success.page.evaluate(() => {
+    window.__capturePhases = [];
+    const record = () => {
+      const text = document.querySelector('.modal-box')?.textContent ?? '';
+      const phase = text.match(/example\.com — [^…]*…/)?.[0];
+      if (phase && window.__capturePhases.at(-1) !== phase) window.__capturePhases.push(phase);
+    };
+    new MutationObserver(record).observe(document.body, { subtree: true, childList: true, characterData: true });
+  });
   await submitArticle(success.page);
   await success.page.waitForTimeout(2_300);
   assert.match(await success.page.locator('.modal-box').innerText(), /Extraction de l'article/);
-  await success.page.waitForTimeout(3_100);
-  assert.match(await success.page.locator('.modal-box').innerText(), /Analyse locale|Enregistrement/);
   assert.ok(await until(async () => success.net.saves.some(save => save.captureStatus === 'READY'), 15_000, 100));
+  // Order proven from the displayed history: Analyse locale or Enregistrement → Indexation → READY.
+  const phases = await success.page.evaluate(() => window.__capturePhases);
+  const activeAt = phases.findIndex(phase => /Analyse locale|Enregistrement/.test(phase));
+  const indexingAt = phases.findIndex(phase => /Indexation/.test(phase));
+  assert.ok(activeAt >= 0, `Analyse locale or Enregistrement displayed: ${JSON.stringify(phases)}`);
+  assert.ok(indexingAt > activeAt, `Indexation displayed after it: ${JSON.stringify(phases)}`);
   const successSaves = success.net.saves.filter(save => save.captureId === 'capture-fixture-1');
   assert.equal(new Set(successSaves.map(save => save.id)).size, 1);
   assert.deepEqual(successSaves.map(save => save.captureStatus), ['INDEXING', 'READY']);

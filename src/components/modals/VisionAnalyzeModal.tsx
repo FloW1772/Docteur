@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { X, Eye, Type, AlertTriangle, Save, Loader2 } from 'lucide-react';
 import { cortexClient, getImageUrl } from '../../lib/cortex/client';
 import { useScreenOcr } from '../../hooks/useScreenOcr';
+import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
+import OperationStatusLine from '../loading/OperationStatusLine';
 
 interface Props {
   imageId: string;
@@ -16,7 +18,8 @@ export default function VisionAnalyzeModal({ imageId, onClose, onSave }: Props) 
   const [answer, setAnswer]       = useState<string | null>(null);
   const [ocrText, setOcrText]     = useState<string | null>(null);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
-  const [visionLoading, setVisionLoading] = useState(false);
+  const vision = useLongOperation('visionAnalysis'); // [Global Loading V1]
+  const visionLoading = vision.running;
   const [error, setError]         = useState<string | null>(null);
   const [notInstalled, setNotInstalled] = useState(false);
   const [gpuBusy, setGpuBusy]     = useState(false);
@@ -36,24 +39,21 @@ export default function VisionAnalyzeModal({ imageId, onClose, onSave }: Props) 
 
   async function handleAnalyzeVision() {
     if (!question.trim() || visionLoading) return;
-    setVisionLoading(true);
     setError(null);
     setAnswer(null);
-    try {
-      const result = await cortexClient.analyzeImage(imageId, question.trim());
-      if (!result.ok) {
-        if (result.model_installed === false) setNotInstalled(true);
-        if (result.gpu_busy) setGpuBusy(true);
-        setError(result.error ?? 'Analyse impossible');
-        return;
-      }
-      setAnswer(result.answer ?? '');
-      setModelUsed(result.model_used ?? visionModel);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Analyse impossible — utilisez l\'OCR à la place.');
-    } finally {
-      setVisionLoading(false);
+    // [Global Loading V1] thrown errors, timeout and retry are handled by the operation.
+    const result = await vision.run('Analyse vision', () => cortexClient.analyzeImage(imageId, question.trim()), {
+      step: 'Analyse en cours… (chargement du modèle + inférence)',
+    });
+    if (!result) return;
+    if (!result.ok) {
+      if (result.model_installed === false) setNotInstalled(true);
+      if (result.gpu_busy) setGpuBusy(true);
+      setError(result.error ?? 'Analyse impossible');
+      return;
     }
+    setAnswer(result.answer ?? '');
+    setModelUsed(result.model_used ?? visionModel);
   }
 
   async function handleExtractText() {
@@ -201,6 +201,8 @@ export default function VisionAnalyzeModal({ imageId, onClose, onSave }: Props) 
             }
           </button>
         </div>
+
+        <OperationStatusLine operation={vision} onRetry={() => { void handleAnalyzeVision(); }} />
 
         {error && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

@@ -65,7 +65,7 @@ function splitDomainLabel(label) {
   return text.split(/(?=[A-Z])/g).filter(Boolean);
 }
 
-function formatDomainName(hostname) {
+export function formatDomainName(hostname) {
   const host = cleanText(hostname).replace(/^www\./i, '');
   if (!host) return 'Source';
 
