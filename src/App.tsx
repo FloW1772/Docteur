@@ -90,7 +90,9 @@ import type { MediaStudioImportRequest } from './components/modals/MediaStudioMo
 import { detectYouTubeDiscoveryInput } from './lib/youtube/discovery-input';
 import { applyDiscoveryEvent, createDiscoveryView, failureView, MODE_LABEL, type DiscoveryView } from './lib/youtube/discovery-view';
 import YouTubeDiscoveryPanel from './components/panels/YouTubeDiscoveryPanel';
-import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, YouTubeDiscoveryResult, YouTubeDiscoveryMode, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
+import YouTubeMultiChannelPanel from './components/panels/YouTubeMultiChannelPanel';
+import { detectYouTubeMultiChannelInput, multiChannelHint, queueErrorText, toDiscoveryResult } from './lib/youtube/multi-channel';
+import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, YouTubeDiscoveryResult, YouTubeDiscoveryMode, YouTubeChannelBatch, YouTubeChannelJobResult, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
 import { pageToContent } from './lib/cortex/pageToContent';
 import { savePage } from './lib/storage';
 import { CapturePipelineError, persistCapturedArticle } from './lib/capturePipeline';
@@ -384,13 +386,15 @@ function CaptureModal({
   onRemoveImage?: (id: string) => void;
 }) {
   const inputRef    = useRef<HTMLTextAreaElement>(null);
-  const deepMatch   = parseDeepInput(value);
+  // several YouTube channel URLs (one per line) → multi-channel discovery queue, never the multi-URL article batch
+  const youtubeMultiChannel = detectYouTubeMultiChannelInput(value);
+  const deepMatch   = youtubeMultiChannel ? null : parseDeepInput(value);
   const isDeep      = deepMatch !== null;
   const isPaste     = deepMatch?.mode === 'paste';
   const urlCount    = deepMatch?.mode === 'urls' ? deepMatch.urls.length : 0;
   const isBatch     = urlCount > 1;
   const isRunning   = busy && capturePhase !== null;
-  const youtubeDiscovery = detectYouTubeDiscoveryInput(value);
+  const youtubeDiscovery = youtubeMultiChannel ? null : detectYouTubeDiscoveryInput(value);
   // [Global Loading V1] The capture lifecycle is driven by App (phases, abort);
   // the modal only adds elapsed time, the "slower than expected" notice and ARIA.
   const captureClock = useOperationClock(isRunning);
@@ -507,6 +511,11 @@ function CaptureModal({
             {youtubeDiscovery && (
               <p className="font-mono text-xs mt-3" data-testid="capture-youtube-mode" style={{ color: '#9f8fbf' }}>
                 Chaîne YouTube détectée — mode automatique : <span style={{ color: '#c4b5fd' }}>{MODE_LABEL[youtubeDiscovery.mode]}</span>
+              </p>
+            )}
+            {youtubeMultiChannel && (
+              <p className="font-mono text-xs mt-3" data-testid="capture-youtube-multi" style={{ color: '#9f8fbf' }}>
+                {multiChannelHint(youtubeMultiChannel)}
               </p>
             )}
 
@@ -700,6 +709,8 @@ function captureWarnsLimited(result: CaptureResult): boolean {
   const capture = (result.child.metadata as { capture?: Record<string, unknown> } | undefined)?.capture ?? {};
   return capture.status === 'limited' || capture.warning === 'parent_not_identified';
 }
+
+const YT_CHANNEL_BATCH_KEY = 'docteur.youtube.channelBatch';
 
 const DISCOVERY_ITEM_LABEL: Partial<Record<YouTubeDiscoveryMode, string>> = {
   CHANNEL_ALL_MEDIA: 'médias', CHANNEL_VIDEOS_ONLY: 'vidéos', CHANNEL_SHORTS_ONLY: 'Shorts', CHANNEL_STREAMS_ONLY: 'streams',
@@ -2654,6 +2665,41 @@ export default function App() {
   const [ytDiscovery, setYtDiscovery]          = useState<DiscoveryView | null>(null);
   const ytDiscoveryAbortRef                    = useRef<AbortController | null>(null);
   useEffect(() => () => ytDiscoveryAbortRef.current?.abort(), []);
+  // YouTube multi-channel queue: the server owns the queue; the UI follows one batch by polling (1 s) and can re-attach to it
+  // after a reload (batch id kept in sessionStorage). Closing the panel never cancels anything.
+  const [ytChannelBatch, setYtChannelBatch]    = useState<YouTubeChannelBatch | null>(null);
+  const [ytChannelBatchLost, setYtChannelBatchLost] = useState<string | null>(null);
+  const [ytImportedJobs, setYtImportedJobs]    = useState<ReadonlySet<string>>(() => new Set());
+  const ytChannelBatchId     = ytChannelBatch?.batchId ?? null;
+  const ytChannelBatchActive = ytChannelBatch?.summary.active === true && ytChannelBatchLost === null;
+  useEffect(() => {
+    let stored: string | null = null;
+    try { stored = window.sessionStorage.getItem(YT_CHANNEL_BATCH_KEY); } catch { /* storage unavailable */ }
+    if (!stored) return;
+    cortexClient.getYouTubeChannelBatch(stored).then(setYtChannelBatch).catch(() => {
+      try { window.sessionStorage.removeItem(YT_CHANNEL_BATCH_KEY); } catch { /* ignore */ }
+    });
+  }, []);
+  useEffect(() => {
+    if (!ytChannelBatchId || !ytChannelBatchActive) return undefined;
+    let stopped = false;
+    let timer: number | undefined;
+    const ctrl = new AbortController();
+    const tick = async () => {
+      try {
+        const snap = await cortexClient.getYouTubeChannelBatch(ytChannelBatchId, ctrl.signal);
+        if (stopped) return;
+        setYtChannelBatch(snap);
+      } catch (err) {
+        if (stopped) return;
+        if ((err as { status?: number }).status === 404) { setYtChannelBatchLost('File introuvable — le serveur a redémarré ; les chaînes non terminées sont interrompues.'); return; }
+        // transient: keep the last known state and try again
+      }
+      timer = window.setTimeout(() => { void tick(); }, 1000);
+    };
+    timer = window.setTimeout(() => { void tick(); }, 1000);
+    return () => { stopped = true; ctrl.abort(); window.clearTimeout(timer); };
+  }, [ytChannelBatchId, ytChannelBatchActive]);
   const [pendingCaptureImgs, setPendingCaptureImgs] = useState<Array<{ id: string; previewUrl: string }>>([]);
   const [cvBusyId, setCvBusyId]                    = useState<string | null>(null);
   const [candidatureLetterReq, setCandidatureLetterReq] = useState<{ cvPageId: string; prefillContext?: string } | null>(null);
@@ -3272,7 +3318,8 @@ export default function App() {
   }
 
   // ── Channel capture: create parent 'channel' neuron + light 'video' children ─
-  async function doChannelCapture(channelUrl: string, found: YouTubeDiscoveryResult): Promise<void> {
+  // `runNext: false` = the caller chains several channels inside ONE queued job and starts the next job itself.
+  async function doChannelCapture(channelUrl: string, found: YouTubeDiscoveryResult, { runNext = true }: { runNext?: boolean } = {}): Promise<void> {
     const videos   = found.items;
     const total    = videos.length;
     const startedAt = Date.now();
@@ -3364,7 +3411,7 @@ export default function App() {
     }
 
     setBatchProgress(null);
-    runNextInQueue();
+    if (runNext) runNextInQueue();
     setSelectedId(channelPage.id);
 
     // Explicitly save the channel page with all accumulated links from React state.
@@ -3445,6 +3492,87 @@ export default function App() {
     } else {
       enqueueOrStart(`Chaîne (${total} vidéos)`, total, () => doChannelCapture(channelUrl, found));
     }
+  }
+
+  // ── YouTube Multi-Channel V1 ─────────────────────────────────────────────
+  // One URL per line → server-side bounded FIFO queue (existing discoverYouTube per channel). Results stay grouped by
+  // channel; importing reuses doChannelCapture, one channel neuron per channel.
+  function rememberChannelBatch(batchId: string | null): void {
+    try {
+      if (batchId) window.sessionStorage.setItem(YT_CHANNEL_BATCH_KEY, batchId);
+      else window.sessionStorage.removeItem(YT_CHANNEL_BATCH_KEY);
+    } catch { /* storage unavailable: the panel simply won't survive a reload */ }
+  }
+
+  async function startYouTubeChannelBatch(text: string): Promise<void> {
+    if (ytChannelBatchActive) { setToast('Une découverte multi-chaînes est déjà en cours — annule-la ou attends la fin'); return; }
+    try {
+      const snap = await cortexClient.startYouTubeChannelBatch(text);
+      setYtChannelBatch(snap);
+      setYtChannelBatchLost(null);
+      setYtImportedJobs(new Set());
+      rememberChannelBatch(snap.batchId);
+      setCaptureOpen(false);
+      setCaptureValue('');
+      const queued = snap.jobs.filter(job => job.status === 'QUEUED' || job.status === 'RUNNING').length;
+      setToast(`${queued} chaîne${queued > 1 ? 's' : ''} YouTube en file`);
+    } catch (err) {
+      setToast(`File YouTube non lancée : ${queueErrorText(err)}`);
+    }
+  }
+
+  async function ytChannelAction(run: (batchId: string) => Promise<YouTubeChannelBatch>): Promise<void> {
+    const batchId = ytChannelBatch?.batchId;
+    if (!batchId) return;
+    try {
+      setYtChannelBatch(await run(batchId));
+    } catch (err) {
+      setToast(queueErrorText(err));
+      cortexClient.getYouTubeChannelBatch(batchId).then(setYtChannelBatch).catch(() => {});
+    }
+  }
+
+  async function importYouTubeChannels(jobIds: string[]): Promise<void> {
+    const batchId = ytChannelBatch?.batchId;
+    if (!batchId || jobIds.length === 0) return;
+    const results: YouTubeChannelJobResult[] = [];
+    for (const jobId of jobIds) {
+      try { results.push(await cortexClient.getYouTubeChannelJobItems(batchId, jobId)); }
+      catch (err) { setToast(`Import impossible : ${queueErrorText(err)}`); }
+    }
+    const usable = results.filter(r => r.items.length > 0);
+    if (usable.length === 0) return;
+    const total = usable.reduce((sum, r) => sum + r.items.length, 0);
+    const run = async () => {
+      for (const result of usable) {
+        await doChannelCapture(result.channel.url, toDiscoveryResult(result), { runNext: false });
+        if (batchAbortRef.current) break; // the user cancelled the import: stop before the next channel
+      }
+      runNextInQueue();
+    };
+    const firstName = usable[0].job.channelName;
+    let label = `${usable.length} chaînes YouTube (${total} vidéos)`;
+    if (usable.length === 1) label = firstName ? `Chaîne ${firstName} (${total} vidéos)` : `Chaîne (${total} vidéos)`;
+    const go = () => {
+      setYtImportedJobs(prev => new Set([...prev, ...usable.map(r => r.job.id)]));
+      enqueueOrStart(label, total, run);
+    };
+    if (total > 30) {
+      setConfirmBatch({
+        count:            total,
+        operation:        usable.length === 1 ? 'vidéos de la chaîne' : `vidéos de ${usable.length} chaînes`,
+        estimatedMinutes: Math.max(1, Math.ceil(total * 0.1 / 60)),
+        onConfirm:        () => { setConfirmBatch(null); go(); },
+      });
+    } else {
+      go();
+    }
+  }
+
+  function closeYouTubeChannelBatch(): void {
+    setYtChannelBatch(null);
+    setYtChannelBatchLost(null);
+    rememberChannelBatch(null);
   }
 
   // ── Deep analyze: enrich existing light video neurons sequentially ────────
@@ -3783,6 +3911,12 @@ export default function App() {
       setCaptureOpen(false);
       setCaptureValue('');
       setCandidatureLetterReq({ cvPageId: firstCvId, prefillContext: context || undefined });
+      return;
+    }
+
+    // ── CHAINES: several YouTube channel URLs, one per line → multi-channel queue ──
+    if (detectYouTubeMultiChannelInput(value)) {
+      void startYouTubeChannelBatch(value);
       return;
     }
 
@@ -5872,6 +6006,21 @@ export default function App() {
           view={ytDiscovery}
           onCancel={cancelYouTubeDiscovery}
           onClose={() => setYtDiscovery(null)}
+        />
+      )}
+
+      {ytChannelBatch && (
+        <YouTubeMultiChannelPanel
+          batch={ytChannelBatch}
+          lost={ytChannelBatchLost}
+          importedJobIds={ytImportedJobs}
+          bottomOffset={ytDiscovery ? 300 : 16}
+          onCancelJob={jobId => { void ytChannelAction(batchId => cortexClient.cancelYouTubeChannelJob(batchId, jobId)); }}
+          onRetryJob={jobId => { void ytChannelAction(batchId => cortexClient.retryYouTubeChannelJob(batchId, jobId)); }}
+          onCancelAll={() => { void ytChannelAction(batchId => cortexClient.cancelYouTubeChannelBatch(batchId)); }}
+          onImport={jobIds => { void importYouTubeChannels(jobIds); }}
+          onClose={closeYouTubeChannelBatch}
+          loadItems={jobId => cortexClient.getYouTubeChannelJobItems(ytChannelBatch.batchId, jobId)}
         />
       )}
 

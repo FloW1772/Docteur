@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { getPlaylistInfo, normalizeDiscoveryOptions } from '../lib/ytdlp.js';
 import { classifyDiscoveryInput, discoverYouTube } from '../lib/youtube-discovery.js';
+import { getDefaultChannelQueue } from '../lib/youtube-channel-queue.js';
 import { downloadImageFromUrl, IMAGE_DIR } from '../lib/image.js';
 import { getWhisperStats } from '../lib/sqlite.js';
 
@@ -268,6 +269,33 @@ export function createCaptureRoute({ services, logger }) {
       await writes;
     });
   });
+
+  // YouTube Multi-Channel V1 — several channel URLs (one per line) discovered through one bounded FIFO queue. Every job runs
+  // the same discoverYouTube as /capture/discover above; the queue survives the client closing the view (poll to follow it).
+  //   POST /capture/discover/channels                          { text: string } | { inputs: string[] }  → batch snapshot
+  //   GET  /capture/discover/channels/:batchId                  → batch snapshot (per-channel status + global summary)
+  //   GET  /capture/discover/channels/:batchId/jobs/:jobId/items → grouped result of ONE completed channel
+  //   POST /capture/discover/channels/:batchId/cancel            → cancel every unfinished channel
+  //   POST /capture/discover/channels/:batchId/jobs/:jobId/cancel | /retry
+  const channelQueue = () => services?.youtubeChannelQueue ?? getDefaultChannelQueue({ logger });
+  const queueReply = (c, result) => (result?.error ? c.json({ error: result.error.code, ...(result.snapshot ? { batch: result.snapshot } : {}) }, result.error.status) : c.json(result));
+
+  route.post('/capture/discover/channels', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const input = Array.isArray(body?.inputs) ? body.inputs : typeof body?.text === 'string' ? body.text : '';
+    try {
+      return c.json(channelQueue().createBatch(input));
+    } catch (err) {
+      if (['EMPTY_INPUT', 'TOO_MANY_INPUTS'].includes(err.code)) return c.json({ error: err.code, message: err.message }, 400);
+      if (err.code === 'QUEUE_CLOSED') return c.json({ error: err.code, message: err.message }, 503);
+      throw err;
+    }
+  });
+  route.get('/capture/discover/channels/:batchId', c => queueReply(c, channelQueue().getBatch(c.req.param('batchId'))));
+  route.get('/capture/discover/channels/:batchId/jobs/:jobId/items', c => queueReply(c, channelQueue().getJobResult(c.req.param('batchId'), c.req.param('jobId'))));
+  route.post('/capture/discover/channels/:batchId/cancel', c => queueReply(c, channelQueue().cancelBatch(c.req.param('batchId'))));
+  route.post('/capture/discover/channels/:batchId/jobs/:jobId/cancel', c => queueReply(c, channelQueue().cancelJob(c.req.param('batchId'), c.req.param('jobId'))));
+  route.post('/capture/discover/channels/:batchId/jobs/:jobId/retry', c => queueReply(c, channelQueue().retryJob(c.req.param('batchId'), c.req.param('jobId'))));
 
   // POST /api/capture/playlist — returns playlist metadata (no download)
   route.post('/capture/playlist', async (c) => {

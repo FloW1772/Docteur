@@ -23,6 +23,7 @@ import { createHealthRoute } from './routes/health.js';
 import { createJobsRoute } from './routes/jobs.js';
 import { createIndexRoute } from './routes/index.js';
 import { createCaptureRoute } from './routes/capture.js';
+import { shutdownDefaultChannelQueue } from './lib/youtube-channel-queue.js';
 import { createSearchRoute } from './routes/search.js';
 import { createAnswerRoute } from './routes/answer.js';
 import { createNeuronRoute } from './routes/neuron.js';
@@ -1882,6 +1883,7 @@ app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void Promise.allSettled([
     externalAgents.shutdown(), shutdownSherlock(), stopRassilonLanServer({ persist: false, audit: false }),
+    shutdownDefaultChannelQueue(), // YouTube multi-channel queue: tree-kills running yt-dlp, no orphan on server stop
     mediaStudioService.shutdown(), // [Media Studio V1] tree-kills a running FFmpeg export, no orphan on server stop
   ]).finally(() => process.exit(0));
 });

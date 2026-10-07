@@ -456,7 +456,9 @@ export function friendlyError(raw) {
   if (lower.includes('removed') || lower.includes('deleted') || lower.includes('unavailable')) return 'Vidéo supprimée ou indisponible';
   if (lower.includes('invalid url') || lower.includes('unsupported url')) return 'URL invalide ou plateforme non supportée';
   if (lower.includes('copyright') || lower.includes('content removed')) return 'Vidéo retirée (copyright)';
-  if (lower.includes('age') || lower.includes('sign in')) return 'Vidéo restreinte — connexion requise';
+  // "age" as a word only: a bare substring also matched "page" ("Unable to download API page: HTTP Error 404")
+  if (/\bage\b|age[- ]restrict|confirm your age/.test(lower) || lower.includes('sign in')) return 'Vidéo restreinte — connexion requise';
+  if (lower.includes('http error 404') || lower.includes('does not exist')) return 'Contenu introuvable (chaîne, vidéo ou page inexistante)';
   const lines = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('[debug]') && !l.startsWith('WARNING'));
   return lines[lines.length - 1] || 'Téléchargement échoué';
 }

@@ -1777,6 +1777,60 @@ export interface YouTubeDiscoveryResult {
   durationMs: number;
 }
 
+/** YouTube Multi-Channel V1: one job per pasted line, discovered by a bounded server-side FIFO queue. */
+export type YouTubeChannelJobStatus =
+  | 'PENDING' | 'VALIDATING' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'DUPLICATE';
+
+export interface YouTubeChannelJob {
+  id: string;
+  /** 0-based line number in the paste */
+  index: number;
+  input: string;
+  normalizedUrl: string | null;
+  mode: YouTubeDiscoveryMode | null;
+  handle: string | null;
+  channelId: string | null;
+  channelName: string | null;
+  status: YouTubeChannelJobStatus;
+  phases: Array<{ tab: YouTubeSourceTab; status: 'pending' | 'running' | 'done' | 'unavailable'; count: number }>;
+  currentTab: YouTubeSourceTab | null;
+  pages: number;
+  itemsFound: number;
+  message: string | null;
+  error: { code: string; message: string; reason?: string } | null;
+  duplicateOf: string | null;
+  retryable: boolean;
+  attempts: number;
+  createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
+}
+
+export interface YouTubeChannelBatchSummary {
+  total: number; waiting: number; running: number; completed: number; failed: number; cancelled: number; duplicate: number;
+  /** items found by the completed channels */
+  items: number;
+  active: boolean;
+}
+
+export interface YouTubeChannelBatch {
+  batchId: string;
+  createdAt: number;
+  concurrency: number;
+  summary: YouTubeChannelBatchSummary;
+  jobs: YouTubeChannelJob[];
+}
+
+export interface YouTubeChannelJobResult {
+  job: YouTubeChannelJob;
+  mode: YouTubeDiscoveryMode;
+  channel: YouTubeChannelInfo;
+  items: PlaylistVideo[];
+  counts: Record<string, number>;
+  duplicates: number;
+  durationMs: number;
+}
+
 export interface PlaylistInfo {
   title:       string;
   uploader:    string;
@@ -1857,6 +1911,19 @@ async function apiFetch(path: string, opts: RequestInit = {}, timeoutMs: number 
     _onConnError?.('Connexion au serveur refusée. Vérifie que Docteur est lancé sur le bon port.');
   }
   throw lastErr;
+}
+
+/** YouTube multi-channel queue calls: JSON in/out; errors keep the server code (BATCH_NOT_FOUND, JOB_ALREADY_FINISHED…) and HTTP status. */
+async function channelQueueCall<T>(path: string, init: RequestInit): Promise<T> {
+  const res = await apiFetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const body = await res.json().catch(() => ({})) as { error?: string; message?: string };
+  if (!res.ok) {
+    const error = new Error(body.message || body.error || `HTTP ${res.status}`) as Error & { code?: string; status?: number };
+    error.code = body.error;
+    error.status = res.status;
+    throw error;
+  }
+  return body as T;
 }
 
 function parseWhisperSseChunks(parts: string[], onProgress: (p: WhisperProgress) => void): DeepCaptureResult | null {
@@ -3401,6 +3468,26 @@ export const cortexClient = {
       videos:      found.items,
       source_type: found.mode === 'SINGLE_SHORT' ? 'short' : 'videos',
     };
+  },
+
+  // ── YouTube Multi-Channel V1: server-side queue (follow it by polling; it keeps running if the view closes) ──
+  async startYouTubeChannelBatch(text: string): Promise<YouTubeChannelBatch> {
+    return channelQueueCall('/api/capture/discover/channels', { method: 'POST', body: JSON.stringify({ text }) });
+  },
+  async getYouTubeChannelBatch(batchId: string, signal?: AbortSignal): Promise<YouTubeChannelBatch> {
+    return channelQueueCall(`/api/capture/discover/channels/${encodeURIComponent(batchId)}`, { signal });
+  },
+  async getYouTubeChannelJobItems(batchId: string, jobId: string): Promise<YouTubeChannelJobResult> {
+    return channelQueueCall(`/api/capture/discover/channels/${encodeURIComponent(batchId)}/jobs/${encodeURIComponent(jobId)}/items`, {});
+  },
+  async cancelYouTubeChannelJob(batchId: string, jobId: string): Promise<YouTubeChannelBatch> {
+    return channelQueueCall(`/api/capture/discover/channels/${encodeURIComponent(batchId)}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  },
+  async retryYouTubeChannelJob(batchId: string, jobId: string): Promise<YouTubeChannelBatch> {
+    return channelQueueCall(`/api/capture/discover/channels/${encodeURIComponent(batchId)}/jobs/${encodeURIComponent(jobId)}/retry`, { method: 'POST' });
+  },
+  async cancelYouTubeChannelBatch(batchId: string): Promise<YouTubeChannelBatch> {
+    return channelQueueCall(`/api/capture/discover/channels/${encodeURIComponent(batchId)}/cancel`, { method: 'POST' });
   },
 
   async deleteNeuron(id: string): Promise<{ ok: boolean }> {
