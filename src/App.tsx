@@ -406,6 +406,7 @@ function CaptureModal({
     step: capturePhase,
     startedAt: captureClock.startedAt ?? captureClock.now,
   };
+
   useEffect(() => {
     if (!isRunning) inputRef.current?.focus();
     function onKey(e: KeyboardEvent) {
