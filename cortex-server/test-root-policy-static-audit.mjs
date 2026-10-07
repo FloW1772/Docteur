@@ -163,6 +163,7 @@ test('SUBPROCESS REGISTRY: every file that can start a process is classified; WI
     'lib/browser.js': 'TYPED_INTERNAL', 'lib/code-intel-git.js': 'TYPED_INTERNAL', 'lib/code-intel-search.js': 'TYPED_INTERNAL', 'lib/comfyui-install-manager.js': 'TYPED_INTERNAL',
     'lib/disk-space.js': 'TYPED_INTERNAL', 'lib/kiwix.js': 'TYPED_INTERNAL', 'lib/metagpt-orchestrator.js': 'TYPED_INTERNAL', 'lib/openmontage-adapter.js': 'TYPED_INTERNAL',
     'lib/process-tree.js': 'TYPED_INTERNAL', 'lib/secret-store.js': 'TYPED_INTERNAL', 'lib/sherlock-gateway.js': 'TYPED_INTERNAL',
+    'lib/port-preflight.js': 'TYPED_INTERNAL', // netstat.exe fallback probe: fixed exe, frozen argv, execFile shell:false
     // FROZEN / CERTIFIED modules: own approval boundaries, untouched; gated at the HTTP layer (route map) not inside
     'lib/maitre-windows-exec.js': 'FROZEN', 'lib/omega-admin.js': 'FROZEN', 'lib/omega-indicator.js': 'FROZEN', 'lib/omega-outbound-network.js': 'FROZEN',
     'lib/omega-windows-exec.js': 'FROZEN', 'lib/monitor-collector.js': 'FROZEN',
