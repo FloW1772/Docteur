@@ -15,18 +15,22 @@ interface Corner {
 
 // Anchor points roughly at each corner widget's inner edge (closest to the
 // core), in viewport percentage — matches .hud2-corner--{tl,tr,bl,br}.
+// Customizable Dashboard V1: keyed by corner SLOT (the user chooses which card sits in each corner).
 const CORNERS: Corner[] = [
-  { key: 'metagpt', x: 15, y: 12 },
-  { key: 'sherlock', x: 85, y: 12 },
-  { key: 'investment', x: 15, y: 88 },
-  { key: 'video', x: 85, y: 88 },
+  { key: 'tl', x: 15, y: 12 },
+  { key: 'tr', x: 85, y: 12 },
+  { key: 'bl', x: 15, y: 88 },
+  { key: 'br', x: 85, y: 88 },
 ];
 
 interface Props {
-  activeKeys: string[];
+  /** corner slots that currently hold a card (an empty corner gets no line) */
+  occupiedSlots: string[];
+  /** occupied slots whose card reports real activity */
+  activeSlots: string[];
 }
 
-export default function CortexLinks({ activeKeys }: Props) {
+export default function CortexLinks({ occupiedSlots, activeSlots }: Props) {
   return (
     <svg
       className="hud2-cortex-links"
@@ -34,8 +38,8 @@ export default function CortexLinks({ activeKeys }: Props) {
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
     >
-      {CORNERS.map(corner => {
-        const active = activeKeys.includes(corner.key);
+      {CORNERS.filter(corner => occupiedSlots.includes(corner.key)).map(corner => {
+        const active = activeSlots.includes(corner.key);
         return (
           <g key={corner.key}>
             <line

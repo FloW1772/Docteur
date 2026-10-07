@@ -5038,6 +5038,23 @@ export default function App() {
             setVideoSummaryOpen(true);
             setVideoSummaryMinimized(false);
           }}
+          // [Customizable Dashboard V1] optional launcher cards → the existing central opener (handleOpenFeature, also used
+          // by voice / help) or the TopBar's own Settings-tab openers. Nothing new is enabled, no permission changes.
+          launchers={{
+            notebook: () => handleOpenFeature('notebook'),
+            teacher: () => handleOpenFeature('teacher'),
+            capture: () => handleOpenFeature('capture'),
+            kiwix: () => handleOpenFeature('kiwix'),
+            'image-generator': () => handleOpenFeature('images'),
+            agents: () => handleOpenFeature('agents'),
+            skills: () => handleOpenFeature('skills'),
+            'prompt-generator': () => handleOpenFeature('prompt-generator'),
+            corpus: () => handleOpenFeature('corpus'),
+            todo: () => handleOpenFeature('todo'),
+            rassilon: () => { setSettingsInitialTab('rassilon'); setSettingsOpen(true); },
+            devices: () => { setSettingsInitialTab('devices'); setSettingsOpen(true); },
+            omega: () => { setSettingsInitialTab('omega'); setSettingsOpen(true); },
+          }}
         />
       )}
 

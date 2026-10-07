@@ -2908,6 +2908,161 @@ select:focus-visible {
   .voice-settings *, .voice-indicator-wrap *, .voice-pending-panel *, .hud2-voice-feedback *, .hud2-command-bar * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
+/* ── Customizable Dashboard V1 ─────────────────────────────────────────────────────────────────────────────────────── */
+.hud2-customize-toggle {
+  position: fixed;
+  bottom: 14px;
+  left: calc(50% + 62px);
+  z-index: 35;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(10, 8, 20, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: 'IBM Plex Mono', 'Cascadia Mono', 'Cascadia Code', Consolas, 'SFMono-Regular', Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+.hud2-customize-toggle:hover,
+.hud2-customize-toggle:focus-visible { color: var(--cyan); border-color: var(--cyan); }
+
+.hud2-customizer {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  z-index: 40;
+}
+.hud2-customizer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.hud2-customizer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(10, 8, 20, 0.55);
+  font-size: 11px;
+  color: #d8ccff;
+  cursor: grab;
+}
+.hud2-customizer-item.is-dragging { opacity: 0.45; }
+.hud2-customizer-item.is-over { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan-dim); }
+.hud2-customizer-item--hidden { cursor: default; opacity: 0.85; }
+.hud2-customizer-handle {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: grab;
+  padding: 2px;
+  display: inline-flex;
+}
+.hud2-customizer-handle:focus-visible { outline: 1px solid var(--cyan); border-radius: 4px; color: var(--cyan); }
+.hud2-customizer-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.hud2-customizer-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud2-customizer-slot { font-size: 9px; color: var(--text-dim); font-family: 'IBM Plex Mono', Consolas, monospace; }
+.hud2-customizer-actions { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.hud2-customizer-actions button,
+.hud2-customizer-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--cyan);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  cursor: pointer;
+}
+.hud2-customizer-actions button:disabled { opacity: 0.3; cursor: default; }
+.hud2-customizer-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; }
+.hud2-customizer-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: #ffd28a; }
+.hud2-customizer-done { color: #3dffaa !important; border-color: rgba(61, 255, 170, 0.45) !important; }
+.hud2-dashboard-empty {
+  position: fixed;
+  bottom: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+}
+@media (max-width: 767px) {
+  .hud2-customize-toggle, .hud2-customizer { display: none; } /* Dashboard is desktop/tablet only (mobile = Focus) */
+}
+
+/* ── Customizable Dashboard V1.1 — direct reorder on the Dashboard itself (PERSONNALISER mode only) ─────────────────── */
+.hud2-rail-card[data-editing="true"] { position: relative; }
+[data-testid="dashboard-card"][data-editing="true"] { cursor: grab; }
+[data-testid="dashboard-card"][data-dragging="true"] { opacity: 0.45; }
+.hud2-card-edit-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px dashed var(--cyan-dim);
+  border-radius: 10px;
+  background: rgba(10, 8, 20, 0.28);
+  color: var(--cyan);
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  cursor: grab;
+  user-select: none;
+}
+[data-testid="dashboard-card"][data-drop-target="true"] .hud2-card-edit-overlay {
+  border: 2px solid var(--cyan);
+  background: rgba(94, 231, 255, 0.14);
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+/* while editing, the panel sits in the band between the top and bottom corners: it never covers a card to grab */
+.hud2-customizer {
+  top: 168px;
+  max-height: max(220px, calc(100vh - 380px));
+}
+.hud2-card-drop-hint { display: none; }
+[data-testid="dashboard-card"][data-drop-target="true"] .hud2-card-drop-hint { display: inline; }
+[data-testid="dashboard-card"][data-drop-target="true"] .hud2-card-edit-hint { display: none; }
+.hud2-card-edit-overlay { touch-action: none; } /* pointer drag also on touch / pen */
+[data-testid="dashboard-card"][data-dragging="true"] .hud2-card-edit-overlay { cursor: grabbing; border-style: solid; }
+.hud2-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 70;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--cyan);
+  background: rgba(10, 8, 20, 0.92);
+  color: var(--cyan);
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
 /* ── [Global Loading V1] long-operation primitives ─────────────────────────── */
 .dl-loading { display: inline-flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', Consolas, monospace; font-size: 12px; color: #c4b5fd; }
 .dl-loading-text { display: inline-flex; flex-direction: column; gap: 2px; }
