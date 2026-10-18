@@ -9,5 +9,5 @@
 // files (routes/memory.js, notebook.js, privacy.js, skills.js, teacher.js).
 export function parseIntParam(rawValue, fallback) {
   const n = Number(rawValue);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isSafeInteger(n) ? n : fallback;
 }

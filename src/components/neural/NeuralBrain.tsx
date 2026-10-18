@@ -539,6 +539,7 @@ class OrbitalBrain {
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly environmentTarget: THREE.WebGLRenderTarget;
   private composer!: EffectComposer;
   private renderPass!: RenderPass;
   private bloomPass!: UnrealBloomPass;
@@ -636,8 +637,11 @@ class OrbitalBrain {
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     pmrem.compileEquirectangularShader();
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment()).texture;
+    const room = new RoomEnvironment();
+    this.environmentTarget = pmrem.fromScene(room);
+    this.scene.environment = this.environmentTarget.texture;
     this.scene.environmentIntensity = 0.22;
+    room.dispose();
     pmrem.dispose();
 
     this.root = new THREE.Group();
@@ -1998,6 +2002,12 @@ class OrbitalBrain {
 
     this.corePlasmaMaterial.dispose();
     this.radialTexture.dispose();
+    // EffectComposer disposes its own targets, not the passes added to it.
+    for (const pass of this.composer.passes) pass.dispose();
+    // Three r170's bloom disposal omits this high-pass material.
+    this.bloomPass.materialHighPassFilter.dispose();
+    this.scene.environment = null;
+    this.environmentTarget.dispose();
     this.composer.dispose();
     this.renderer.dispose();
   }

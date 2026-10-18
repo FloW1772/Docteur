@@ -94,7 +94,7 @@ import YouTubeMultiChannelPanel from './components/panels/YouTubeMultiChannelPan
 import { detectYouTubeMultiChannelInput, multiChannelHint, queueErrorText, toDiscoveryResult } from './lib/youtube/multi-channel';
 import type { CaptureNeuron, CaptureResult, DeepCaptureResult, PlaylistInfo, YouTubeDiscoveryResult, YouTubeDiscoveryMode, YouTubeChannelBatch, YouTubeChannelJobResult, WhisperProgress, WhisperStats, DeepResearchOptions, VoiceSettings, TodoItem, BackupExport, DetailLevel, ResearchSource } from './lib/cortex/client';
 import { pageToContent } from './lib/cortex/pageToContent';
-import { savePage } from './lib/storage';
+import { savePage, saveSnapshotLocally } from './lib/storage';
 import { CapturePipelineError, persistCapturedArticle } from './lib/capturePipeline';
 import { useMobile } from './lib/useMobile';
 
@@ -4589,33 +4589,17 @@ export default function App() {
     neurons: BackupExport['neurons'],
     links: Array<{ from: string; to: string }>,
   ) => {
-    for (const n of neurons) {
-      // Full-fidelity restore: use the real blocks when the backup has them
-      // (version ≥1.2), never flatten through upsertPage's single-paragraph
-      // reconstruction — that's what silently emptied the editor before.
-      const blocks = Array.isArray(n.blocks) && n.blocks.length > 0
-        ? n.blocks
-        : (n.content?.trim() ? [{ id: generateId(), type: 'paragraph' as const, content: n.content }] : []);
-
-      const exists = pages.some(p => p.id === n.id);
-      if (exists) {
-        updatePage(n.id, {
-          title: n.title, kind: n.kind as PageKind, blocks,
-          links: n.links, color: n.color, tags: n.tags, metadata: n.metadata, private: n.private,
-        });
-      } else {
-        await createPageFromData({
-          id: n.id, title: n.title, kind: n.kind as PageKind, blocks,
-          createdAt: n.createdAt, updatedAt: n.updatedAt,
-          links: n.links, color: n.color, tags: n.tags, metadata: n.metadata, private: n.private,
-        });
-      }
-    }
+    // The server may have rejected individual records or reconstructed legacy
+    // blocks. Publish that authoritative result, never replay untrusted input.
+    const restored = await loadAllPagesForReindex(neurons.filter(n => n && typeof n.id === 'string').map(n => n.id));
+    await saveSnapshotLocally(restored);
+    const available = new Set(restored.map(page => page.id));
     // Recreate synapses — createLink is idempotent (deduplicates internally)
     for (const link of links) {
-      createLink(link.from, link.to);
+      if (link && available.has(link.from) && available.has(link.to)) await createLink(link.from, link.to);
     }
-  }, [pages, createPageFromData, updatePage, createLink]);
+    await flushAllSaves();
+  }, [loadAllPagesForReindex, createLink, flushAllSaves]);
 
   // ── Whisper transcription ─────────────────────────────────────────────────
 
@@ -5404,7 +5388,7 @@ export default function App() {
         />
       )}
 
-      {backupOpen && <BackupModal pages={pages} onClose={() => setBackupOpen(false)} onRestorePages={handleRestorePages} />}
+      {backupOpen && <BackupModal pages={pages} onClose={() => setBackupOpen(false)} onPrepareRestore={flushAllSaves} onRestorePages={handleRestorePages} />}
 
       {corpusOpen && <CorpusModal onClose={() => setCorpusOpen(false)} onReload={reloadFromServer} />}
 

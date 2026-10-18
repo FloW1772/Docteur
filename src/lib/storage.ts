@@ -12,7 +12,7 @@ const API_BASE = `${window.location.protocol}//${window.location.hostname}:3001`
 
 export function isRemoteAccess(): boolean {
   const h = window.location.hostname;
-  return h !== 'localhost' && h !== '127.0.0.1';
+  return !['localhost', '127.0.0.1', '[::1]', '::1'].includes(h);
 }
 
 // ── Local IndexedDB ───────────────────────────────────────────────────────────
@@ -40,16 +40,17 @@ async function removeLocal(id: string): Promise<void> {
 // ── Server API ────────────────────────────────────────────────────────────────
 
 async function serverPut(page: Page): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/neuron/${page.id}`, {
+  const res = await fetch(`${API_BASE}/api/neuron/${encodeURIComponent(page.id)}`, {
     method:  'PUT',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ page }),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`Serveur ${res.status} — impossible de sauvegarder`);
 }
 
 async function serverDelete(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/neuron/${id}`, { method: 'DELETE' });
+  const res = await fetch(`${API_BASE}/api/neuron/${encodeURIComponent(id)}`, { method: 'DELETE', signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`Serveur ${res.status} — impossible de supprimer`);
 }
 
@@ -59,9 +60,19 @@ async function serverDelete(id: string): Promise<void> {
 // Serialize writes per neuron so slow requests cannot overtake newer edits.
 
 const pageWrites = new Map<string, Promise<void>>();
+export function waitForPageWrites(): Promise<void> {
+  return Promise.all([...pageWrites.values()]).then(() => {});
+}
+function queuePageWrite(id: string, operation: () => Promise<void>): Promise<void> {
+  const prior = pageWrites.get(id) ?? Promise.resolve();
+  const write = prior.catch(() => {}).then(operation);
+  pageWrites.set(id, write);
+  void write.finally(() => { if (pageWrites.get(id) === write) pageWrites.delete(id); }).catch(() => {});
+  return write;
+}
+
 export function savePage(page: Page, requireServer = isRemoteAccess()): Promise<void> {
-  const prior = pageWrites.get(page.id) ?? Promise.resolve();
-  const write = prior.catch(() => {}).then(async () => {
+  return queuePageWrite(page.id, async () => {
     if (!isRemoteAccess()) await writeLocal(page);
     try { await serverPut(page); } catch (error) {
       // Preserve the existing PC offline editing behavior. Agent creation and
@@ -71,19 +82,18 @@ export function savePage(page: Page, requireServer = isRemoteAccess()): Promise<
     }
     if (isRemoteAccess()) await writeLocal(page);
   });
-  pageWrites.set(page.id, write);
-  void write.finally(() => { if (pageWrites.get(page.id) === write) pageWrites.delete(page.id); }).catch(() => {});
-  return write;
 }
 
-export async function deletePage(id: string): Promise<void> {
-  if (isRemoteAccess()) {
-    await serverDelete(id);
-    await removeLocal(id);
-  } else {
-    await removeLocal(id);
-    serverDelete(id).catch(() => { /* non-fatal */ });
-  }
+export function deletePage(id: string): Promise<void> {
+  return queuePageWrite(id, async () => {
+    if (isRemoteAccess()) {
+      await serverDelete(id);
+      await removeLocal(id);
+    } else {
+      await removeLocal(id);
+      try { await serverDelete(id); } catch { /* local offline deletion */ }
+    }
+  });
 }
 
 // ── Bulk export IndexedDB → server (migration one-shot) ──────────────────────
@@ -99,11 +109,13 @@ export async function exportAllToServer(
 
   for (let i = 0; i < total; i += SYNC_BATCH) {
     const batch = pages.slice(i, i + SYNC_BATCH);
-    await fetch(`${API_BASE}/api/neurons/sync`, {
+    const res = await fetch(`${API_BASE}/api/neurons/sync`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ pages: batch }),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (!res.ok) throw new Error(`Synchronisation HTTP ${res.status} — lot non sauvegardé`);
     saved += batch.length;
     onProgress(saved, total);
   }
@@ -149,9 +161,10 @@ export async function saveSnapshotLocally(pages: Page[]): Promise<void> {
 }
 
 export async function syncPageToServer(id: string): Promise<void> {
-  const page = await getPage(id);
-  if (!page) return;
-  await serverPut(page);
+  return queuePageWrite(id, async () => {
+    const page = await getPage(id);
+    if (page) await serverPut(page);
+  });
 }
 
 // ── Lazy-load server endpoints ────────────────────────────────────────────────

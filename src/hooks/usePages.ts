@@ -3,7 +3,7 @@ import type { Page, PageKind, Block, BlockType } from '../lib/types';
 import {
   getAllPages, getAllPagesFromServer, mergeServerPagesLocal,
   isRemoteAccess, savePage, deletePage as deletePageStorage,
-  saveSnapshotLocally, getPage,
+  saveSnapshotLocally, getPage, waitForPageWrites,
   getRecentPagesFromServer, getAllPagesMetaFromServer,
   getPageCountsFromServer, getPageFromServer,
 } from '../lib/storage';
@@ -161,11 +161,14 @@ function applyUpserted(prev: Page[], page: Page): Page[] {
 
 export function usePages() {
   const [pages, publishPages] = useState<Page[]>([]);
+  const removedIds = useRef(new Set<string>());
+  const deletions = useRef(new Map<string, Promise<void>>());
   // Mutations run synchronously against the latest snapshot, outside React's
   // replayable state updaters. Batched agent actions must see prior writes.
   const livePages = useRef<Page[]>([]);
   const setPages = useCallback((value: Page[] | ((prev: Page[]) => Page[])) => {
-    const next = typeof value === 'function' ? value(livePages.current) : value;
+    const candidate = typeof value === 'function' ? value(livePages.current) : value;
+    const next = candidate.filter(page => !removedIds.current.has(page.id) || deletions.current.has(page.id));
     if (localStorage.getItem('docteur-pipeline-debug') === 'true') console.debug('[pipeline] state merge', { before: livePages.current.length, after: next.length });
     livePages.current = next;
     publishPages(next);
@@ -227,6 +230,7 @@ export function usePages() {
 
   const contentRequests = useRef(new Map<string, Promise<void>>());
   const loadPage = useCallback(async (id: string): Promise<void> => {
+    if (removedIds.current.has(id)) return;
     const known = livePages.current.find(p => p.id === id);
     if (known && !_lazyIds.has(id)) return;
     const pending = contentRequests.current.get(id);
@@ -242,7 +246,7 @@ export function usePages() {
         if (!full) {
           full = await getPage(id) ?? null;
         }
-        if (full) {
+        if (full && !removedIds.current.has(id)) {
           _lazyIds.delete(id);
           setPages(prev => {
             if (prev.some(p => p.id === id)) return prev.map(p => p.id === id ? full! : p);
@@ -287,8 +291,10 @@ export function usePages() {
 
   // ── loadAllPagesForReindex — loads full pages with blocks (for reindex) ───────
 
-  const loadAllPagesForReindex = useCallback(async (): Promise<Page[]> => {
+  const loadAllPagesForReindex = useCallback(async (restoredIds: string[] = []): Promise<Page[]> => {
     const all = await getAllPagesFromServer(); // full content
+    const available = new Set(all.map(page => page.id));
+    for (const id of restoredIds) if (available.has(id) && !deletions.current.has(id)) removedIds.current.delete(id);
     _lazyIds.clear();
     setPages(all);
     const byKind: Record<string, number> = {};
@@ -301,6 +307,7 @@ export function usePages() {
   // ── Helper: save a page and surface server errors ────────────────────────────
 
   const save = useCallback((page: Page, requireServer?: boolean): Promise<void> => {
+    if (removedIds.current.has(page.id)) return Promise.reject(new Error('Neurone supprimé ou en cours de suppression'));
     if (_lazyIds.has(page.id)) {
       const error = new Error('Contenu non chargé : sauvegarde refusée');
       setWriteError(error.message);
@@ -350,7 +357,7 @@ export function usePages() {
       promises.push(save(item.page).catch(() => {}));
       map.delete(id);
     }
-    return Promise.all(promises).then(() => {});
+    return Promise.all(promises).then(() => waitForPageWrites());
   }, [save]);
 
   // ── createPage ───────────────────────────────────────────────────────────────
@@ -370,6 +377,9 @@ export function usePages() {
     options: { requireServer?: boolean } = {},
   ) => {
     const page = makePageFromData(data);
+    if (deletions.current.has(page.id)) throw new Error('Suppression en cours');
+    // An explicit creation/restore may reuse an id; late reads never may.
+    removedIds.current.delete(page.id);
     await save(page, options.requireServer);
     setPages(prev => [page, ...prev]);
     setPageCounts(c => ({ total: c.total + 1, byKind: { ...c.byKind, [page.kind]: (c.byKind[page.kind] ?? 0) + 1 } }));
@@ -388,7 +398,9 @@ export function usePages() {
   // ── updatePage ───────────────────────────────────────────────────────────────
 
   const updatePage = useCallback(async (id: string, updates: Partial<Omit<Page, 'id' | 'createdAt'>>) => {
+    if (removedIds.current.has(id)) throw new Error('Neurone supprimé ou en cours de suppression');
     if (_lazyIds.has(id)) await loadPage(id);
+    if (removedIds.current.has(id)) throw new Error('Neurone supprimé ou en cours de suppression');
     if (_lazyIds.has(id)) throw new Error('Contenu non charge');
     let updated: Page | null = null;
     let oldKind: PageKind | null = null;
@@ -420,33 +432,55 @@ export function usePages() {
 
   // ── removePage ───────────────────────────────────────────────────────────────
 
-  const removePage = useCallback(async (id: string) => {
-    const target = pages.find(p => p.id === id);
-    await deletePageStorage(id);
-    _lazyIds.delete(id);
-    setPages(prev => {
-      const result: Page[] = [];
-      for (const p of prev) {
-        if (p.id === id) continue;
-        if (p.links?.includes(id)) {
-          const next = { ...p, links: p.links.filter(l => l !== id), updatedAt: Date.now() };
-          save(next).catch(() => {});
-          result.push(next);
-        } else {
-          result.push(p);
+  const removePage = useCallback((id: string): Promise<void> => {
+    const pending = deletions.current.get(id);
+    if (pending) return pending;
+    if (removedIds.current.has(id)) return Promise.resolve();
+    const target = livePages.current.find(p => p.id === id);
+    removedIds.current.add(id);
+    const item = pendingSavesRef.current.get(id);
+    if (item) { clearTimeout(item.timer); pendingSavesRef.current.delete(id); }
+    const operation = (async () => {
+      let deleted = false;
+      try {
+        const neighbours = livePages.current.filter(p => p.links?.includes(id));
+        await Promise.all(neighbours.map(p => loadPage(p.id)));
+        if (neighbours.some(p => _lazyIds.has(p.id))) throw new Error('Contenu des neurones liés non chargé : suppression refusée');
+        await deletePageStorage(id);
+        deleted = true;
+        _lazyIds.delete(id);
+        const changed: Page[] = [];
+        setPages(prev => prev.filter(p => p.id !== id).map(p => {
+          if (!p.links?.includes(id)) return p;
+          const next = { ...p, links: p.links.filter(link => link !== id), updatedAt: Date.now() };
+          changed.push(next);
+          return next;
+        }));
+        for (const page of changed) scheduleSave(page);
+        await Promise.all(changed.map(page => flushSave(page.id)));
+        if (target) {
+          setPageCounts(c => ({ total: Math.max(0, c.total - 1), byKind: { ...c.byKind, [target.kind]: Math.max(0, (c.byKind[target.kind] ?? 0) - 1) } }));
         }
+      } catch (error) {
+        if (!deleted) {
+          removedIds.current.delete(id);
+          if (item) scheduleSave(livePages.current.find(p => p.id === id) ?? item.page);
+        }
+        setWriteError((error as Error).message);
+        throw error;
+      } finally {
+        deletions.current.delete(id);
       }
-      return result;
-    });
-    if (target) {
-      setPageCounts(c => ({ total: Math.max(0, c.total - 1), byKind: { ...c.byKind, [target.kind]: Math.max(0, (c.byKind[target.kind] ?? 0) - 1) } }));
-    }
-  }, [pages, save]);
+    })();
+    deletions.current.set(id, operation);
+    return operation;
+  }, [loadPage, flushSave, scheduleSave, setPages]);
 
   // ── createLink ───────────────────────────────────────────────────────────────
 
   const createLink = useCallback(async (sourceId: string, targetId: string) => {
     await Promise.all([loadPage(sourceId), loadPage(targetId)]);
+    if (removedIds.current.has(sourceId) || removedIds.current.has(targetId)) throw new Error('Neurone supprimé ou en cours de suppression');
     const toSave: Page[] = [];
     setPages(prev =>
       prev.map(p => {
@@ -499,7 +533,9 @@ export function usePages() {
     id: string; title: string; kind?: PageKind;
     content?: string; metadata?: Record<string, unknown>;
   }) => {
+    if (removedIds.current.has(data.id)) throw new Error('Neurone supprimé ou en cours de suppression');
     if (_lazyIds.has(data.id)) await loadPage(data.id);
+    if (removedIds.current.has(data.id)) throw new Error('Neurone supprimé ou en cours de suppression');
     let toSave: Page | null = null;
     let isNew = false;
     setPages(prev => {

@@ -3866,11 +3866,15 @@ export function getConversationMessages(conversationId, limit = 20) {
 export function getAllConversationsForBackup() {
   if (!database) return [];
   const conversations = database.prepare('SELECT * FROM conversations ORDER BY created_at ASC').all();
+  const messages = database.prepare('SELECT * FROM conversation_messages ORDER BY created_at ASC, rowid ASC').all();
+  const byConversation = new Map();
+  for (const message of messages) {
+    if (!byConversation.has(message.conversation_id)) byConversation.set(message.conversation_id, []);
+    byConversation.get(message.conversation_id).push(message);
+  }
   return conversations.map(conv => ({
     ...conv,
-    messages: database.prepare(
-      'SELECT role, content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC',
-    ).all(conv.id),
+    messages: byConversation.get(conv.id) ?? [],
   }));
 }
 

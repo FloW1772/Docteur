@@ -10,6 +10,7 @@ import OperationProgress from '../loading/OperationProgress';
 interface Props {
   pages:          Page[];
   onClose:        () => void;
+  onPrepareRestore?: () => Promise<void>;
   onRestorePages: (neurons: BackupExport['neurons'], links: Array<{ from: string; to: string }>) => Promise<void>;
 }
 
@@ -33,7 +34,7 @@ function formatDate(iso: string | null): string {
   }
 }
 
-export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
+export default function BackupModal({ pages, onClose, onPrepareRestore, onRestorePages }: Props) {
   const [backups, setBackups]   = useState<BackupEntry[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [phase, setPhase]       = useState<Phase>('idle');
@@ -67,7 +68,7 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
     setPhase('exporting');
     setStatus(null);
     try {
-      // Get neurons from LanceDB (has content as string for LLM indexing)
+      // Export authoritative SQLite pages together with legacy indexed neurons.
       const serverData = await cortexClient.backupExport();
 
       // Links are now computed server-side from SQLite (backup.js).
@@ -130,8 +131,10 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
       if (!data.version || !Array.isArray(data.neurons)) {
         throw new Error('Format invalide — ce fichier n\'est pas un backup Docteur');
       }
-      // 1. Reindex in LanceDB
-      setStep(`Indexation de ${data.neurons.length} neurone(s)…`);
+      // Complete edits that predate the import before replacing server data.
+      await onPrepareRestore?.();
+      // 1. Restore originals, then rebuild their local vector index.
+      setStep(`Restauration de ${data.neurons.length} neurone(s)…`);
       setProgress({ current: 1, total: 3, unit: 'étapes' });
       const result = await cortexClient.backupImport(data);
       // 2. Recreate in IndexedDB (cortex 3D + sidebar) + restore synapses
@@ -150,7 +153,10 @@ export default function BackupModal({ pages, onClose, onRestorePages }: Props) {
       const reconMsg = result.reconstructedBlocks && result.reconstructedBlocks > 0
         ? ` · ${result.reconstructedBlocks} neurone(s) d'un backup ancien reconstruit(s) depuis le texte indexé (contenu approximatif)`
         : '';
-      setStatus({ ok: result.ok, message: `${result.indexed}/${result.total} neurones restaurés${linkMsg}${errMsg}${reconMsg}` });
+      const indexMsg = result.index_pending ? ` · ${result.index_pending} indexation(s) en attente` : '';
+      const personalMsg = (result.restoredConversations || result.restoredPreferences)
+        ? ` · ${result.restoredConversations ?? 0} conversation(s), ${result.restoredPreferences ?? 0} préférence(s)` : '';
+      setStatus({ ok: result.ok, message: `${result.saved ?? result.indexed}/${result.total} neurones restaurés${linkMsg}${indexMsg}${personalMsg}${errMsg}${reconMsg}` });
     }
   }
 

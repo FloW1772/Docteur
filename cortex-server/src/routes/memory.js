@@ -44,7 +44,7 @@ export function createMemoryRoute({ logger } = {}) {
   // ── View memory (both tiers, paginated) ─────────────────────────────────
 
   app.get('/memory/items', (c) => {
-    const limit = Math.min(parseIntParam(c.req.query('limit'), 100), 500);
+    const limit = Math.min(Math.max(parseIntParam(c.req.query('limit'), 100), 1), 500);
     const offset = Math.max(parseIntParam(c.req.query('offset'), 0), 0);
     const longTerm = listPreferenceFacts().map(f => ({
       id: f.id, text: f.fact, tier: 'long_term', category: 'preference',

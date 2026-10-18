@@ -3,17 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
   "scripts": {
     "test:external-agents": "node scripts/test-external-agents-browser.mjs",
     "test:video": "node --test scripts/test-video-polling.mjs",
     "test:browser": "node scripts/test-frontend-browser.mjs",
     "test:article-capture": "node --test scripts/test-article-capture-pipeline.mjs",
     "test:article-capture-browser": "node scripts/test-article-capture-browser.mjs",
+    "test:audit": "node --experimental-test-module-mocks --test scripts/test-audit-storage.mjs scripts/test-audit-runtime.mjs scripts/test-feature-registry.mjs scripts/test-video-polling.mjs scripts/test-dashboard-layout-unit.mjs scripts/test-kg-graph-unit.mjs",
+    "test:review": "node --test scripts/test-final-review-lan.mjs && node scripts/test-final-review-browser.mjs",
+    "typecheck": "tsc --noEmit",
     "dev": "vite",
     "dev:local": "cross-env LOCAL_NETWORK=true vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "preview:mobile": "vite preview --host --port 5173",
+    "preview:mobile": "cross-env LOCAL_NETWORK=true vite preview --host --port 5173",
     "postinstall": "node scripts/copy-mediapipe-wasm.mjs && node scripts/copy-tesseract-assets.mjs"
   },
   "dependencies": {

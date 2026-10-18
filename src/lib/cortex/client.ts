@@ -1843,6 +1843,10 @@ export interface PlaylistInfo {
 export interface ImportResult {
   ok: boolean;
   indexed: number;
+  saved?: number;
+  index_pending?: number;
+  restoredConversations?: number;
+  restoredPreferences?: number;
   total: number;
   reconstructedBlocks?: number;
   errors: Array<{ id: string; title: string; error: string }>;

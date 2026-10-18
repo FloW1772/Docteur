@@ -8,7 +8,7 @@ export function createPrivacyRoute({ logger }) {
 
   // GET /api/privacy/violations — journal des tentatives bloquées (sans contenu)
   app.get('/privacy/violations', (c) => {
-    const limit = Math.min(parseIntParam(c.req.query('limit'), 100), 500);
+    const limit = Math.min(Math.max(parseIntParam(c.req.query('limit'), 100), 1), 500);
     const rows = getPrivacyViolations(limit);
     return c.json({ violations: rows });
   });

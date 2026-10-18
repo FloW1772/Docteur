@@ -4,8 +4,8 @@ import { connect } from '@lancedb/lancedb';
 
 const TABLE_NAME = 'neurons';
 
-let database;
-let tablePromise;
+let databasePromise;
+const tablePromises = new Map();
 let optimizationPromise;
 export const AUTO_COMPACT_FRAGMENTS = 1000;
 
@@ -42,30 +42,59 @@ function getDataDirectory(lancedbPath) {
 }
 
 async function ensureDatabase(lancedbPath) {
-  if (!database) {
+  if (!databasePromise) {
     ensureParentDir(getDataDirectory(lancedbPath));
-    database = await connect(path.resolve(lancedbPath));
+    databasePromise = connect(path.resolve(lancedbPath)).catch(error => { databasePromise = undefined; throw error; });
   }
-  return database;
+  return databasePromise;
 }
 
-async function getTable(lancedbPath) {
-  const db = await ensureDatabase(lancedbPath);
-
-  if (!tablePromise) {
-    tablePromise = db.openTable(TABLE_NAME).catch(async () => null);
+function getVectorTable(lancedbPath, name) {
+  let pending = tablePromises.get(name);
+  if (!pending) {
+    pending = ensureDatabase(lancedbPath).then(db => db.openTable(name)).catch(error => {
+      if (error.message?.startsWith(`Table '${name}' was not found`)) return null;
+      if (tablePromises.get(name) === pending) tablePromises.delete(name);
+      throw error;
+    });
+    tablePromises.set(name, pending);
   }
-
-  const existingTable = await tablePromise;
-  if (existingTable) return existingTable;
-  return null;
+  return pending;
 }
 
-async function createTable(lancedbPath, row) {
-  const db    = await ensureDatabase(lancedbPath);
-  const table = await db.createTable(TABLE_NAME, [row]);
-  tablePromise = Promise.resolve(table);
-  return table;
+function getTable(lancedbPath) { return getVectorTable(lancedbPath, TABLE_NAME); }
+
+async function getOrCreateVectorTable(lancedbPath, name, rows) {
+  const opened = getVectorTable(lancedbPath, name);
+  const table = await opened;
+  if (table) return { table, created: false };
+  // Publish creation before yielding. Other cold writers await this table and
+  // then merge their own rows instead of racing to create the same table.
+  if (tablePromises.get(name) !== opened) {
+    return { table: await tablePromises.get(name), created: false };
+  }
+  const creation = ensureDatabase(lancedbPath).then(db => db.createTable(name, rows));
+  tablePromises.set(name, creation);
+  try { return { table: await creation, created: true }; }
+  catch (error) {
+    if (tablePromises.get(name) === creation) tablePromises.delete(name);
+    throw error;
+  }
+}
+
+function validateVector(vector) {
+  if (!(Array.isArray(vector) || (ArrayBuffer.isView(vector) && !(vector instanceof DataView))) ||
+      !vector.length || Array.from(vector).some(value => typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(Math.fround(value)))) {
+    throw new Error('LanceDB vector must be a non-empty array of finite numbers representable as float32');
+  }
+}
+
+async function validateDimensions(table, rows) {
+  const schema = await table.schema();
+  const dimensions = schema.fields.find(field => field.name === 'vector')?.type?.listSize;
+  if (!Number.isSafeInteger(dimensions) || dimensions <= 0 || rows.some(row => row.vector.length !== dimensions)) {
+    throw new Error(`LanceDB vector dimension mismatch: expected ${dimensions ?? 'a vector schema'}, received ${rows.map(row => row.vector.length).join(', ')}; previous row preserved`);
+  }
 }
 
 export function createPreview(content, maxLength = 180) {
@@ -93,47 +122,32 @@ function buildTableRow({ id, kind, title, content, metadata, vector }) {
 
 export async function upsertNeuron(lancedbPath, neuron) {
   const row = buildTableRow(neuron);
+  validateVector(row.vector);
 
   let table;
   try {
-    table = await getTable(lancedbPath);
+    const result = await getOrCreateVectorTable(lancedbPath, TABLE_NAME, [row]);
+    if (result.created) return row;
+    table = result.table;
   } catch (err) {
     throw new Error(`LanceDB getTable failed: ${err.message}`);
   }
 
-  if (!table) {
-    // First-ever insert — creates the table schema from this row
-    try {
-      await createTable(lancedbPath, row);
-      return row;
-    } catch (err) {
-      throw new Error(`LanceDB createTable failed: ${err.message}\nRow keys: ${Object.keys(row).join(', ')}\nVector dim: ${row.vector?.length ?? 'none'}`);
-    }
-  }
+  // Arrow's conversion can silently coerce an array to the fixed-size vector
+  // field. Refuse model/dimension changes before that conversion can occur.
+  await validateDimensions(table, [row]);
 
-  // mergeInsert is ~48× faster than delete+add (no full-scan delete, single write).
+  // Update in one atomic merge without a destructive delete+add fallback.
   try {
     await table.mergeInsert('id')
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
       .execute([row]);
-    tablePromise = Promise.resolve(table);
     return row;
   } catch (err) {
-    // Schema mismatch or mergeInsert not supported — fall back to delete+add
-    console.warn(`[LanceDB] mergeInsert failed (${err.message}), falling back to delete+add`);
-    try { await table.delete(`id = '${escapeSqlString(row.id)}'`); } catch { /* row may not exist */ }
-    try {
-      await table.add([row]);
-      tablePromise = Promise.resolve(table);
-      return row;
-    } catch (addErr) {
-      throw new Error(
-        `LanceDB table.add failed — possible schema mismatch.\n` +
-        `Error: ${addErr.message}\n` +
-        `Hint: delete data/cortex.lance and restart the server to reset the schema.`
-      );
-    }
+    // mergeInsert is atomic. A delete+add fallback would destroy the old row
+    // if the replacement also failed (e.g. a different embedding dimension).
+    throw new Error(`LanceDB upsert failed; previous row preserved: ${err.message}`, { cause: err });
   }
 }
 
@@ -314,20 +328,16 @@ export async function getTableStatus(lancedbPath) {
 export async function getAllNeuronsForBackup(lancedbPath) {
   const table = await getTable(lancedbPath);
   if (!table) return [];
-  try {
-    const rows = typeof table.query === 'function'
-      ? await table.query().toArray()
-      : await table.search().limit(100000).toArray();
-    return rows.map(row => ({
-      id:       String(row.id ?? ''),
-      kind:     String(row.kind ?? 'note'),
-      title:    String(row.title ?? ''),
-      content:  String(row.content ?? ''),
-      metadata: (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })(),
-    }));
-  } catch {
-    return [];
-  }
+  const rows = typeof table.query === 'function'
+    ? await table.query().toArray()
+    : await table.search().limit(100000).toArray();
+  return rows.map(row => ({
+    id:       String(row.id ?? ''),
+    kind:     String(row.kind ?? 'note'),
+    title:    String(row.title ?? ''),
+    content:  String(row.content ?? ''),
+    metadata: (() => { try { return JSON.parse(row.metadata); } catch { return {}; } })(),
+  }));
 }
 
 export async function getNeuronById(lancedbPath, id) {
@@ -343,12 +353,8 @@ export async function getNeuronById(lancedbPath, id) {
 // which is the single source of truth. Every search is pushed down with a
 // notebook_id predicate so retrieval can never cross notebooks.
 const CHUNK_TABLE_NAME = 'notebook_chunks';
-let chunkTablePromise = null;
-
 async function getChunkTable(lancedbPath) {
-  const db = await ensureDatabase(lancedbPath);
-  if (!chunkTablePromise) chunkTablePromise = db.openTable(CHUNK_TABLE_NAME).catch(() => null);
-  return chunkTablePromise;
+  return getVectorTable(lancedbPath, CHUNK_TABLE_NAME);
 }
 
 export async function upsertChunkVectors(lancedbPath, rows) {
@@ -360,13 +366,12 @@ export async function upsertChunkVectors(lancedbPath, rows) {
     version_id: String(r.version_id),
     vector: r.vector,
   }));
-  const table = await getChunkTable(lancedbPath);
-  if (!table) {
-    const db = await ensureDatabase(lancedbPath);
-    chunkTablePromise = db.createTable(CHUNK_TABLE_NAME, clean);
-    await chunkTablePromise;
-    return clean.length;
-  }
+  for (const row of clean) validateVector(row.vector);
+  const dimensions = clean[0].vector.length;
+  if (clean.some(row => row.vector.length !== dimensions)) throw new Error('LanceDB vector dimension mismatch within batch');
+  const { table, created } = await getOrCreateVectorTable(lancedbPath, CHUNK_TABLE_NAME, clean);
+  if (created) return clean.length;
+  await validateDimensions(table, clean);
   await table.mergeInsert('chunk_id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(clean);
   return clean.length;
 }
@@ -418,17 +423,18 @@ export async function deleteChunkVectors(lancedbPath, { chunkIds, notebookId, so
 // Same LanceDB database, table `docteur_memory` (ids + scope columns only; the statement lives in SQLite).
 // Scope predicates are pushed down so a query can never even see another project's / notebook's vectors.
 const MEMORY_TABLE_NAME = 'docteur_memory';
-let memoryTablePromise = null;
 async function getMemoryTable(lancedbPath) {
-  const db = await ensureDatabase(lancedbPath);
-  if (!memoryTablePromise) memoryTablePromise = db.openTable(MEMORY_TABLE_NAME).catch(() => null);
-  return memoryTablePromise;
+  return getVectorTable(lancedbPath, MEMORY_TABLE_NAME);
 }
 export async function upsertMemoryVectors(lancedbPath, rows) {
   if (!Array.isArray(rows) || rows.length === 0) return 0;
   const clean = rows.map(r => ({ memory_id: String(r.memory_id), scope_kind: String(r.scope_kind), project_id: String(r.project_id ?? ''), notebook_id: String(r.notebook_id ?? ''), vector: r.vector }));
-  const table = await getMemoryTable(lancedbPath);
-  if (!table) { const db = await ensureDatabase(lancedbPath); memoryTablePromise = db.createTable(MEMORY_TABLE_NAME, clean); await memoryTablePromise; return clean.length; }
+  for (const row of clean) validateVector(row.vector);
+  const dimensions = clean[0].vector.length;
+  if (clean.some(row => row.vector.length !== dimensions)) throw new Error('LanceDB vector dimension mismatch within batch');
+  const { table, created } = await getOrCreateVectorTable(lancedbPath, MEMORY_TABLE_NAME, clean);
+  if (created) return clean.length;
+  await validateDimensions(table, clean);
   await table.mergeInsert('memory_id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute(clean);
   return clean.length;
 }

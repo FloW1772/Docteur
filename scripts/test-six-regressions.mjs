@@ -93,6 +93,17 @@ try {
   assert.ok(linked.links.includes('fixture-1') && linked.links.includes('fixture-2'));
   assert.equal(linked.blocks[0].content, 'Persistent fixture 0');
   console.log('PASS batched update + successive bidirectional links: latest title, both links and content saved');
+  await page.evaluate(async () => {
+    await window.regression.updatePage('fixture-3', { title: 'Delete before debounce' });
+    await window.regression.removePage('fixture-3');
+  });
+  await page.waitForTimeout(1000);
+  assert.equal((await fetch('http://127.0.0.1:3002/api/neuron/fixture-3')).status, 404);
+  assert.equal(await page.evaluate(async () => {
+    const { getPage } = await import('/src/lib/storage.ts');
+    return Boolean(await getPage('fixture-3'));
+  }), false);
+  console.log('PASS rapid edit + delete: debounce drained, absent from SQLite and IndexedDB');
   await page.route('**/api/neuron/**', async route => {
     if (route.request().method() === 'PUT') await route.abort('connectionrefused');
     else await route.fallback();

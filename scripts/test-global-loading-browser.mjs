@@ -299,7 +299,7 @@ try {
     await dialog.waitFor();
     const bar = dialog.getByRole('progressbar');
     ok(await until(async () => (await bar.getAttribute('aria-valuenow')) === '33'), 'backup: known progress 1/3');
-    ok((await dialog.innerText()).includes('Indexation de 2 neurone(s)…'), 'backup: real step');
+    ok((await dialog.innerText()).includes('Restauration de 2 neurone(s)…'), 'backup: real restore step');
     eq(await dialog.getByRole('button', { name: /Annuler/ }).count(), 0, 'backup: no fake cancel');
     ok(await page.evaluate(() => document.activeElement?.closest('.dl-overlay-box') !== null), 'backup: focus inside the overlay');
     await page.keyboard.press('Tab');

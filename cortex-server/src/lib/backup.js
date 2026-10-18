@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { getAllNeuronsForBackup } from './lancedb.js';
-import { getAllPagesFromStore } from './sqlite.js';
+import { buildBackupSnapshot } from './backup-snapshot.js';
 
 const MAX_BACKUPS = 30;
 const MS_PER_DAY  = 24 * 60 * 60 * 1000;
@@ -42,31 +43,18 @@ export async function runBackup(lancedbPath) {
 
   const neurons = await getAllNeuronsForBackup(lancedbPath);
 
-  // Merge links + updatedAt from SQLite pages table — LanceDB doesn't store them
-  const pages = getAllPagesFromStore();
-  const pageMap = new Map(pages.map(p => [p.id, p]));
-  const neuronsWithLinks = neurons.map(n => {
-    const page = pageMap.get(n.id);
-    if (!page) return n;
-    const extra = {};
-    if (Array.isArray(page.links) && page.links.length > 0) extra.links = page.links;
-    if (page.updatedAt) extra.updatedAt = page.updatedAt;
-    return Object.keys(extra).length ? { ...n, ...extra } : n;
-  });
-
-  const payload = {
-    version: '1.1',
-    exported_at: now.toISOString(),
-    neurons_count: neuronsWithLinks.length,
-    neurons: neuronsWithLinks,
-  };
+  const payload = buildBackupSnapshot(neurons, now);
 
   // Atomic write: write to a temp file then rename, so a crash/power-loss
   // mid-write can never leave a truncated/corrupt backup-YYYY-MM-DD.json —
   // rename() is atomic on both POSIX and NTFS for same-volume paths.
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
-  fs.renameSync(tmpPath, filePath);
+  const tmpPath = `${filePath}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(tmpPath, filePath);
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
 
   // Rotation: keep only MAX_BACKUPS, delete oldest
   const files = fs.readdirSync(dir)
@@ -78,7 +66,7 @@ export async function runBackup(lancedbPath) {
     }
   }
 
-  return { filename, neurons_count: neuronsWithLinks.length, exported_at: now.toISOString() };
+  return { filename, neurons_count: payload.neurons_count, exported_at: now.toISOString() };
 }
 
 async function runBackupIfNotDoneToday(lancedbPath) {

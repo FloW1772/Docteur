@@ -8,6 +8,7 @@ try {
   server = await createServer({
     configFile: false,
     plugins: [react()],
+    optimizeDeps: { entries: ['src/lib/voiceStt.ts', 'src/lib/voiceTts.ts'] },
     server: { watch: null, host: '127.0.0.1', port: 5207, strictPort: true, hmr: false },
     logLevel: 'error',
   });

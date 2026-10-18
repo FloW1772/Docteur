@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { listBackups, runBackup } from '../lib/backup.js';
-import { savePageToStore, upsertFileOriginal, upsertFileResult, getFileOriginals, getFileResults, getAllPagesFromStore, getTodoItems, addTodoItem, getAllConversationsForBackup, listPreferenceFacts, getAllGeneratedPrompts, insertGeneratedPrompt } from '../lib/sqlite.js';
+import { buildBackupSnapshot, restoreBackupConversation, restoreBackupPreference, validateBackupPage } from '../lib/backup-snapshot.js';
+import { savePageToStore, upsertFileOriginal, upsertFileResult, addTodoItem, insertGeneratedPrompt } from '../lib/sqlite.js';
 import { IMAGE_DIR } from '../lib/image.js';
 import { PublicError, publicErrorBody, publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
@@ -27,42 +29,7 @@ export function createBackupRoute({ services, logger }) {
     try {
       const neurons = await services.getAllNeuronsForBackup();
 
-      // SQLite `pages` holds the full Page shape (blocks, dates, color, tags,
-      // private) — LanceDB only ever stored the flattened id/kind/title/content/
-      // metadata used for embedding. Prefer the SQLite page wholesale when one
-      // exists so the export round-trips everything the editor actually shows;
-      // fall back to the LanceDB-only fields for a neuron with no matching page
-      // (e.g. indexed directly via /index without ever being saved).
-      const pages = getAllPagesFromStore();
-      const pageMap = new Map(pages.map(p => [p.id, p]));
-      const neuronsWithLinks = neurons.map(n => {
-        const page = pageMap.get(n.id);
-        if (!page) return n;
-        return {
-          id:        page.id,
-          kind:      page.kind ?? n.kind,
-          title:     page.title ?? n.title,
-          content:   n.content, // flattened text used for embedding on re-import
-          blocks:    Array.isArray(page.blocks) ? page.blocks : [],
-          createdAt: page.createdAt,
-          updatedAt: page.updatedAt,
-          links:     Array.isArray(page.links) ? page.links : [],
-          color:     page.color,
-          tags:      page.tags,
-          metadata:  page.metadata ?? n.metadata ?? {},
-          private:   page.private,
-        };
-      });
-
-      // Build deduplicated edge list from SQLite — client no longer needs in-memory pages for this
-      const seenEdges = new Set();
-      const links = [];
-      for (const page of pages) {
-        for (const targetId of (page.links ?? [])) {
-          const key = [page.id, targetId].sort().join('|');
-          if (!seenEdges.has(key)) { seenEdges.add(key); links.push({ from: page.id, to: targetId }); }
-        }
-      }
+      const snapshot = buildBackupSnapshot(neurons);
 
       // Count images on disk for the export manifest
       let imageCount = 0;
@@ -77,36 +44,10 @@ export function createBackupRoute({ services, logger }) {
       // Images are NOT embedded in this JSON — they live in data/images/ on disk.
       // To restore images, copy data/images/ alongside this file before importing.
       return c.json({
-        version: '1.2', // 1.2: full Page fidelity (blocks, createdAt, color, tags, private)
-        exported_at: new Date().toISOString(),
-        neurons_count: neuronsWithLinks.length,
-        neurons: neuronsWithLinks,
-        links,
-        files: {
-          originals: getFileOriginals(),
-          results: getFileResults(),
-        },
+        ...snapshot,
         images_note: imageCount > 0
           ? `${imageCount} image(s) (~${Math.round(imagesTotalBytes / 1024 / 1024 * 10) / 10} Mo) stockées dans data/images/ — sauvegarder ce dossier séparément. Les neurones se restaurent sans les images (placeholder affiché).`
           : 'Aucune image dans ce backup.',
-        todo_items: getTodoItems(),
-        // Clearly labeled as personal — conversations and remembered preferences,
-        // unlike neurons, were never meant to be searched/shared. Included here
-        // (unlike activity_log, which never leaves the machine) because the user
-        // explicitly asked for them to survive a restore, but kept under this
-        // dedicated key so a restore path can treat it distinctly if needed.
-        personal_data: {
-          note: 'Conversations et préférences retenues — données personnelles, jamais indexées ni envoyées au cloud.',
-          conversations: getAllConversationsForBackup(),
-          preference_facts: listPreferenceFacts(),
-        },
-        // NOTE: activity_log is intentionally NEVER included here — the journal
-        // never leaves this machine, even in an export the user explicitly requested.
-        // Générateur de prompts — section distincte, jamais mêlée aux neurones.
-        generated_prompts: {
-          note: 'Prompts générés (brouillon + relecture croisée) — indépendants des neurones.',
-          prompts: getAllGeneratedPrompts({}),
-        },
       });
     } catch (error) {
       return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
@@ -126,7 +67,7 @@ export function createBackupRoute({ services, logger }) {
   // POST /api/backup/import — restauration depuis un JSON
   route.post('/backup/import', async (c) => {
     try {
-      const body = await c.req.json();
+      const body = await c.req.json().catch(() => null);
       if (!body?.version || !Array.isArray(body.neurons)) {
         return c.json({ error: 'Format invalide : champ version ou neurons manquant' }, 400);
       }
@@ -135,13 +76,20 @@ export function createBackupRoute({ services, logger }) {
       }
 
       let indexed = 0;
+      let saved = 0;
       let reconstructedBlocks = 0;
       const errors = [];
 
       for (const neuron of body.neurons) {
-        if (!neuron.id || !neuron.title) continue;
+        if (!neuron || typeof neuron.id !== 'string' || !neuron.id || typeof neuron.title !== 'string') {
+          errors.push({ id: neuron?.id ?? '', title: '', error: 'Neurone invalide' });
+          continue;
+        }
         try {
           const now = Date.now();
+          if (neuron.blocks !== undefined && !Array.isArray(neuron.blocks)) throw new PublicError('INVALID_BACKUP_ITEM', 'Blocs du neurone invalides');
+          if (neuron.content !== undefined && typeof neuron.content !== 'string') throw new PublicError('INVALID_BACKUP_ITEM', 'Contenu du neurone invalide');
+          if (neuron.links !== undefined && !Array.isArray(neuron.links)) throw new PublicError('INVALID_BACKUP_ITEM', 'Liens du neurone invalides');
 
           // Older backups (pre-1.2) never exported `blocks` — rebuild a single
           // paragraph block from the flattened `content` so the restored
@@ -167,21 +115,36 @@ export function createBackupRoute({ services, logger }) {
             metadata:  neuron.metadata ?? {},
             private:   neuron.private,
           };
+          validateBackupPage(page);
 
+          // Original data must survive even if Ollama or the vector index is
+          // unavailable. Indexing is derived data, independent from restoration.
+          savePageToStore(page);
+          saved++;
           await services.indexNeuron({
             id:       page.id,
             kind:     page.kind,
             title:    page.title,
             content:  neuron.content ?? blocks.map(b => b.content).filter(Boolean).join('\n\n'),
             metadata: page.metadata,
+            private: page.private,
           });
-          // Restore full page content to SQLite so mobile/remote clients can read it
-          savePageToStore(page);
           indexed++;
         } catch (err) {
           errors.push({ id: neuron.id, title: neuron.title, error: publicErrorMessage(err, 'Élément non restauré.') });
           logger?.warn({ id: neuron.id, ...safeErrorLogFields(err, { operation: 'route.backup' }) }, 'import neuron failed');
         }
+      }
+
+      let restoredConversations = 0;
+      let restoredPreferences = 0;
+      for (const conversation of (Array.isArray(body.personal_data?.conversations) ? body.personal_data.conversations : [])) {
+        try { if (restoreBackupConversation(conversation)) restoredConversations++; }
+        catch (err) { errors.push({ id: conversation?.id ?? '', title: 'Conversation', error: publicErrorMessage(err, 'Élément non restauré.') }); }
+      }
+      for (const fact of (Array.isArray(body.personal_data?.preference_facts) ? body.personal_data.preference_facts : [])) {
+        try { if (restoreBackupPreference(fact)) restoredPreferences++; }
+        catch (err) { errors.push({ id: fact?.id ?? '', title: 'Préférence', error: publicErrorMessage(err, 'Élément non restauré.') }); }
       }
 
       let restoredFiles = 0;
@@ -216,7 +179,9 @@ export function createBackupRoute({ services, logger }) {
           try {
             addTodoItem(item);
             restoredTodos++;
-          } catch { /* skip duplicates */ }
+          } catch (err) {
+            if (err.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') errors.push({ id: item.id, title: item.title ?? 'À faire', error: publicErrorMessage(err, 'Élément non restauré.') });
+          }
         }
       }
 
@@ -242,11 +207,13 @@ export function createBackupRoute({ services, logger }) {
               is_template: !!p.is_template,
             });
             restoredPrompts++;
-          } catch { /* skip duplicates */ }
+          } catch (err) {
+            if (err.code !== 'SQLITE_CONSTRAINT_PRIMARYKEY') errors.push({ id: p.id ?? '', title: 'Prompt', error: publicErrorMessage(err, 'Élément non restauré.') });
+          }
         }
       }
 
-      return c.json({ ok: true, indexed, total: body.neurons.length, restoredFiles, restoredTodos, reconstructedBlocks, restoredPrompts, errors });
+      return c.json({ ok: errors.length === 0, saved, indexed, index_pending: saved - indexed, total: body.neurons.length, restoredFiles, restoredTodos, reconstructedBlocks, restoredPrompts, restoredConversations, restoredPreferences, errors });
     } catch (error) {
       return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
     }
