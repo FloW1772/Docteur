@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getCloudKeys, getRouterSettings } from '../lib/sqlite.js';
 import { tryCloudFallbackChain } from '../lib/router.js';
+import { safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const CLARIFY_SYSTEM = `Tu es un assistant intelligent. Tu analyses des demandes pour déterminer si elles nécessitent des précisions personnelles AVANT de pouvoir y répondre utilement.
 
@@ -66,7 +67,7 @@ export function createClarifyRoute({ logger } = {}) {
     ];
 
     const result = await tryCloudFallbackChain(messages, { logger }).catch(err => {
-      if (logger) logger.warn({ error: err.message }, 'CLARIFY: all cloud providers failed');
+      if (logger) logger.warn({ ...safeErrorLogFields(err, { operation: 'route.clarify' }) }, 'CLARIFY: all cloud providers failed');
       return null;
     });
 

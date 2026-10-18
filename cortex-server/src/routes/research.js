@@ -52,6 +52,11 @@ async function completeWithGrounding(...args) {
 }
 import { normalizeDetailLevel, detailLevelInstruction } from '../lib/detail-level.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from '../lib/style-examples.js';
+import { publicErrorBody, safeErrorLogFields, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const RESEARCH_FAILED = { code: 'RESEARCH_FAILED', message: 'La recherche a échoué.' };
 
 // ── Grounding quota tracker (daily counter in SQLite) ─────────────────────────
 
@@ -203,8 +208,8 @@ export function createResearchRoute({ logger, fallbackChat, services }) {
           ...(usedExamples.length > 0 ? { usedExamples } : {}),
         });
       } catch (err) {
-        logger?.warn({ subject, err: err.message }, 'research synthese failed');
-        insertActivityLog({ opType: 'veille', item: subject, result: 'failure', reason: err.message });
+        logger?.warn({ subject, ...safeErrorLogFields(err, { operation: 'route.research' }) }, 'research synthese failed');
+        insertActivityLog({ opType: 'veille', item: subject, result: 'failure', reason: safeErrorReason(err, RESEARCH_FAILED.code) });
         if (err.isQuota) {
           return c.json({
             error: 'Quota Gemini épuisé pour aujourd\'hui. Réessaie demain ou vérifie tes limites dans Paramètres.',
@@ -214,7 +219,7 @@ export function createResearchRoute({ logger, fallbackChat, services }) {
         if (err.isAuth) {
           return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
         }
-        return c.json({ error: err.message }, 500);
+        return c.json(publicErrorBody(err, RESEARCH_FAILED), 500);
       }
     }
 
@@ -245,7 +250,7 @@ export function createResearchRoute({ logger, fallbackChat, services }) {
           return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
         }
         // 400 (feature not supported), 404 (model not found), 429 (quota) → try next
-        logger?.warn({ model, status: err.message }, 'grounding model failed, trying next');
+        logger?.warn({ model, ...safeErrorLogFields(err, { operation: 'route.research' }) }, 'grounding model failed, trying next');
       }
     }
 
@@ -321,7 +326,7 @@ ${sourcesHeading}`;
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé pour aujourd\'hui.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur lors de la régénération' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur lors de la régénération' }), 500);
     }
   });
 
@@ -394,7 +399,7 @@ Chaque sous-sujet doit être :
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé pour aujourd\'hui.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur lors de la décomposition' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur lors de la décomposition' }), 500);
     }
   });
 
@@ -486,7 +491,7 @@ Termine par : *Synthèse basée sur les connaissances de l'IA — à vérifier p
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur lors de la génération' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur lors de la génération' }), 500);
     }
   });
 
@@ -567,7 +572,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur lors de la génération' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur lors de la génération' }), 500);
     }
   });
 
@@ -596,7 +601,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
           const text = await fallbackChat(messages);
           return c.json({ review: text, model: 'local', strict_local: true });
         } catch (err) {
-          return c.json({ error: `Relecture locale impossible : ${err.message}` }, 503);
+          return c.json(publicErrorBody(err, { code: 'LOCAL_REVIEW_FAILED', message: 'Relecture locale impossible : le modèle local n’a pas pu répondre.' }), 503);
         }
       }
       return c.json(STRICT_LOCAL_ERROR, 503);
@@ -614,7 +619,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
         if (err.isAuth) {
           return c.json({ error: 'Clé Gemini invalide ou révoquée.', auth: true }, 401);
         }
-        logger?.warn({ err: err.message }, 'gemini review failed, falling back to local');
+        logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.research' }) }, 'gemini review failed, falling back to local');
       }
     }
 
@@ -625,7 +630,7 @@ Dernière ligne : *Synthèse basée sur les connaissances de l'IA (${date}) — 
         logger?.info({ model: 'local' }, 'research review done via local fallback');
         return c.json({ review: text, model: 'local' });
       } catch (err) {
-        logger?.error({ err: err.message }, 'research review local fallback also failed');
+        logger?.error({ ...safeErrorLogFields(err, { operation: 'route.research' }) }, 'research review local fallback also failed');
       }
     }
 
@@ -674,7 +679,7 @@ Chaque angle doit être suffisamment distinct pour générer des sources DIFFÉR
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur décomposition' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur décomposition' }), 500);
     }
   });
 
@@ -790,7 +795,7 @@ RÈGLES ABSOLUES :
     } catch (err) {
       if (err.isAuth)  return c.json({ error: 'Clé Gemini invalide.', auth: true }, 401);
       if (err.isQuota) return c.json({ error: 'Quota Gemini épuisé.', quota: true }, 429);
-      return c.json({ error: err.message || 'Erreur recoupement' }, 500);
+      return c.json(publicErrorBody(err, { ...RESEARCH_FAILED, message: 'Erreur recoupement' }), 500);
     }
   });
 

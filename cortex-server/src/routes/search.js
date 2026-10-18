@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
 import { createPreview } from '../lib/lancedb.js';
 import { getMemorySettings, isWorthRemembering, addEpisodicMemoryDeduped } from '../lib/memory.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const SEARCH_FAILED = { code: 'SEARCH_FAILED', message: 'La recherche a échoué.' };
 
 export function createSearchRoute({ services }) {
   const route = new Hono();
@@ -130,7 +135,7 @@ export function createSearchRoute({ services }) {
       return c.json(result, 200);
     } catch (error) {
       const status = services.isOllamaError(error) ? 503 : 500;
-      return c.json({ error: error.message }, status);
+      return c.json(publicErrorBody(error, SEARCH_FAILED), status);
     }
   });
 

@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import {
   ModelRouteError, buildRegistry, selectRoute, executeRoute, collectOllamaInventory, collectCloudProviders,
 } from '../lib/model-router.js';
+import { providerErrorLogFields } from '../lib/provider-error-contract.js'; // [SEC-REMED-4]
 
 const MAX_PROMPT_CHARS = 4_000;
 
@@ -25,9 +26,14 @@ export function createModelRouterRoute({ client, getSettings, getKeys, getHardwa
     return { settings, cloud, registry: buildRegistry({ runtime, hardware, settings, cloud, pair: { configured: pairConfigured } }) };
   }
 
-  const fail = (c, err) => {
-    if (err instanceof ModelRouteError) return c.json({ ok: false, error: { code: err.code, message: err.message, hint: err.hint ?? null } }, err.status);
-    logger?.error?.({ err: err?.message }, 'model-router route error');
+  // [SEC-REMED-4] A ModelRouteError carries only a stable code + Docteur-written message/hint (classifyModelError).
+  // Logs get allowlisted fields only — never err.message / stack / cause, which may hold provider text.
+  const fail = (c, err, operation = 'model_router') => {
+    if (err instanceof ModelRouteError) {
+      if (err.status >= 500) logger?.warn?.(providerErrorLogFields(null, { errorCode: err.code, provider: err.detail?.provider, model: err.detail?.model, operation }), 'model-router run failed');
+      return c.json({ ok: false, error: { code: err.code, message: err.message, hint: err.hint ?? null } }, err.status);
+    }
+    logger?.error?.(providerErrorLogFields(err, { errorCode: 'INTERNAL_ERROR', operation }), 'model-router route error');
     return c.json({ ok: false, error: { code: 'INTERNAL_ERROR', message: 'Erreur interne du routeur de modèles.' } }, 500);
   };
   const body = async (c) => { try { return await c.req.json(); } catch { return {}; } };
@@ -66,7 +72,7 @@ export function createModelRouterRoute({ client, getSettings, getKeys, getHardwa
         },
       });
       return c.json({ ok: true, decision: decision.decision, warnings: decision.warnings, result });
-    } catch (err) { return fail(c, err); }
+    } catch (err) { return fail(c, err, 'model_router.run'); }
   });
 
   return route;

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { YTDLP_BIN } from './ytdlp.js';
 import { prepareYtDlp } from './media-egress.js';
+import { PublicError } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const FORBIDDEN = /(?:HTTP(?:\s+Error)?\s*[:=]?\s*403\b|403\s*[: ]\s*Forbidden)/i;
 const REFUSED = 'Le site refuse le téléchargement de cette vidéo. Une session navigateur ou une authentification peut être nécessaire.';
@@ -23,7 +24,7 @@ export function createAudioDownloader(spawnProcess = spawn) {
   } = {}) {
     const configuredBrowser = browser?.trim().toLowerCase();
     if (configuredBrowser && !['chrome', 'firefox'].includes(configuredBrowser)) {
-      throw new Error('VIDEO_YTDLP_BROWSER doit valoir chrome ou firefox.');
+      throw new PublicError('INVALID_CONFIGURATION', 'VIDEO_YTDLP_BROWSER doit valoir chrome ou firefox.', { status: 500 });
     }
     const strategies = [
       { name: 'normal', extra: [] },
@@ -88,12 +89,12 @@ export function createAudioDownloader(spawnProcess = spawn) {
       }
       logger?.warn(diagnostic, 'VIDEO_DOWNLOAD_FAILED');
       if (signal?.aborted) throw new DOMException('Annulé', 'AbortError');
-      if (result.timedOut) throw new Error('Le téléchargement audio a dépassé le délai de 20 minutes.');
-      if (!result.forbidden) throw new Error(result.error === 'ENOENT'
+      if (result.timedOut) throw new PublicError('VIDEO_DOWNLOAD_TIMEOUT', 'Le téléchargement audio a dépassé le délai de 20 minutes.', { status: 504 });
+      if (!result.forbidden) throw new PublicError('VIDEO_DOWNLOAD_FAILED', result.error === 'ENOENT'
         ? 'yt-dlp introuvable'
-        : 'Le téléchargement audio a échoué. Consultez les logs du serveur pour le diagnostic.');
+        : 'Le téléchargement audio a échoué. Consultez les logs du serveur pour le diagnostic.', { status: 502 });
     }
-    throw new Error(REFUSED);
+    throw new PublicError('VIDEO_DOWNLOAD_REFUSED', REFUSED, { status: 403 });
   };
 }
 

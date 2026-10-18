@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { checkYtDlp, downloadVideo, downloadSubtitles, cleanSubtitleText } from '../lib/ytdlp.js';
 import { assertSafeUrl } from '../lib/url-security.js';
+import { publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const DEFAULT_FOLDER = 'D:\\upload';
 
@@ -92,7 +93,7 @@ export function createDownloadRoute({ services, logger }) {
                   }
                 }
               } catch (err) {
-                if (logger) logger.warn({ err: err.message }, 'subtitle analysis failed');
+                if (logger) logger.warn({ ...safeErrorLogFields(err, { operation: 'route.download' }) }, 'subtitle analysis failed');
                 // Non-fatal: proceed without analysis
               }
             } else {
@@ -105,11 +106,11 @@ export function createDownloadRoute({ services, logger }) {
           send({ type: 'done', title, filePath, fileSize, analysis });
 
         } catch (err) {
-          if (logger) logger.error({ err: err.message, url }, 'DOWNLOAD_ERROR');
+          if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.download' }), url }, 'DOWNLOAD_ERROR');
           if (err.name === 'AbortError') {
             send({ type: 'error', message: 'Téléchargement annulé' });
           } else {
-            send({ type: 'error', message: err.message });
+            send({ type: 'error', code: 'DOWNLOAD_FAILED', message: publicErrorMessage(err, 'Le téléchargement a échoué.') }); // [SEC-REMED-4B] yt-dlp text untrusted
           }
         } finally {
           try { controller.close(); } catch { /* ignore */ }

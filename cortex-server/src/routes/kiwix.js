@@ -20,6 +20,11 @@ import {
   KIWIX_ERROR_CODES, KiwixError, classifyKiwixError, kiwixErrorBody,
   assertSafeZimSegment, assertSafeSearchQuery, clampPageLength,
 } from '../lib/kiwix-policy.js';
+import { publicErrorBody, publicErrorMessage, safeErrorLogFields, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const KIWIX_FAILED = { code: 'KIWIX_OPERATION_FAILED', message: 'L’opération sur les archives a échoué.' };
 
 const STRICT_LOCAL_MESSAGE = 'Mode strictement local activé — le catalogue et le téléchargement Kiwix nécessitent une connexion internet et sont désactivés. Désactive le mode strict dans Paramètres pour les utiliser.';
 
@@ -141,7 +146,7 @@ export function createKiwixRoute({
       insertActivityLog({ opType: 'kiwix_delete', item: fileName, result: 'success' });
       return c.json({ ok: true });
     } catch (err) {
-      return c.json({ error: `Suppression impossible : ${err.message}` }, 500);
+      return c.json(publicErrorBody(err, { code: 'KIWIX_DELETE_FAILED', message: 'Suppression impossible.' }), 500);
     }
   });
 
@@ -199,7 +204,7 @@ export function createKiwixRoute({
     } catch (err) {
       if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
       const classified = classifyKiwixError(err, { context: 'search' });
-      logger?.warn?.({ error: err.message }, 'kiwix suggest failed');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix suggest failed');
       return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
@@ -217,7 +222,7 @@ export function createKiwixRoute({
     } catch (err) {
       if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
       const classified = classifyKiwixError(err, { context: 'search' });
-      logger?.warn?.({ error: err.message }, 'kiwix search failed');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix search failed');
       return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
@@ -228,7 +233,7 @@ export function createKiwixRoute({
       return c.json({ books });
     } catch (err) {
       const classified = classifyKiwixError(err, { context: 'books' });
-      logger?.warn?.({ error: err.message }, 'kiwix books listing failed');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix books listing failed');
       return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
@@ -246,7 +251,7 @@ export function createKiwixRoute({
     } catch (err) {
       if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
       const classified = classifyKiwixError(err, { context: 'article' });
-      logger?.warn?.({ error: err.message }, 'kiwix content fetch failed');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix content fetch failed');
       return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
@@ -263,7 +268,7 @@ export function createKiwixRoute({
     } catch (err) {
       if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
       const classified = classifyKiwixError(err, { context: 'article' });
-      logger?.warn?.({ error: err.message }, 'kiwix raw asset fetch failed');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix raw asset fetch failed');
       return c.json(kiwixErrorBody(classified), classified.status);
     }
   });
@@ -282,7 +287,7 @@ export function createKiwixRoute({
       const entries = await kiwixSearchCatalog({ q, lang });
       return c.json({ entries });
     } catch (err) {
-      return c.json({ error: err.message }, 502);
+      return c.json(publicErrorBody(err, KIWIX_FAILED), 502);
     }
   });
 
@@ -306,7 +311,7 @@ export function createKiwixRoute({
     const sizeBytes = Number(body?.sizeBytes ?? 0);
 
     if (!url || !/^https:\/\//i.test(url)) return c.json({ error: 'URL invalide' }, 400);
-    try { assertSafeUrl(url); } catch (e) { return c.json({ error: e.message }, 400); } // SSRF guard
+    try { assertSafeUrl(url); } catch (e) { return c.json(publicErrorBody(e, KIWIX_FAILED), 400); } // SSRF guard
     if (!fileName || fileName.includes('..') || path.isAbsolute(fileName)) {
       return c.json({ error: 'Nom de fichier invalide' }, 400);
     }
@@ -318,7 +323,7 @@ export function createKiwixRoute({
         url = await resolveMetalinkUrl(url);
         assertSafeUrl(url); // re-validate the resolved mirror URL (SSRF guard)
       } catch (err) {
-        return c.json({ error: `Impossible de résoudre le lien metalink : ${err.message}` }, 502);
+        return c.json(publicErrorBody(err, { code: 'KIWIX_METALINK_FAILED', message: 'Impossible de résoudre le lien metalink.' }), 502);
       }
     }
 
@@ -375,8 +380,10 @@ export function createKiwixRoute({
         } catch (err) {
           try { fileHandle?.destroy(); } catch { /* ignore */ }
           try { fs.unlinkSync(destPath); } catch { /* ignore */ }
-          const message = err.name === 'AbortError' ? 'Téléchargement annulé' : err.message;
-          insertActivityLog({ opType: 'kiwix_download', item: fileName, result: 'failure', reason: message });
+          // [SEC-REMED-4B] network / filesystem text is untrusted: fixed text, code in the activity log.
+          const aborted = err?.name === 'AbortError';
+          const message = aborted ? 'Téléchargement annulé' : publicErrorMessage(err, 'Téléchargement échoué.');
+          insertActivityLog({ opType: 'kiwix_download', item: fileName, result: 'failure', reason: aborted ? 'CANCELLED' : safeErrorReason(err, 'KIWIX_DOWNLOAD_FAILED') });
           send({ type: 'error', message });
         } finally {
           try { controller.close(); } catch { /* ignore */ }
@@ -406,7 +413,7 @@ export function createKiwixRoute({
         const cleaned = sanitizeZimHtml(html, book);
         text = cleaned.text;
       } catch (err) {
-        return c.json({ error: `Impossible de récupérer l'article : ${err.message}` }, 502);
+        return c.json(publicErrorBody(err, { code: 'KIWIX_ARTICLE_FAILED', message: 'Impossible de récupérer l’article.' }), 502);
       }
     }
     if (!text) return c.json({ error: 'Contenu introuvable pour cet article' }, 400);
@@ -429,7 +436,7 @@ export function createKiwixRoute({
         await services.indexNeuron({ id: neuronId, kind: 'reference', title: neuronTitle, content: chunks[i], metadata });
         createdIds.push(neuronId);
       } catch (err) {
-        logger?.warn?.({ neuronId, error: err.message }, 'kiwix import chunk failed');
+        logger?.warn?.({ neuronId, ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix import chunk failed');
       }
     }
 

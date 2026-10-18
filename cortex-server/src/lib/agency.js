@@ -18,6 +18,8 @@
 // interrupted tasks become UNKNOWN (never COMPLETED) and the run waits for the
 // user (retry or resume).
 import crypto from 'node:crypto';
+import { isPublicError, safeErrorReason } from './safe-error-contract.js'; // [SEC-REMED-4B]
+import { classifyModelError } from './model-router.js'; // [SEC-REMED-4B] code + Docteur text for model failures
 
 export const RUN_STATUS = Object.freeze({
   PLANNING: 'PLANNING', QUEUED: 'QUEUED', RUNNING: 'RUNNING', WAITING: 'WAITING', WAITING_APPROVAL: 'WAITING_APPROVAL',
@@ -271,7 +273,7 @@ export function createAgencyService({ store, complete, searchKnowledge, saveOutp
       if (checked.ok) planned = checked.tasks;
       else warnings = checked.errors;
     } catch (err) {
-      warnings = [`planner_failed:${clean(err?.message, 200)}`];
+      warnings = [`planner_failed:${isPublicError(err) ? err.code : classifyModelError(err).code}`]; // [SEC-REMED-4B] model text untrusted
     }
     if (!planned) { planned = fallbackPlan(run.objective); source = 'fallback'; }
     const current = store.getRun(runId);
@@ -356,7 +358,7 @@ export function createAgencyService({ store, complete, searchKnowledge, saveOutp
         event(run.id, task.id, 'task_completed', { key: task.key, model: outcome.model ?? null, chars: result.length });
       } catch (err) {
         if (ctrl.signal.aborted) { event(run.id, task.id, 'late_result_discarded', { key: task.key }); return; }
-        const message = clean(err?.code === 'tool_not_allowed' ? `tool_not_allowed:${err.detail}` : err?.message, 500) || 'erreur inconnue';
+        const message = clean(err?.code === 'tool_not_allowed' ? `tool_not_allowed:${err.detail}` : (isPublicError(err) ? err.message : classifyModelError(err).message), 500) || 'erreur inconnue';
         if (err?.code !== 'tool_not_allowed' && attempt < task.maxAttempts) {
           store.updateTask(task.id, { status: TASK_STATUS.QUEUED, error: message });
           event(run.id, task.id, 'task_retry_scheduled', { key: task.key, attempt, error: message });
@@ -455,7 +457,7 @@ export function createAgencyService({ store, complete, searchKnowledge, saveOutp
       store.updateTask(task.id, { status: TASK_STATUS.COMPLETED, result: 'Proposé à Docteur : le neurone est créé à l’ouverture de l’interface.', finishedAt: nowIso() });
       event(run.id, task.id, 'output_saved', { outputId: saved?.outputId ?? null });
     } catch (err) {
-      store.updateTask(task.id, { status: TASK_STATUS.FAILED, error: clean(err?.message, 300) || 'save_failed', finishedAt: nowIso() });
+      store.updateTask(task.id, { status: TASK_STATUS.FAILED, error: safeErrorReason(err, 'save_failed'), finishedAt: nowIso() });
       event(run.id, task.id, 'task_failed', { key: task.key, error: 'save_failed' });
     }
     store.updateRun(run.id, { status: RUN_STATUS.RUNNING });

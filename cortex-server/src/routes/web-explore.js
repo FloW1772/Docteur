@@ -3,6 +3,11 @@ import { stream }           from 'hono/streaming';
 import { searchDuckDuckGo, dedupeByUrl } from '../lib/web-search.js';
 import { extractContent }   from '../lib/deep-capture.js';
 import { assertSafeUrl }    from '../lib/url-security.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const WEB_EXPLORE_FAILED = { code: 'WEB_EXPLORE_FAILED', message: 'L’exploration web a échoué.' };
 
 const MAX_DEEP_PAGES     = 8;
 const PAGE_TIMEOUT_MS    = 12_000;
@@ -38,8 +43,8 @@ export function createWebExploreRoute({ services, logger }) {
       const results = await fetchDdgWithFallback(query, MODE_A_LIMIT);
       return c.json({ results, count: results.length });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'web-results: DDG failed');
-      return c.json({ error: err.message }, 503);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.web_explore' }) }, 'web-results: DDG failed');
+      return c.json(publicErrorBody(err, WEB_EXPLORE_FAILED), 503);
     }
   });
 
@@ -80,8 +85,8 @@ export function createWebExploreRoute({ services, logger }) {
         try {
           ddgResults = await fetchDdgWithFallback(question, maxPages);
         } catch (err) {
-          logger?.warn({ err: err.message }, 'web-deep: DDG failed');
-          await send({ type: 'error', error: `Moteur de recherche inaccessible : ${err.message}` });
+          logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.web_explore' }) }, 'web-deep: DDG failed');
+          await send({ type: 'error', code: 'SEARCH_ENGINE_UNREACHABLE', error: 'Moteur de recherche inaccessible.' });
           await send({ type: 'done' });
           return;
         }
@@ -127,7 +132,7 @@ export function createWebExploreRoute({ services, logger }) {
               ok = true;
             }
           } catch (err) {
-            logger?.warn({ url, err: err.message }, 'web-deep: page fetch failed');
+            logger?.warn({ url, ...safeErrorLogFields(err, { operation: 'route.web_explore' }) }, 'web-deep: page fetch failed');
           }
 
           pageStatuses.push({ title, url, domain, ok });
@@ -183,7 +188,7 @@ export function createWebExploreRoute({ services, logger }) {
           synthesis  = result.text;
           modelUsed  = result.model;
         } catch (err) {
-          await send({ type: 'error', error: `Modèle local indisponible : ${err.message}` });
+          await send({ type: 'error', ...publicErrorBody(err, { code: 'LOCAL_MODEL_UNAVAILABLE', message: 'Modèle local indisponible.' }) });
           await send({ type: 'done' });
           return;
         }
@@ -198,9 +203,9 @@ export function createWebExploreRoute({ services, logger }) {
         });
 
       } catch (err) {
-        logger?.error({ err: err.message }, 'web-deep: unexpected error');
+        logger?.error({ ...safeErrorLogFields(err, { operation: 'route.web_explore' }) }, 'web-deep: unexpected error');
         if (token) cancelledTokens.delete(token);
-        await send({ type: 'error', error: err.message });
+        await send({ type: 'error', ...publicErrorBody(err, WEB_EXPLORE_FAILED) });
       } finally {
         await send({ type: 'done' });
       }

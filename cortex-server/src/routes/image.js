@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
 import { validateImageId, getImagePath, saveImageBuffer, downloadImageFromUrl, IMAGE_DIR, ALLOWED_MIME, MAX_SIZE, deleteImageFile } from '../lib/image.js';
 import fs from 'node:fs';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const IMAGE_FAILED = { code: 'IMAGE_OPERATION_FAILED', message: 'L’opération sur l’image a échoué.' };
 
 export function createImageRoute({ logger } = {}) {
   const route = new Hono();
@@ -38,7 +43,7 @@ export function createImageRoute({ logger } = {}) {
         if (logger) logger.info({ id, size: buf.length }, 'IMAGE_UPLOAD');
         return c.json({ id });
       } catch (err) {
-        return c.json({ error: err.message }, 500);
+        return c.json(publicErrorBody(err, IMAGE_FAILED), 500);
       }
 
     } else {
@@ -53,7 +58,7 @@ export function createImageRoute({ logger } = {}) {
         return c.json({ id });
       } catch (err) {
         const status = err.message?.includes('SSRF') || err.message?.includes('non autorisé') ? 403 : 500;
-        return c.json({ error: err.message }, status);
+        return c.json(publicErrorBody(err, IMAGE_FAILED), status);
       }
     }
   });
@@ -97,7 +102,7 @@ export function createImageRoute({ logger } = {}) {
       }
       return c.json({ count, totalBytes, totalMb: Math.round(totalBytes / 1024 / 1024 * 10) / 10 });
     } catch (err) {
-      return c.json({ error: err.message }, 500);
+      return c.json(publicErrorBody(err, IMAGE_FAILED), 500);
     }
   });
 
@@ -110,7 +115,7 @@ export function createImageRoute({ logger } = {}) {
       if (logger) logger.info({ id }, 'IMAGE_DELETE');
       return c.json({ ok: true });
     } catch (err) {
-      return c.json({ error: err.message }, 500);
+      return c.json(publicErrorBody(err, IMAGE_FAILED), 500);
     }
   });
 

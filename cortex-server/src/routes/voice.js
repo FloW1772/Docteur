@@ -5,6 +5,7 @@ import { TMP_DIR, ensureTmpDir, transcribeAudioFile } from '../lib/whisper.js';
 import { transcribeWithGroq } from '../lib/whisper-groq.js';
 import { getMeta, setMeta, getCloudKeys } from '../lib/sqlite.js';
 import { isStrictLocalMode } from '../lib/strict-local.js';
+import { safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const VOICE_SETTINGS_KEY   = 'voice_settings';
 const PORCUPINE_MODEL_KEY  = 'voice_porcupine_model';
@@ -21,8 +22,12 @@ function readSettings() {
   return stored ? { ...DEFAULT_SETTINGS, ...stored } : { ...DEFAULT_SETTINGS };
 }
 
-export function createVoiceRoute({ logger }) {
+// `deps` (tests only): inject the transcriber and the temporary directory so the error boundary can be exercised
+// without a real whisper subprocess or a file under data/tmp. Production passes nothing.
+export function createVoiceRoute({ logger, deps = {} }) {
   const app = new Hono();
+  const transcribeLocal = deps.transcribeAudioFile ?? transcribeAudioFile;
+  const tmpDir = deps.tmpDir ?? TMP_DIR;
 
   // GET /voice/settings
   app.get('/voice/settings', (c) => {
@@ -91,9 +96,9 @@ export function createVoiceRoute({ logger }) {
       provider = 'local';
     }
 
-    ensureTmpDir();
+    if (deps.tmpDir) fs.mkdirSync(tmpDir, { recursive: true }); else ensureTmpDir();
     const id        = `voice_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const audioPath = path.join(TMP_DIR, `${id}.webm`);
+    const audioPath = path.join(tmpDir, `${id}.webm`);
 
     try {
       fs.writeFileSync(audioPath, Buffer.from(await audio.arrayBuffer()));
@@ -106,12 +111,13 @@ export function createVoiceRoute({ logger }) {
       }
 
       // Local faster-whisper
-      const result = await transcribeAudioFile(audioPath, model);
+      const result = await transcribeLocal(audioPath, model);
       return c.json({ text: result.text ?? '', language: result.language ?? 'fr', provider: 'local', mode: 'LOCAL' });
 
     } catch (e) {
-      logger.error({ err: e }, 'voice-transcribe-error');
-      return c.json({ error: e instanceof Error ? e.message : 'Transcription échouée' }, 500);
+      // [SEC-REMED-4B] whisper stderr (Python traceback: paths, environment) / Groq text is untrusted.
+      logger.error(safeErrorLogFields(e, { errorCode: 'TRANSCRIPTION_FAILED', operation: 'voice.transcribe' }), 'voice-transcribe-error');
+      return c.json({ error: 'Transcription échouée.', code: 'TRANSCRIPTION_FAILED' }, 500);
     } finally {
       try { if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath); } catch { /* ignore */ }
     }

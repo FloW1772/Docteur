@@ -1,5 +1,10 @@
 import { Hono } from 'hono';
 import { getTodoItems, addTodoItem, updateTodoItem, deleteTodoItem } from '../lib/sqlite.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const TODO_FAILED = { code: 'TODO_OPERATION_FAILED', message: 'Opération sur la liste de tâches impossible.' };
 
 export function createTodoRoute() {
   const route = new Hono();
@@ -9,7 +14,7 @@ export function createTodoRoute() {
     try {
       return c.json({ items: getTodoItems() });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, TODO_FAILED), 500);
     }
   });
 
@@ -37,7 +42,7 @@ export function createTodoRoute() {
       addTodoItem(body);
       return c.json({ ok: true });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, TODO_FAILED), 500);
     }
   });
 
@@ -50,7 +55,7 @@ export function createTodoRoute() {
       updateTodoItem(id, body);
       return c.json({ ok: true });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, TODO_FAILED), 500);
     }
   });
 
@@ -61,7 +66,7 @@ export function createTodoRoute() {
       deleteTodoItem(id);
       return c.json({ ok: true });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, TODO_FAILED), 500);
     }
   });
 

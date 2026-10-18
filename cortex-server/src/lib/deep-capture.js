@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import { assertSafeUrl } from './url-security.js';
 import { safeFetch, installBrowserEgressGuard, getSharedBrowserEgressProxy, closeSharedBrowserEgressProxy } from './web-egress-guard.js';
 import { getVideoDuration } from './whisper.js';
+import { publicErrorMessage, safeErrorReason } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_WORDS      = 8_000;
 const FETCH_TIMEOUT  = 15_000;
@@ -277,7 +278,7 @@ function extractImagesFromHtml(rawHtml, baseUrl) {
 
       // SSRF guard
       try { assertSafeUrl(absUrl); } catch (e) {
-        rejectLog.push({ url: absUrl, reason: `ssrf:${e.message}` });
+        rejectLog.push({ url: absUrl, reason: `ssrf:${safeErrorReason(e, 'BLOCKED')}` }); // [SEC-REMED-4B] egress reason code
         continue;
       }
 
@@ -926,7 +927,7 @@ export async function extractContent(url) {
     return result;
   } catch (err) {
     return {
-      fallback: true, reason: 'invalid_url', error: String(err?.message ?? err),
+      fallback: true, reason: 'invalid_url', error: publicErrorMessage(err, 'URL invalide ou inaccessible.'), // [SEC-REMED-4B]
       timings: { extractionMs: Math.round(performance.now() - started) },
     };
   }

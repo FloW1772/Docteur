@@ -12,6 +12,11 @@ import {
   updateCandidatePrompt, deleteCandidatePrompt, reorderCandidatePrompts,
   touchCandidatePromptLastUsed,
 } from '../lib/sqlite.js';
+import { publicErrorBody, safeErrorLogFields, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const CV_FAILED = { code: 'CV_OPERATION_FAILED', message: 'L’opération sur le CV a échoué.' };
 
 // ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -480,9 +485,9 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       insertActivityLog({ opType: 'cv_analyze', item: 'Analyse CV', result: 'success', durationMs: Date.now() - started, modelUsed: model });
       return c.json({ report, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_ANALYZE_ERROR');
-      insertActivityLog({ opType: 'cv_analyze', item: 'Analyse CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_ANALYZE_ERROR');
+      insertActivityLog({ opType: 'cv_analyze', item: 'Analyse CV', result: 'failure', reason: safeErrorReason(err, CV_FAILED.code), durationMs: Date.now() - started });
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -531,9 +536,9 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       insertActivityLog({ opType: 'cv_rewrite', item: 'Réécriture CV', result: 'success', durationMs: Date.now() - started, modelUsed: model });
       return c.json({ rewritten_cv: rewrittenCv, changes, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_REWRITE_ERROR');
-      insertActivityLog({ opType: 'cv_rewrite', item: 'Réécriture CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_REWRITE_ERROR');
+      insertActivityLog({ opType: 'cv_rewrite', item: 'Réécriture CV', result: 'failure', reason: safeErrorReason(err, CV_FAILED.code), durationMs: Date.now() - started });
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -576,8 +581,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ format, mode, company, model }, 'CV_LETTER_DONE');
       return c.json({ letter, title, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_LETTER_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_LETTER_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -599,8 +604,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ cv_length: cvContent.length, model }, 'CV_TARGET_JOBS_DONE');
       return c.json({ report, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_TARGET_JOBS_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_TARGET_JOBS_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -622,8 +627,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ cv_length: cvContent.length, model }, 'CV_ATS_KEYWORDS_DONE');
       return c.json({ report, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_ATS_KEYWORDS_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_ATS_KEYWORDS_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -646,8 +651,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ cv_length: cvContent.length, model }, 'CV_MASTER_DONE');
       return c.json({ master_cv, guide, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_MASTER_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_MASTER_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -672,8 +677,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ cv_length: masterCvContent.length, offer_length: jobOffer.length, model }, 'CV_ADAPT_DONE');
       return c.json({ adequation_score, adapted_cv, missing, keywords_used, model_used: model }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_ADAPT_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_ADAPT_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -725,9 +730,9 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
         context_warning: contextWarning,
       }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_FREE_QUESTION_ERROR');
-      insertActivityLog({ opType: 'cv_free_question', item: 'Question libre CV', result: 'failure', reason: err.message, durationMs: Date.now() - started });
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_FREE_QUESTION_ERROR');
+      insertActivityLog({ opType: 'cv_free_question', item: 'Question libre CV', result: 'failure', reason: safeErrorReason(err, CV_FAILED.code), durationMs: Date.now() - started });
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -738,8 +743,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       const prompts = getAllCandidatePrompts();
       return c.json({ prompts }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPTS_LIST_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPTS_LIST_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -754,8 +759,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ prompt_id: created?.id }, 'CV_PROMPT_CREATED');
       return c.json({ prompt: created }, 201);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_CREATE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPT_CREATE_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -768,8 +773,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ count: orderedIds.length }, 'CV_PROMPTS_REORDERED');
       return c.json({ prompts }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPTS_REORDER_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPTS_REORDER_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -785,8 +790,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ prompt_id: id }, 'CV_PROMPT_UPDATED');
       return c.json({ prompt: updated }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_UPDATE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPT_UPDATE_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -798,8 +803,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       if (logger) logger.info({ prompt_id: id }, 'CV_PROMPT_DELETED');
       return c.json({ ok: true }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_DELETE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPT_DELETE_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 
@@ -811,8 +816,8 @@ export function createCandidatureRoute({ logger, runLocalStandard, runLocalPower
       const updated = touchCandidatePromptLastUsed(id);
       return c.json({ prompt: updated }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'CV_PROMPT_TOUCH_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.candidature' }) }, 'CV_PROMPT_TOUCH_ERROR');
+      return c.json(publicErrorBody(err, CV_FAILED), 500);
     }
   });
 

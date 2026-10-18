@@ -30,6 +30,17 @@ export const IMPORT_STATUSES = Object.freeze(['QUEUED', 'SCANNING', 'PARSING', '
 export const TRUST_LEVELS = store.TRUST_LEVELS;
 export const TRUSTED_LEVELS = Object.freeze(['USER_AUTHORED', 'PRIMARY_SOURCE', 'VERIFIED_EXTERNAL']);
 export const TRUST_FILTERS = Object.freeze(['all', 'trusted', 'user_authored']);
+const IMPORT_FAILURE_MESSAGES = Object.freeze({
+  UNSUPPORTED_FORMAT: 'Format de document non pris en charge.',
+  FILE_TOO_LARGE: 'Le document est trop volumineux.',
+  SECURITY_BLOCKED: 'Le document a été bloqué pour des raisons de sécurité.',
+  SECRET_DETECTED: 'Le document contient des informations sensibles.',
+  PARSER_FAILED: 'Le document n’a pas pu être analysé.',
+  SOURCE_DELETED: 'Le document n’est plus disponible.',
+  QUEUE_FULL: 'La file d’import est pleine, réessaie plus tard.',
+  INVALID_OPTION: 'Option d’import invalide.',
+});
+const safeImportFailureMessage = (code) => IMPORT_FAILURE_MESSAGES[code] ?? 'L’indexation du document a échoué.';
 
 // Embedding text format. nomic-embed-text is trained with task prefixes; the
 // chosen format is versioned and stored with every vector so a change can
@@ -241,7 +252,7 @@ export function createNotebookDocumentService(deps) {
         store.updateDocument(doc.documentId, { status: existing.currentVersionId ? 'READY' : status, errorCode: code });
       }
       done(status, { errorCode: code });
-      return { status, errorCode: code, message: err?.message };
+      return { status, errorCode: code, message: safeImportFailureMessage(code) };
     } finally {
       aborts.delete(doc.documentId);
     }
@@ -330,7 +341,8 @@ export function createNotebookDocumentService(deps) {
       if (store.getDocument(doc.documentId)?.currentVersionId) store.purgeVersionRows(doc.documentId, versionId);
       else await removeDocument(notebookId, doc.documentId, { fromPipeline: true });
       aborts.delete(doc.documentId);
-      return { status: 'FAILED', errorCode: err?.code ?? 'INDEX_FAILED', message: err?.message };
+      const code = err?.code ?? 'INDEX_FAILED';
+      return { status: 'FAILED', errorCode: code, message: safeImportFailureMessage(code) };
     });
     return { documentId: doc.documentId, versionId, versionNo, duplicate: false, done };
   }

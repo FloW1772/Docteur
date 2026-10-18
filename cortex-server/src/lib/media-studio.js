@@ -429,7 +429,7 @@ export function createMediaStudioService({ rootDir, store, enforce, resolveDocte
       return finish(JOB_STATUS.COMPLETED, { progress: 100, outputFile: path.basename(outputFile), outputSize: size });
     } catch (err) {
       fs.rmSync(outputFile, { force: true });
-      const message = err?.code === 'ROOT_POLICY_DENIED' || err?.name === 'RootPolicyDeniedError' ? `Root Policy : ${err.message}` : (err?.message ?? 'Erreur inconnue');
+      const message = err?.code === 'ROOT_POLICY_DENIED' || err?.name === 'RootPolicyDeniedError' ? `Root Policy : ${err.message}` : (err instanceof StudioError ? err.message : 'Export impossible (FFmpeg ou écriture du fichier).'); // [SEC-REMED-4B]
       logger?.warn?.({ jobId: job.id, err: message }, 'media studio export failed');
       return finish(JOB_STATUS.FAILED, { error: message.slice(0, 400) });
     }

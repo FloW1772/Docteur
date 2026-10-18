@@ -20,8 +20,59 @@ import {
 import { parseIntParam } from '../lib/http-params.js';
 import { isLocalOnlySource } from '../lib/source-privacy.js';
 import { getNotebookDocumentService } from '../lib/notebook-documents-runtime.js';
+import { ErrorCategory } from '../lib/provider-errors.js';
+import { providerErrorLogFields, safeErrorCategory } from '../lib/provider-error-contract.js';
+import {
+  SAFE_RUNTIME_UNAVAILABLE_MESSAGE, safeErrorCode, safeErrorLogFields, toSafePublicError,
+} from '../lib/safe-error-contract.js';
 
 const MAX_SOURCES_PER_NOTEBOOK = 5000; // mission scale ceiling ("5000 si raisonnable")
+const NOTEBOOK_ASK_FAILED = {
+  code: 'NOTEBOOK_ASK_FAILED',
+  message: 'La réponse du Notebook n’a pas pu être générée.',
+  status: 500,
+};
+const NOTEBOOK_SUMMARY_FAILED = {
+  code: 'NOTEBOOK_SUMMARY_FAILED',
+  message: 'Le résumé du Notebook n’a pas pu être généré.',
+  status: 500,
+};
+const NOTEBOOK_MODEL_UNAVAILABLE = {
+  code: 'MODEL_UNAVAILABLE',
+  message: 'Le modèle local configuré n’est pas disponible.',
+  status: 503,
+};
+const NOTEBOOK_RUNTIME_UNAVAILABLE = {
+  code: 'MODEL_RUNTIME_UNAVAILABLE',
+  message: SAFE_RUNTIME_UNAVAILABLE_MESSAGE,
+  status: 503,
+};
+const RUNTIME_UNAVAILABLE_CATEGORIES = new Set([
+  ErrorCategory.PROVIDER_UNAVAILABLE,
+  ErrorCategory.TIMEOUT,
+  ErrorCategory.NETWORK_ERROR,
+]);
+const RUNTIME_UNAVAILABLE_SYSTEM_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN',
+]);
+
+function toSafeNotebookAskError(error) {
+  const category = safeErrorCategory(error);
+  if (category === ErrorCategory.MODEL_UNAVAILABLE) return toSafePublicError(error, NOTEBOOK_MODEL_UNAVAILABLE);
+  if (RUNTIME_UNAVAILABLE_CATEGORIES.has(category) || RUNTIME_UNAVAILABLE_SYSTEM_CODES.has(safeErrorCode(error))) {
+    return toSafePublicError(error, NOTEBOOK_RUNTIME_UNAVAILABLE);
+  }
+  return toSafePublicError(error, NOTEBOOK_ASK_FAILED);
+}
+
+function toSafeNotebookSummaryError(error) {
+  const category = safeErrorCategory(error);
+  if (category === ErrorCategory.MODEL_UNAVAILABLE) return toSafePublicError(error, NOTEBOOK_MODEL_UNAVAILABLE);
+  if (RUNTIME_UNAVAILABLE_CATEGORIES.has(category) || RUNTIME_UNAVAILABLE_SYSTEM_CODES.has(safeErrorCode(error))) {
+    return toSafePublicError(error, NOTEBOOK_RUNTIME_UNAVAILABLE);
+  }
+  return toSafePublicError(error, NOTEBOOK_SUMMARY_FAILED);
+}
 
 function isPrivateNeuron(neuronId, kind) {
   const AUTO_PRIVATE_KINDS = new Set(['cv', 'candidature']);
@@ -94,7 +145,7 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
   app.get('/notebooks/:id/sources', (c) => {
     const notebookId = c.req.param('id');
     if (!getNotebook(notebookId)) return c.json({ error: 'Notebook introuvable' }, 404);
-    const limit = Math.min(parseIntParam(c.req.query('limit'), 100), 500);
+    const limit = Math.min(Math.max(parseIntParam(c.req.query('limit'), 100), 1), 500);
     const offset = Math.max(parseIntParam(c.req.query('offset'), 0), 0);
     return c.json({
       sources: listNotebookSources(notebookId, { limit, offset }),
@@ -192,8 +243,9 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
       logger?.info({ notebookId, chunksUsed: chunks.length, citationsCount: citations.length }, 'NOTEBOOK_ASK_OK');
       return c.json({ answer, citations, chunks_used: chunks.length });
     } catch (error) {
-      logger?.warn({ notebookId, error: error.message }, 'NOTEBOOK_ASK_FAILED');
-      return c.json({ error: error.message }, 500);
+      const safe = toSafeNotebookAskError(error);
+      logger?.warn({ notebookId, provider: 'ollama', ...safeErrorLogFields(error, { errorCode: safe.code, operation: 'notebook.ask' }) }, 'NOTEBOOK_ASK_FAILED');
+      return c.json(safe.hint ? { error: safe.message, code: safe.code, hint: safe.hint } : { error: safe.message, code: safe.code }, safe.status);
     }
   });
 
@@ -206,8 +258,11 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
       const result = await getOrBuildGlobalSummary(deps, notebookId);
       return c.json(result);
     } catch (error) {
-      logger?.warn({ notebookId, error: error.message }, 'NOTEBOOK_SUMMARY_FAILED');
-      return c.json({ error: error.message }, 500);
+      const safe = toSafeNotebookSummaryError(error);
+      logger?.warn({ notebookId, ...providerErrorLogFields(error, {
+        errorCode: safe.code, provider: 'ollama', model: env.ANSWER_MODEL, operation: 'notebook.summary',
+      }) }, 'NOTEBOOK_SUMMARY_FAILED');
+      return c.json(safe.hint ? { error: safe.message, code: safe.code, hint: safe.hint } : { error: safe.message, code: safe.code }, safe.status);
     }
   });
 
@@ -258,8 +313,15 @@ export function createNotebookRoute({ ollamaClient, env, logger }) {
         notice: 'Fichier Markdown créé localement. Aucun appel à Google/NotebookLM n\'a été effectué — c\'est un export manuel que tu peux ensuite importer toi-même où tu le souhaites.',
       });
     } catch (error) {
-      logger?.warn({ notebookId, error: error.message }, 'NOTEBOOK_EXPORT_FAILED');
-      return c.json({ error: error.message }, 500);
+      const safe = toSafePublicError(error, {
+        code: 'NOTEBOOK_EXPORT_FAILED',
+        message: 'L’export du Notebook n’a pas pu être créé.',
+        status: 500,
+      });
+      logger?.warn({ notebookId, ...safeErrorLogFields(error, {
+        errorCode: safe.code, operation: 'notebook.export',
+      }) }, 'NOTEBOOK_EXPORT_FAILED');
+      return c.json({ error: safe.message, code: safe.code }, safe.status);
     }
   });
 

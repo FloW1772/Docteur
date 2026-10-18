@@ -69,6 +69,13 @@ function logEvent(logger, missionId, fromState, toState, detail = {}) {
   logger?.info?.({ mission_id: missionId, from_state: fromState, to_state: toState, ...detail }, 'METAGPT_MISSION_TRANSITION');
 }
 
+// [SEC-REMED-4B] The runner's free-text `error` (str(exception), traceback) and stderr can carry LLM-provider text,
+// paths and environment: only its stable `error_code` (uppercase, emitted by the Docteur runner) is kept.
+function runnerErrorCode(result, fallback) {
+  const c = result?.error_code;
+  return typeof c === 'string' && /^[A-Z][A-Z0-9_]{1,59}$/.test(c) ? c : fallback;
+}
+
 function transition(logger, missionId, fromState, toState, extraUpdates = {}) {
   if (!isValidTransition(fromState, toState)) {
     throw policyError(`invalid_transition:${fromState}->${toState}`);
@@ -252,7 +259,7 @@ export async function runPlanning(missionId, { logger } = {}) {
   }
 
   if (!ok) {
-    const errorMessage = timedOut ? 'planning_timeout' : (result?.error || stderr?.slice(0, 2000) || 'planning_failed');
+    const errorMessage = timedOut ? 'planning_timeout' : runnerErrorCode(result, 'planning_failed');
     transition(logger, missionId, MISSION_STATES.PLANNING, MISSION_STATES.FAILED, { error_message: errorMessage });
     return { ok: false, state: MISSION_STATES.FAILED, error: errorMessage };
   }
@@ -285,7 +292,7 @@ export async function runCodegen(missionId, { files, logger } = {}) {
   }
 
   if (!ok) {
-    const errorMessage = timedOut ? 'codegen_timeout' : (result?.error || stderr?.slice(0, 2000) || 'codegen_failed');
+    const errorMessage = timedOut ? 'codegen_timeout' : runnerErrorCode(result, 'codegen_failed');
     const toState = result?.error_code === 'GIT_GUARD_VIOLATION' ? MISSION_STATES.BLOCKED_BY_POLICY : MISSION_STATES.FAILED;
     transition(logger, missionId, MISSION_STATES.GENERATING, toState, { error_message: errorMessage, detail: { guard_counters: result?.guard_counters } });
     return { ok: false, state: toState, error: errorMessage };
@@ -310,7 +317,7 @@ export async function runPrepareApply(missionId, { logger } = {}) {
   if (db.getMetaGptMissionById(missionId)?.cancelled) return { ok: false, state: MISSION_STATES.CANCELLED };
 
   if (!ok) {
-    const errorMessage = timedOut ? 'prepare_apply_timeout' : (result?.error || stderr?.slice(0, 2000) || 'prepare_apply_failed');
+    const errorMessage = timedOut ? 'prepare_apply_timeout' : runnerErrorCode(result, 'prepare_apply_failed');
     if (result) db.updateMetaGptMission(missionId, { metadata: { ...mission.metadata, prepare_apply: result } });
     const toState = result?.error_code === 'BLOCKED_BY_POLICY' ? MISSION_STATES.BLOCKED_BY_POLICY : MISSION_STATES.FAILED;
     transition(logger, missionId, MISSION_STATES.PREPARING_DIFF, toState, { error_message: errorMessage });
@@ -371,7 +378,7 @@ export async function runApply(missionId, { logger } = {}) {
   const { ok, result, stderr, timedOut } = await runPythonScript(RUNNER_APPLY, [workspaceDir, missionId, mission.diff_sha256, mission.metadata.prepare_apply.package_sha256], { timeout: TIMEOUTS_MS.apply, missionId });
 
   if (!ok) {
-    const errorMessage = timedOut ? 'apply_timeout' : (result?.error || stderr?.slice(0, 2000) || 'apply_failed');
+    const errorMessage = timedOut ? 'apply_timeout' : runnerErrorCode(result, 'apply_failed');
     const toState = result?.error_code === 'APPROVAL_INVALIDATED' ? MISSION_STATES.APPROVAL_INVALIDATED : MISSION_STATES.FAILED;
     transition(logger, missionId, MISSION_STATES.APPLYING, toState, { error_message: errorMessage, detail: { rollback: result?.rollback_triggered ?? false } });
     return { ok: false, state: toState, error: errorMessage };

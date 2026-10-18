@@ -7,6 +7,11 @@ import {
 import { estimateVideo, runVideoPipeline, requestCancel, removeJobDir } from '../lib/video-pipeline/pipeline.js';
 import { hasActiveJobs } from './jobs.js';
 import { assertSafeUrl } from '../lib/url-security.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const VIDEO_FAILED = { code: 'VIDEO_SUMMARY_FAILED', message: 'Le résumé vidéo a échoué.' };
 
 const RESUME_TYPES = ['educatif', 'interview', 'podcast', 'rediff', 'auto'];
 const WHISPER_PROVIDERS = ['auto', 'groq', 'local'];
@@ -26,7 +31,7 @@ export function createVideoSummaryRoute({ services, ollamaClient, logger } = {})
       if (!estimate.ok) return c.json({ error: estimate.error }, 422);
       return c.json(estimate);
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, VIDEO_FAILED), 400);
     }
   });
 
@@ -35,7 +40,7 @@ export function createVideoSummaryRoute({ services, ollamaClient, logger } = {})
     const body = await c.req.json().catch(() => ({}));
     const url = String(body.url ?? '').trim();
     if (!url) return c.json({ error: 'URL manquante' }, 400);
-    try { assertSafeUrl(url); } catch (err) { return c.json({ error: err.message }, 400); }
+    try { assertSafeUrl(url); } catch (err) { return c.json(publicErrorBody(err, VIDEO_FAILED), 400); }
 
     const resumeType = RESUME_TYPES.includes(body.resumeType) ? body.resumeType : 'auto';
     const whisperProvider = WHISPER_PROVIDERS.includes(body.whisperProvider) ? body.whisperProvider : 'auto';
@@ -58,7 +63,7 @@ export function createVideoSummaryRoute({ services, ollamaClient, logger } = {})
 
     // Fire-and-forget — la pipeline continue après la réponse HTTP
     runVideoPipeline(id, { ollamaClient, services, logger }).catch(err => {
-      logger?.error({ jobId: id, err: err.message }, 'VIDEO_PIPELINE_UNCAUGHT');
+      logger?.error({ jobId: id, ...safeErrorLogFields(err, { operation: 'route.video_summary' }) }, 'VIDEO_PIPELINE_UNCAUGHT');
     });
 
     return c.json({ jobId: id }, 201);
@@ -96,7 +101,7 @@ export function createVideoSummaryRoute({ services, ollamaClient, logger } = {})
 
     updateVideoJob(id, { cancelled: false, status: 'pending', error_message: null });
     runVideoPipeline(id, { ollamaClient, services, logger }).catch(err => {
-      logger?.error({ jobId: id, err: err.message }, 'VIDEO_PIPELINE_UNCAUGHT');
+      logger?.error({ jobId: id, ...safeErrorLogFields(err, { operation: 'route.video_summary' }) }, 'VIDEO_PIPELINE_UNCAUGHT');
     });
     return c.json({ ok: true });
   });

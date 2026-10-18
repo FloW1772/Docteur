@@ -34,6 +34,13 @@ export const DEFAULT_AI_LIMITS = Object.freeze({ maxGenericBytes: 100 * 1024 * 1
 
 const CONFIRM_NOTE = 'secretPolicy=confirm : des secrets ont été détectés ; choisis explicitement block ou redact après l\'aperçu';
 const errCode = (e) => (e instanceof NotebookImportError ? e.code : e instanceof ZipSecurityError ? 'SECURITY_BLOCKED' : e?.name === 'SyntaxError' || e?.name === 'RangeError' ? 'PARSER_FAILED' : 'INDEX_FAILED');
+const safeImportMessage = (code) => ({
+  UNSUPPORTED_FORMAT: 'Format d’historique IA non pris en charge.',
+  FILE_TOO_LARGE: 'L’historique IA est trop volumineux.',
+  SECURITY_BLOCKED: 'L’historique IA a été bloqué pour des raisons de sécurité.',
+  PARSER_FAILED: 'L’historique IA n’a pas pu être analysé.',
+  SOURCE_DELETED: 'L’historique IA n’est plus disponible.',
+}[code] ?? 'L’import de l’historique IA a échoué.');
 
 export function speakerFor(role, provider) {
   if (role === 'USER') return 'Vous (message utilisateur)';
@@ -300,7 +307,7 @@ export function createAiHistoryService(docService, deps = {}) {
     const setStatus = (s) => { dstore.updateDocument(importId, { status: s }); ai.updateImport(importId, { status: s }); };
     const done = (async () => {
       let ctx;
-      try { ctx = await run(); } catch (e) { I.aborts.delete(importId); return { importId, status: 'FAILED', errorCode: errCode(e), message: e.message }; }
+      try { ctx = await run(); } catch (e) { const code = errCode(e); I.aborts.delete(importId); return { importId, status: 'FAILED', errorCode: code, message: safeImportMessage(code) }; }
       if (ctx.duplicate) return ctx;
       return I.limiter.run(async () => {
         const t0 = Date.now(); let source;
@@ -329,7 +336,7 @@ export function createAiHistoryService(docService, deps = {}) {
           const code = errCode(e);
           ai.updateImport(importId, { status: 'FAILED', errorCode: code }); dstore.updateDocument(importId, { status: 'FAILED', errorCode: code });
           log('warn', { importId, stage: 'FAILED', code }, 'NOTEBOOK_AI_IMPORT_FAILED');
-          return { importId, status: 'FAILED', errorCode: code, message: e?.message };
+          return { importId, status: 'FAILED', errorCode: code, message: safeImportMessage(code) };
         } finally { try { await source?.close(); } catch { /* ignore */ } I.aborts.delete(importId); }
       }).catch(async e => { await rollback(importId, notebookId).catch(() => {}); return { importId, status: 'FAILED', errorCode: e?.code ?? 'INDEX_FAILED' }; });
     })();

@@ -12,6 +12,7 @@
 // is still discovered in full, there is no item cap.
 import { randomUUID } from 'node:crypto';
 import { classifyDiscoveryInput, discoverYouTube } from './youtube-discovery.js';
+import { hasTrustedMessage, publicErrorMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 export const JOB_STATUS = Object.freeze({
   PENDING: 'PENDING', VALIDATING: 'VALIDATING', QUEUED: 'QUEUED', RUNNING: 'RUNNING',
@@ -253,7 +254,7 @@ export function createChannelDiscoveryQueue({
       done = Promise.reject(err);
     }
     const settled = done
-      .then(result => finishRun(job, runId, result), err => finishRun(job, runId, { status: err?.name === 'AbortError' ? 'cancelled' : 'error', code: err?.code, message: err?.message }))
+      .then(result => finishRun(job, runId, result), err => finishRun(job, runId, { status: err?.name === 'AbortError' ? 'cancelled' : 'error', code: hasTrustedMessage(err) ? err.code : 'YTDLP_ERROR', message: publicErrorMessage(err, 'Échec de la découverte YouTube') })) // [SEC-REMED-4B]
       .finally(() => { running.delete(runId); pump(); });
     running.set(runId, { jobId: job.id, controller, done: settled });
   }

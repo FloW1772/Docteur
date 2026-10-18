@@ -307,7 +307,7 @@ export async function getTableStatus(lancedbPath) {
     const neuronsCount = await countNeurons(lancedbPath);
     return { connected: true, hasTable: true, neuronsCount };
   } catch (error) {
-    return { connected: false, hasTable: false, neuronsCount: 0, error: error.message };
+    return { connected: false, hasTable: false, neuronsCount: 0, error: 'Index vectoriel inaccessible.' }; // [SEC-REMED-4B] store text (paths) untrusted
   }
 }
 

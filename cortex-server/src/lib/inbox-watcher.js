@@ -16,6 +16,7 @@ import crypto  from 'node:crypto';
 import fs      from 'node:fs';
 import path    from 'node:path';
 import { getMeta, setMeta, insertInboxPending } from './sqlite.js';
+import { publicErrorMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_FILE_BYTES    = 2 * 1024 * 1024; // 2 MB
 const MAX_FILES_PER_RUN = 20;
@@ -144,7 +145,7 @@ export async function runInboxCheck({ inboxDir, logger } = {}) {
     // Read
     let raw;
     try { raw = fs.readFileSync(filePath, 'utf8'); } catch (err) {
-      writeErrorLog(errorsDir, entry.name, `Lecture impossible : ${err.message}`);
+      writeErrorLog(errorsDir, entry.name, `Lecture impossible : ${publicErrorMessage(err, 'fichier illisible.')}`);
       try { moveFile(filePath, errorsDir, entry.name); } catch { /* non-fatal */ }
       errors++;
       continue;
@@ -173,7 +174,7 @@ export async function runInboxCheck({ inboxDir, logger } = {}) {
         tags    = [];
       }
     } catch (err) {
-      writeErrorLog(errorsDir, entry.name, `Format invalide : ${err.message}`);
+      writeErrorLog(errorsDir, entry.name, `Format invalide : ${publicErrorMessage(err, 'contenu non reconnu.')}`);
       try { moveFile(filePath, errorsDir, entry.name); } catch { /* non-fatal */ }
       errors++;
       continue;
@@ -194,7 +195,7 @@ export async function runInboxCheck({ inboxDir, logger } = {}) {
         created_at: new Date().toISOString(),
       });
     } catch (err) {
-      writeErrorLog(errorsDir, entry.name, `Stockage échoué : ${err.message}`);
+      writeErrorLog(errorsDir, entry.name, `Stockage échoué : ${publicErrorMessage(err, 'écriture impossible.')}`);
       try { moveFile(filePath, errorsDir, entry.name); } catch { /* non-fatal */ }
       errors++;
       continue;

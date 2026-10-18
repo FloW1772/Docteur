@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getCatalog, getCachedCatalogOnly, clearCatalogCache, getCacheInfo, NATIVE_PROVIDER_MAP, CATALOG_META } from '../lib/free-ai-catalog.js';
 import { assertCloudAllowed, isStrictLocalMode } from '../lib/strict-local.js';
 import { getCloudKeyStatuses, getRouterSettings, getCloudKeys } from '../lib/sqlite.js';
+import { publicErrorBody, publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const STRICT_LOCAL_MESSAGE = 'Mode strictement local activé — l\'actualisation Internet du catalogue IA gratuites est désactivée. Les données affichées proviennent du dernier cache local.';
 
@@ -93,7 +94,7 @@ export function createFreeAiRoute({ logger }) {
         warning: error ?? (strictLocal && providers.length === 0 ? 'Aucun catalogue hors ligne disponible.' : null),
       });
     } catch (error) {
-      if (logger) logger.error({ err: error.message }, 'FREE_AI_CATALOG_FETCH_FAILED');
+      if (logger) logger.error({ ...safeErrorLogFields(error, { operation: 'route.free_ai' }) }, 'FREE_AI_CATALOG_FETCH_FAILED');
       // No cache at all and the fetch failed — clean empty state, never a 500
       // that would break the rest of Settings.
       return c.json({
@@ -106,7 +107,7 @@ export function createFreeAiRoute({ logger }) {
         stale: false,
         strictLocalActive: strictLocal,
         strictLocalBlockedRefresh: strictLocal && wantsRefresh,
-        warning: strictLocal ? STRICT_LOCAL_MESSAGE : (error.message ?? 'Catalogue indisponible'),
+        warning: strictLocal ? STRICT_LOCAL_MESSAGE : publicErrorMessage(error, 'Catalogue indisponible'),
       }, strictLocal ? 200 : 502);
     }
   });
@@ -137,8 +138,8 @@ export function createFreeAiRoute({ logger }) {
         warning: error ?? null,
       });
     } catch (error) {
-      if (logger) logger.error({ err: error.message }, 'FREE_AI_CATALOG_REFRESH_FAILED');
-      return c.json({ ok: false, error: error.message }, 502);
+      if (logger) logger.error({ ...safeErrorLogFields(error, { operation: 'route.free_ai' }) }, 'FREE_AI_CATALOG_REFRESH_FAILED');
+      return c.json({ ok: false, ...publicErrorBody(error, FREE_AI_FAILED) }, 502);
     }
   });
 

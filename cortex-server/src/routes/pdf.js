@@ -2,6 +2,7 @@ import { Hono }                             from 'hono';
 import { getPageFromStore, getAllPagesFromStore, getRouterSettings } from '../lib/sqlite.js';
 import { buildNeuronHtml, buildSubjectHtml, generatePdf } from '../lib/pdf.js';
 import { tryCloudFallbackChain } from '../lib/router.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_NEURONS = 20;
 
@@ -48,7 +49,7 @@ async function tryIntroGeneration(subject, neuronSummaries, logger) {
   ];
 
   const result = await tryCloudFallbackChain(messages, { logger, settingsOverride: settings }).catch(err => {
-    if (logger) logger.warn({ error: err.message }, 'PDF: intro generation failed');
+    if (logger) logger.warn({ ...safeErrorLogFields(err, { operation: 'route.pdf' }) }, 'PDF: intro generation failed');
     return null;
   });
   return result?.text?.trim() ?? null;
@@ -83,8 +84,8 @@ export function createPdfRoute({ services, logger } = {}) {
       const html = buildNeuronHtml(page, linkedPages, mode);
       pdfBuf = await generatePdf(html, { mode });
     } catch (err) {
-      if (logger) logger.error({ error: err.message }, 'PDF: neuron generation failed');
-      return c.json({ error: `Échec de la génération PDF : ${err.message}` }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.pdf' }) }, 'PDF: neuron generation failed');
+      return c.json(publicErrorBody(err, { code: 'PDF_GENERATION_FAILED', message: 'Échec de la génération PDF.' }), 500);
     }
 
     const filename = `${safeFilename(page.title)}_${new Date().toISOString().slice(0, 10)}.pdf`;
@@ -109,8 +110,8 @@ export function createPdfRoute({ services, logger } = {}) {
       const hits   = await services.searchVector(vector, { limit: MAX_NEURONS + 5, threshold: 0.15 });
       rawNeurons   = hits;
     } catch (err) {
-      if (logger) logger.error({ error: err.message }, 'PDF: search failed');
-      return c.json({ error: `Recherche impossible : ${err.message}` }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.pdf' }) }, 'PDF: search failed');
+      return c.json(publicErrorBody(err, { code: 'PDF_SEARCH_FAILED', message: 'Recherche impossible.' }), 500);
     }
 
     const truncated = rawNeurons.length > MAX_NEURONS;
@@ -168,8 +169,8 @@ export function createPdfRoute({ services, logger } = {}) {
       const html = buildSubjectHtml(subject, neuronsWithContent, intro, mode, truncated);
       pdfBuf = await generatePdf(html, { mode });
     } catch (err) {
-      if (logger) logger.error({ error: err.message }, 'PDF: subject generation failed');
-      return c.json({ error: `Échec de la génération PDF : ${err.message}` }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.pdf' }) }, 'PDF: subject generation failed');
+      return c.json(publicErrorBody(err, { code: 'PDF_GENERATION_FAILED', message: 'Échec de la génération PDF.' }), 500);
     }
 
     const filename = `${safeFilename(subject)}_${new Date().toISOString().slice(0, 10)}.pdf`;

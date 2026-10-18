@@ -12,6 +12,11 @@ import {
 } from '../lib/sqlite.js';
 import { listAvailableModels, buildDraftMessages, buildReviewMessages, parseReviewOutput } from '../lib/prompt-generator.js';
 import { runAiTask } from '../lib/router.js';
+import { publicErrorBody, publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const PROMPT_FAILED = { code: 'PROMPT_OPERATION_FAILED', message: 'L’opération du générateur de prompts a échoué.' };
 
 const MAX_REQUEST_CHARS = 2_000;
 const MAX_PROMPTS       = 500;
@@ -36,7 +41,7 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       const models = await listAvailableModels(installedNames);
       return c.json(models);
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, PROMPT_FAILED), 500);
     }
   });
 
@@ -145,8 +150,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       const templates = getAllPromptTemplates();
       return c.json({ templates }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATES_LIST_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATES_LIST_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -166,8 +171,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       if (logger) logger.info({ template_id: created?.id }, 'PROMPT_TEMPLATE_CREATED');
       return c.json({ template: created }, 201);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_CREATE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATE_CREATE_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -181,8 +186,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       if (logger) logger.info({ count: orderedIds.length }, 'PROMPT_TEMPLATES_REORDERED');
       return c.json({ templates }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATES_REORDER_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATES_REORDER_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -200,8 +205,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       if (logger) logger.info({ template_id: id }, 'PROMPT_TEMPLATE_UPDATED');
       return c.json({ template: updated }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_UPDATE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATE_UPDATE_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -213,8 +218,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       if (logger) logger.info({ template_id: id }, 'PROMPT_TEMPLATE_DELETED');
       return c.json({ ok: true }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_DELETE_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATE_DELETE_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -229,8 +234,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
       const updated = touchPromptTemplateLastUsed(id);
       return c.json({ template: updated }, 200);
     } catch (err) {
-      if (logger) logger.error({ error_message: err.message }, 'PROMPT_TEMPLATE_TOUCH_ERROR');
-      return c.json({ error: err.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'PROMPT_TEMPLATE_TOUCH_ERROR');
+      return c.json(publicErrorBody(err, PROMPT_FAILED), 500);
     }
   });
 
@@ -289,11 +294,11 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
         requiredCapabilities: ['text'], logger,
       });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'prompt-generator: draft failed');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'prompt-generator: draft failed');
       if (draftProvider !== 'local') {
-        return c.json({ error: `Échec du modèle cloud de rédaction (${err.message}) — vous pouvez relancer en local`, cloud_failed: true }, 502);
+        return c.json({ error: 'Échec du modèle cloud de rédaction — vous pouvez relancer en local', code: 'CLOUD_MODEL_FAILED', cloud_failed: true }, 502);
       }
-      return c.json({ error: `Échec de la rédaction : ${err.message}` }, 503);
+      return c.json(publicErrorBody(err, { code: 'DRAFT_FAILED', message: 'Échec de la rédaction : le modèle n’a pas pu répondre.' }), 503);
     }
 
     // ── Stage 2: review ────────────────────────────────────────────────────
@@ -306,11 +311,11 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
         requiredCapabilities: ['text'], logger,
       });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'prompt-generator: review failed');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'prompt-generator: review failed');
       if (reviewProvider !== 'local') {
-        return c.json({ error: `Échec du modèle cloud de relecture (${err.message}) — vous pouvez relancer en local`, cloud_failed: true, draft_text: draft.text.trim() }, 502);
+        return c.json({ error: 'Échec du modèle cloud de relecture — vous pouvez relancer en local', code: 'CLOUD_MODEL_FAILED', cloud_failed: true, draft_text: draft.text.trim() }, 502);
       }
-      return c.json({ error: `Échec de la relecture : ${err.message}` }, 503);
+      return c.json(publicErrorBody(err, { code: 'REVIEW_FAILED', message: 'Échec de la relecture : le modèle n’a pas pu répondre.' }), 503);
     }
 
     const parsed = parseReviewOutput(review.text.trim(), draft.text.trim());
@@ -364,8 +369,8 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
         messages: buildReviewMessages(draft.text.trim()), client: ollamaClient, requiredCapabilities: ['text'], logger,
       });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'prompt-generator: regenerate failed');
-      return c.json({ error: `Échec de la régénération : ${err.message}` }, 503);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.prompt_generator' }) }, 'prompt-generator: regenerate failed');
+      return c.json(publicErrorBody(err, { code: 'REGENERATE_FAILED', message: 'Échec de la régénération : le modèle n’a pas pu répondre.' }), 503);
     }
 
     const parsed = parseReviewOutput(review.text.trim(), draft.text.trim());
@@ -454,7 +459,7 @@ export function createPromptGeneratorRoute({ services, ollamaClient, logger }) {
         });
         imported++;
       } catch (err) {
-        errors.push({ request: p.request?.slice(0, 60), error: err.message });
+        errors.push({ request: p.request?.slice(0, 60), error: publicErrorMessage(err, 'Prompt non généré.') });
       }
     }
 

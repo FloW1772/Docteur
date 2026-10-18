@@ -3,6 +3,11 @@ import { stream }              from 'hono/streaming';
 import { searchDuckDuckGo }    from '../lib/web-search.js';
 import { extractContent }      from '../lib/deep-capture.js';
 import { assertSafeUrl }       from '../lib/url-security.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const WEB_ANSWER_FAILED = { code: 'WEB_ANSWER_FAILED', message: 'La réponse web a échoué.' };
 
 const MAX_PAGES         = 3;
 const PAGE_TIMEOUT_MS   = 10_000;
@@ -31,8 +36,8 @@ export function createWebAnswerRoute({ services, logger }) {
         try {
           ddgResults = await searchDuckDuckGo(question);
         } catch (err) {
-          logger?.warn({ err: err.message }, 'web-answer: DDG search failed');
-          await send({ type: 'error', error: `Moteur de recherche inaccessible : ${err.message}` });
+          logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.web_answer' }) }, 'web-answer: DDG search failed');
+          await send({ type: 'error', code: 'SEARCH_ENGINE_UNREACHABLE', error: 'Moteur de recherche inaccessible.' });
           await send({ type: 'done' });
           return;
         }
@@ -69,7 +74,7 @@ export function createWebAnswerRoute({ services, logger }) {
               });
             }
           } catch (err) {
-            logger?.warn({ url, err: err.message }, 'web-answer: page fetch failed');
+            logger?.warn({ url, ...safeErrorLogFields(err, { operation: 'route.web_answer' }) }, 'web-answer: page fetch failed');
           }
         }
 
@@ -113,7 +118,7 @@ export function createWebAnswerRoute({ services, logger }) {
           answer    = result.text;
           modelUsed = result.model;
         } catch (err) {
-          await send({ type: 'error', error: `Modèle local indisponible : ${err.message}` });
+          await send({ type: 'error', ...publicErrorBody(err, { code: 'LOCAL_MODEL_UNAVAILABLE', message: 'Modèle local indisponible.' }) });
           await send({ type: 'done' });
           return;
         }
@@ -127,8 +132,8 @@ export function createWebAnswerRoute({ services, logger }) {
         });
 
       } catch (err) {
-        logger?.error({ err: err.message }, 'web-answer: unexpected error');
-        await send({ type: 'error', error: err.message });
+        logger?.error({ ...safeErrorLogFields(err, { operation: 'route.web_answer' }) }, 'web-answer: unexpected error');
+        await send({ type: 'error', ...publicErrorBody(err, WEB_ANSWER_FAILED) });
       } finally {
         await send({ type: 'done' });
       }

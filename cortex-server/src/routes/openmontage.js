@@ -7,6 +7,11 @@ import {
   WORKSPACES_ROOT,
 } from '../lib/openmontage-adapter.js';
 import { hasActiveJobs } from './jobs.js';
+import { publicErrorBody, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const MONTAGE_FAILED = { code: 'MONTAGE_OPERATION_FAILED', message: 'L’opération de montage a échoué.' };
 
 // Same loopback-only guard shape as external-agents.js — this feature must
 // never be reachable except from the local machine, and never talks to any
@@ -61,7 +66,7 @@ export function createOpenMontageRoute({ isLocal = c => localAddress(getConnInfo
       const status = await getStatus();
       return c.json({ status });
     } catch (err) {
-      return c.json({ status: 'ERROR', error: err.message }, 500);
+      return c.json({ status: 'ERROR', ...publicErrorBody(err, MONTAGE_FAILED) }, 500);
     }
   });
 
@@ -71,7 +76,7 @@ export function createOpenMontageRoute({ isLocal = c => localAddress(getConnInfo
       const capabilities = await getCapabilities();
       return c.json(capabilities);
     } catch (err) {
-      return c.json({ error: err.message }, 500);
+      return c.json(publicErrorBody(err, MONTAGE_FAILED), 500);
     }
   });
 
@@ -121,12 +126,12 @@ export function createOpenMontageRoute({ isLocal = c => localAddress(getConnInfo
       record.finishedAt = Date.now();
       record.cancelled = result.cancelled;
       record.status = result.cancelled ? 'cancelled' : (result.ok ? 'done' : 'failed');
-      record.error = result.ok ? null : (result.error || 'render_failed');
+      record.error = result.ok ? null : (result.cancelled ? 'cancelled' : 'render_failed'); // [SEC-REMED-4B] adapter text = subprocess output
       reapJob(jobId);
     }).catch(err => {
       record.finishedAt = Date.now();
       record.status = 'failed';
-      record.error = err.message;
+      record.error = safeErrorReason(err, 'RENDER_FAILED'); // [SEC-REMED-4B] exposed by the job status route
       reapJob(jobId);
     });
 

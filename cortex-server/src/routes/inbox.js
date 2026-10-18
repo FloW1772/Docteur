@@ -2,6 +2,11 @@ import { Hono } from 'hono';
 import fs from 'node:fs';
 import { getInboxSettings, updateInboxSettings, runInboxCheck } from '../lib/inbox-watcher.js';
 import { getInboxPending, markInboxConsumed, insertActivityLog } from '../lib/sqlite.js';
+import { publicErrorBody, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const INBOX_FAILED = { code: 'INBOX_IMPORT_FAILED', message: 'L’import de la boîte de dépôt a échoué.' };
 
 export function createInboxRoute({ defaultDir, logger } = {}) {
   const route = new Hono();
@@ -42,8 +47,8 @@ export function createInboxRoute({ defaultDir, logger } = {}) {
       }
       return c.json(result);
     } catch (err) {
-      insertActivityLog({ opType: 'inbox_import', item: dir, result: 'failure', reason: err.message ?? 'Erreur' });
-      return c.json({ error: err.message ?? 'Erreur' }, 500);
+      insertActivityLog({ opType: 'inbox_import', item: dir, result: 'failure', reason: safeErrorReason(err, INBOX_FAILED.code) });
+      return c.json(publicErrorBody(err, { ...INBOX_FAILED, message: 'Erreur' }), 500);
     }
   });
 

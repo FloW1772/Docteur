@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import { YTDLP_BIN, normalizePlaylistEntry, optionalString, optionalNumber, friendlyError } from './ytdlp.js';
 import { prepareYtDlp } from './media-egress.js';
 import { killProcessTree } from './process-tree.js';
+import { PublicError, hasTrustedMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 export const DISCOVERY_MODES = Object.freeze({
   ALL_MEDIA: 'CHANNEL_ALL_MEDIA',
@@ -254,7 +255,7 @@ export function runYtDlpSource({
     });
 
     proc.on('error', err => {
-      if (err.code === 'ENOENT') settle(reject, new Error('yt-dlp introuvable. Lance : winget install yt-dlp'));
+      if (err.code === 'ENOENT') settle(reject, new PublicError('YTDLP_NOT_FOUND', 'yt-dlp introuvable. Lance : winget install yt-dlp', { status: 503 }));
       else settle(reject, err);
     });
 
@@ -265,8 +266,7 @@ export function runYtDlpSource({
       if (code !== 0) {
         const text = ytdlpErrorText(stderrTail);
         if (entries === 0 && TAB_MISSING_RE.test(text)) return settle(resolve, { ...meta, entries, pages, available: false });
-        const err = new Error(friendlyError(text));
-        err.code = 'YTDLP_ERROR';
+        const err = new PublicError('YTDLP_ERROR', friendlyError(text), { status: 502 }); // closed-table text only
         return settle(reject, err);
       }
       settle(resolve, { ...meta, entries, pages, available: true });
@@ -403,7 +403,12 @@ export async function discoverYouTube(input, {
     return finish('done');
   } catch (err) {
     if (err?.name === 'AbortError') return finish('cancelled');
-    onEvent({ type: 'error', name: err?.name ?? 'Error', code: err?.code ?? 'YTDLP_ERROR', message: err?.message ?? 'Échec de la découverte YouTube', total: index.size, counts });
-    return { status: 'error', code: err?.code ?? 'YTDLP_ERROR', message: err?.message, items: [...index.values()], counts };
+    // [SEC-REMED-4B] PublicError (closed yt-dlp table, missing binary) and the Docteur timeouts keep their text; any other
+    // failure (spawn / stream) is untrusted text → fixed message.
+    const trusted = hasTrustedMessage(err) || (err?.name === 'TimeoutError' && /^DISCOVERY_[A-Z_]+$/.test(String(err?.code)));
+    const code = trusted ? err.code : 'YTDLP_ERROR';
+    const message = trusted ? err.message : 'Échec de la découverte YouTube';
+    onEvent({ type: 'error', name: err?.name === 'TimeoutError' ? 'TimeoutError' : 'Error', code, message, total: index.size, counts });
+    return { status: 'error', code, message, items: [...index.values()], counts };
   }
 }

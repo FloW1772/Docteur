@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import pino from 'pino';
+import { safeErrorLogFields } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 function ensureParentDir(filePath) {
   const dir = path.dirname(filePath);
@@ -73,15 +74,35 @@ export function redactSecrets(text) {
 // name; this catches a secret embedded anywhere inside free text regardless
 // of which field it's under. Depth-bounded (6 levels) to keep cost bounded
 // on deeply nested or huge objects.
-function deepRedact(value, depth = 0) {
-  if (depth > 6) return value;
-  if (typeof value === 'string') return redactSecrets(value);
-  if (Array.isArray(value)) return value.map(v => deepRedact(v, depth + 1));
+// [SEC-REMED-4B] Structural log boundary (not a secret regex): error TEXT is untrusted — a provider body, a
+// subprocess stderr, a credential echo, a private path, a stack or SQL diagnostics. So, anywhere in a log object:
+//   • an Error instance is replaced by allowlisted fields only (safeErrorLogFields: class, system code, category, HTTP
+//     status) — never its message, stack, cause or enumerable extras such as `body` / `response`;
+//   • a string under an error-text key (err, error, error_message, stack, cause, stderr…) is withheld, and so is every
+//     string nested under such a key (`{ error: { message } }`).
+// Codes stay readable under errorCode / sysCode / category / reason. Call sites should log safeErrorLogFields(err)
+// explicitly; this guard closes the ones that do not.
+const ERROR_TEXT_KEYS = new Set(['err', 'error', 'errors', 'error_message', 'error_stack', 'errorMessage', 'err_message', 'stack', 'cause', 'stderr', 'lastError']);
+export const WITHHELD_ERROR_TEXT = '[error text withheld]';
+
+function deepRedact(value, depth = 0, inErrorText = false) {
+  if (depth > 6) return inErrorText ? WITHHELD_ERROR_TEXT : value;
+  if (value instanceof Error) return safeErrorLogFields(value);
+  if (typeof value === 'string') return inErrorText ? WITHHELD_ERROR_TEXT : redactSecrets(value);
+  if (Array.isArray(value)) return value.map(v => deepRedact(v, depth + 1, inErrorText));
   if (value && typeof value === 'object') {
+    // Build a NEW object rather than writing back into `value`: a caller may
+    // pass a frozen or otherwise shared object (e.g. recorderService
+    // .recoverAfterRestart() returns Object.freeze(...) at boot), and an
+    // in-place `value[k] = ...` would throw "Cannot assign to read only
+    // property", crashing the log call and, at boot, disabling the Recorder
+    // (RECORDER_UNAVAILABLE). Returning a redacted copy keeps the input
+    // immutable and the redaction identical.
+    const out = {};
     for (const k of Object.keys(value)) {
-      value[k] = deepRedact(value[k], depth + 1);
+      out[k] = deepRedact(value[k], depth + 1, inErrorText || ERROR_TEXT_KEYS.has(k));
     }
-    return value;
+    return out;
   }
   return value;
 }

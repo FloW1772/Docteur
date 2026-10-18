@@ -38,6 +38,7 @@ import { normalizeTeacherRegister, teacherRegisterInstruction, TEACHER_REGISTERS
 import { isStrictLocalMode } from '../lib/strict-local.js';
 import { ErrorCategory } from '../lib/provider-errors.js';
 import { parseIntParam } from '../lib/http-params.js';
+import { PublicError, publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 // Errors that mean "the network call went through but produced nothing
 // usable" (e.g. OpenRouter's free tier occasionally returning an empty
@@ -112,10 +113,15 @@ const OPERATION_ERROR_LABELS = {
 // elsewhere in this codebase; router.js's /router/test/:provider route has
 // to aggressively strip API key fragments from similar messages).
 function safeOperationErrorMessage(err, prefix) {
-  if (!err?.category) return err?.message ?? 'Erreur inconnue';
+  // [SEC-REMED-4B] "no category" is not proof of a Docteur-written message (a local Ollama / SQLite / filesystem error
+  // has none either): only a PublicError keeps its text.
+  if (!err?.category) return publicErrorMessage(err, prefix ? `${prefix} : le modèle n’a pas pu répondre.` : 'Le modèle n’a pas pu répondre.');
   const label = OPERATION_ERROR_LABELS[err.category] ?? OPERATION_ERROR_LABELS[ErrorCategory.UNKNOWN];
   return prefix ? `${prefix} : ${label}` : label;
 }
+
+// [SEC-REMED-4B] a quota error's text is the provider's own (relayed upstream body): fixed label instead.
+const TEACHER_QUOTA_MESSAGE = 'Quota du fournisseur épuisé : réessayez plus tard ou choisissez un autre modèle.';
 
 const STRICT_LOCAL_ERROR = {
   error: 'Mode strictement local activé — le modèle Professeur configuré est un modèle cloud, désactivé pour le moment. Choisis un modèle local dans Paramètres.',
@@ -283,7 +289,7 @@ async function callTeacherModel({ messages, ollamaClient }) {
     }
   }
 
-  throw new Error(`Provider Professeur inconnu : ${provider}`);
+  throw new PublicError('UNKNOWN_PROVIDER', 'Provider Professeur inconnu.');
 }
 
 function buildTeacherQuotaInfo() {
@@ -492,7 +498,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         models: installed.map(m => ({ id: m.name, size_bytes: m.size ?? null, size_label: humanSize(m.size) })),
       };
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: available-models — Ollama injoignable');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: available-models — Ollama injoignable');
       local = { available: false, reason: 'Ollama injoignable', models: [] };
     } finally {
       clearTimeout(localTimeout);
@@ -612,7 +618,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
 
       return c.json({ ok: false, error: `Provider inconnu pour le modèle "${model}".` });
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack, model }, 'teacher: settings validation failed');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }), model }, 'teacher: settings validation failed');
       return c.json({ ok: false, error: safeOperationErrorMessage(err) });
     }
   });
@@ -648,7 +654,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       const v = parsed === null ? { ok: false, reason: 'not_json' } : validateModelTemplates(parsed, ctx);
       if (v.ok) templates = v.templates; else fallbackReason = v.reason;
     } catch (err) {
-      logger?.warn({ err: err.message }, 'teacher: sport program generation failed — catalog program used');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: sport program generation failed — catalog program used');
       fallbackReason = err.isQuota ? 'quota' : 'provider_unavailable';
     }
     if (!templates) { templates = catalogTemplates(ctx); source = 'catalog'; }
@@ -688,8 +694,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       planResult = result;
       plan = parsed;
     } catch (err) {
-      logger?.error({ err: err.message, stack: err.stack }, 'teacher: plan generation failed');
-      if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+      logger?.error({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: plan generation failed');
+      if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
       return c.json({ error: safeOperationErrorMessage(err, 'Échec de la génération du plan') }, 503);
     }
 
@@ -822,8 +828,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         });
         text = String(result.text ?? '').trim();
       } catch (err) {
-        if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
-        logger?.warn({ err: err.message }, 'teacher: sport lesson failed — deterministic lesson used');
+        if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
+        logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: sport lesson failed — deterministic lesson used');
       }
       const unsafe = text ? sportSafetyScan(text) : null;
       if (!text || unsafe) { text = deterministicSportLesson(session); lessonSource = unsafe ? 'catalog_unsafe_model_output' : 'catalog'; }
@@ -846,8 +852,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         ollamaClient,
       });
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: step explanation failed');
-      if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: step explanation failed');
+      if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
       return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'explication') }, 503);
     }
 
@@ -901,8 +907,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         ollamaClient,
       });
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: comprehension eval failed');
-      if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: comprehension eval failed');
+      if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
       return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
     }
 
@@ -1019,8 +1025,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
   }
 
   function evaluationFailure(c, err, label) {
-    logger?.warn({ err: err.message, stack: err.stack }, `teacher: ${label} failed`);
-    if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+    logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, `teacher: ${label} failed`);
+    if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
     return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
   }
 
@@ -1250,8 +1256,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
     try {
       result = await callTeacherModel({ messages: buildRecapPrompt(path.subject, path.register, steps), ollamaClient });
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: recap generation failed');
-      if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: recap generation failed');
+      if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
       return c.json({ error: safeOperationErrorMessage(err, 'Échec de la génération de la fiche') }, 503);
     }
 
@@ -1285,7 +1291,7 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
         reviewItemsCreated++;
       }
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: review question generation failed (non-blocking)');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: review question generation failed (non-blocking)');
     }
 
     return c.json({
@@ -1319,8 +1325,8 @@ export function createTeacherRoute({ services, ollamaClient, logger }) {
       const result = await callTeacherModel({ messages: buildReviewEvalPrompt(item.question, item.answer_hint, userAnswer), ollamaClient });
       evalResult = tryParseJson(result.text) ?? { correct: false, feedback: result.text.trim() };
     } catch (err) {
-      logger?.warn({ err: err.message, stack: err.stack }, 'teacher: review answer eval failed');
-      if (err.isQuota) return c.json({ error: err.message, quota_hit: true }, 429);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.teacher' }) }, 'teacher: review answer eval failed');
+      if (err.isQuota) return c.json({ error: TEACHER_QUOTA_MESSAGE, code: 'QUOTA_EXCEEDED', quota_hit: true }, 429);
       return c.json({ error: safeOperationErrorMessage(err, 'Échec de l\'évaluation') }, 503);
     }
 

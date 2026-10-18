@@ -89,13 +89,23 @@ export async function listModels(config, { force = false } = {}) {
   return models;
 }
 
+const FREELLMAPI_STATUS_TEXT = Object.freeze({
+  auth_required: 'FreeLLMAPI : clé refusée.',
+  rate_limited: 'FreeLLMAPI : trop de requêtes, réessayez plus tard.',
+  timeout: 'FreeLLMAPI : délai dépassé.',
+  degraded: 'FreeLLMAPI : service momentanément indisponible.',
+  unavailable: 'FreeLLMAPI : injoignable.',
+});
+
 export async function testConnection(config) {
   const startedAt = Date.now();
   try {
     const models = await listModels(config, { force: true });
     return { ok: true, status: 'ready', latencyMs: Date.now() - startedAt, model: models[0]?.id ?? null, models: models.length };
   } catch (error) {
-    return { ok: false, status: statusFromError(error), latencyMs: Date.now() - startedAt, error: error.message };
+    // [SEC-REMED-4B] the upstream's text is untrusted (relayed by /api/router/freellmapi/*): fixed text per status.
+    const status = statusFromError(error);
+    return { ok: false, status, latencyMs: Date.now() - startedAt, error: FREELLMAPI_STATUS_TEXT[status] ?? FREELLMAPI_STATUS_TEXT.unavailable };
   }
 }
 

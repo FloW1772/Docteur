@@ -13,6 +13,13 @@ import {
   getRouterSettings, getPageFromStore, insertActivityLog,
 } from '../lib/sqlite.js';
 import { getMemorySettings, selectMemoriesForBudget, isWorthRemembering, addEpisodicMemoryDeduped, privacyFromSource } from '../lib/memory.js';
+import { classifyModelError } from '../lib/model-router.js'; // [SEC-REMED-4] stable code + fixed text for runtime failures
+import { providerErrorLogFields } from '../lib/provider-error-contract.js'; // [SEC-REMED-4]
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const CHAT_FAILED = { code: 'CHAT_OPERATION_FAILED', message: 'L’opération de conversation a échoué.' };
 
 // mistral-nemo:12b-instruct-2407-q4_K_M (~7.5 Go) — tuned for natural
 // conversation rather than structured Q&A, and quantized to fit an 8 Go card
@@ -99,13 +106,13 @@ export function createChatRoute({ ollamaClient, env, logger }) {
     const installed = await verifyModelAvailability(ollamaClient, model).catch(() => false);
     if (!installed) {
       return c.json({
-        ok: false, model_installed: false,
+        ok: false, model_installed: false, code: 'MODEL_NOT_INSTALLED',
         error: `Modèle de conversation "${model}" non installé. Installez-le depuis Réglages → Modèles Ollama (~7,5 Go, 100% local).`,
       });
     }
     if (hasActiveJobs()) {
       return c.json({
-        ok: false, gpu_busy: true,
+        ok: false, gpu_busy: true, code: 'GPU_BUSY',
         error: 'Un autre traitement GPU est en cours (lot, transcription…). Réessaie une fois ce traitement terminé.',
       });
     }
@@ -201,13 +208,16 @@ export function createChatRoute({ ollamaClient, env, logger }) {
         latency_ms: Date.now() - started,
       });
     } catch (err) {
-      logger?.error({ err: err.message }, 'chat message failed');
+      // [SEC-REMED-4] The runtime's error text is untrusted (it can echo a credential, a private path, a stack, SQL):
+      // it only selects a stable code. Client, log and the persistent activity log get the code / fixed text only.
+      const failure = classifyModelError(err, { model });
+      logger?.error(providerErrorLogFields(err, { errorCode: failure.code, provider: 'ollama', model, operation: 'chat.message' }), 'chat message failed');
       insertActivityLog({
         opType: 'chat_message', item: `conversation ${conversationId.slice(0, 8)}`,
-        result: 'failure', reason: err.message, durationMs: Date.now() - started,
+        result: 'failure', reason: failure.code, durationMs: Date.now() - started,
       });
       // Local failure only — never a cloud fallback.
-      return c.json({ ok: false, error: `Réponse locale impossible : ${err.message}` });
+      return c.json({ ok: false, code: failure.code, error: `Réponse locale impossible : ${failure.message}`, hint: failure.hint ?? null });
     }
   });
 
@@ -224,7 +234,7 @@ export function createChatRoute({ ollamaClient, env, logger }) {
       const id = addPreferenceFact(fact);
       return c.json({ id, fact }, 201);
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, CHAT_FAILED), 400);
     }
   });
 

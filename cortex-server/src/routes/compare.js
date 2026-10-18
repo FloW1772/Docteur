@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
+import { toSafePublicError } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 export function createCompareRoute({ services }) {
   const route = new Hono();
@@ -22,7 +23,10 @@ export function createCompareRoute({ services }) {
           onEvent:     send,
         });
       } catch (err) {
-        await send({ type: 'error', model_id: null, error: err.message });
+        // [SEC-REMED-4B] per-model failures are already classified by compareModels; a failure of the whole run
+        // (embedding, search, runtime down) is reported with a stable code + fixed text, never its own text.
+        const safe = toSafePublicError(err, { code: 'COMPARE_FAILED', message: 'La comparaison n’a pas pu être lancée.', status: 500 });
+        await send({ type: 'error', model_id: null, code: safe.code, error: safe.message });
         await send({ type: 'done' });
       }
     });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getKiwixSettings } from './sqlite.js';
 import { checkPortOwnership } from './port-preflight.js';
+import { safeErrorLogFields } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 export const KIWIX_TOOLS_URL = 'https://download.kiwix.org/release/kiwix-tools/';
 
@@ -211,8 +212,8 @@ export async function startKiwixServe({
     });
 
     child.on('error', (err) => {
-      _lastError = err.message;
-      logger?.error?.({ error: err.message }, 'kiwix-serve process error');
+      _lastError = 'process_error'; // [SEC-REMED-4B] spawn text untrusted (paths) — closed code, like the others
+      logger?.error?.(safeErrorLogFields(err, { errorCode: 'KIWIX_PROCESS_ERROR', operation: 'kiwix.serve' }), 'kiwix-serve process error');
       _child = null;
     });
     child.on('exit', (code) => {
@@ -265,9 +266,9 @@ export async function startKiwixServe({
 
     return { ok: true, port, archives, bindingVerified, message: `kiwix-serve démarré avec ${archives.length} archive(s).` };
   } catch (err) {
-    _lastError = err.message;
+    _lastError = 'spawn_failed';
     _child = null;
-    return { ok: false, error: 'spawn_failed', message: err.message };
+    return { ok: false, error: 'spawn_failed', message: 'Impossible de démarrer kiwix-serve.' };
   }
 }
 

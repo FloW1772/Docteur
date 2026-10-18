@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { PublicError } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 // .xls (legacy binary/BIFF format) is intentionally NOT supported: the xlsx
 // (SheetJS) library that could parse it has an unpatched high-severity
@@ -8,6 +9,11 @@ import path from 'node:path';
 // GHSA-5pgg-2g8v-p4x9). Modern .xlsx is parsed via exceljs (maintained, no
 // equivalent unpatched issue). Users with a legacy .xls file can re-save it
 // as .xlsx in Excel/LibreOffice (File > Save As) — a one-click conversion.
+// [SEC-REMED-4B] the extension comes from the uploaded name: echoed only when it is a short plain extension.
+function safeExtensionLabel(extension) {
+  return typeof extension === 'string' && /^\.?[a-z0-9]{1,10}$/i.test(extension) ? extension : 'inconnu';
+}
+
 export const ALLOWED_FILE_EXTENSIONS = new Set(['.xlsx', '.csv', '.txt', '.md', '.json']);
 export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
@@ -63,7 +69,7 @@ export function sanitizeExtension(ext) {
 export function validateFileName(name) {
   const cleaned = normalizeUnsafeName(name);
   if (!cleaned || cleaned.includes('..') || cleaned.includes('/') || cleaned.includes('\\')) {
-    throw new Error('Nom de fichier invalide');
+    throw new PublicError('INVALID_FILE_NAME', 'Nom de fichier invalide', { status: 422 });
   }
   return cleaned;
 }
@@ -150,7 +156,7 @@ export async function readWorkbookSummary(buffer, extension) {
 export async function parseOriginalFile(buffer, fileName) {
   const extension = sanitizeExtension(path.extname(fileName));
   if (!ALLOWED_FILE_EXTENSIONS.has(extension)) {
-    throw new Error(`Format non supporté : ${extension || 'inconnu'}`);
+    throw new PublicError('UNSUPPORTED_FORMAT', `Format non supporté : ${safeExtensionLabel(extension)}`, { status: 422 });
   }
 
   if (extension === '.json') {

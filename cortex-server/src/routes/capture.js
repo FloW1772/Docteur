@@ -8,6 +8,16 @@ import { classifyDiscoveryInput, discoverYouTube } from '../lib/youtube-discover
 import { getDefaultChannelQueue } from '../lib/youtube-channel-queue.js';
 import { downloadImageFromUrl, IMAGE_DIR } from '../lib/image.js';
 import { getWhisperStats } from '../lib/sqlite.js';
+import { isPublicError, publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Capture pipelines call model runtimes / providers, fetch external pages and run subprocesses
+// (yt-dlp, whisper): their error text is untrusted. Responses and logs carry a stable code + fixed text; a PublicError
+// (Docteur-written) keeps its own message.
+const CAPTURE_FAILED = { code: 'CAPTURE_FAILED', message: 'La capture a échoué.', status: 500 };
+const WHISPER_RESULT_ERRORS = Object.freeze({
+  whisper_failed: { code: 'WHISPER_FAILED', error: 'La transcription a échoué.' },
+  analysis_failed: { code: 'ANALYSIS_FAILED', error: 'L’analyse de la transcription a échoué.' },
+});
 
 const MIN_IMAGE_BYTES = 50_000; // < 50 KB = thumbnail/vignette, skip
 
@@ -61,9 +71,9 @@ export function createCaptureRoute({ services, logger }) {
       return c.json(result, 200);
     } catch (error) {
       if (logger) {
-        logger.error({ error_message: error.message, error_stack: error.stack, input }, 'CAPTURE_ERROR');
+        logger.error({ ...safeErrorLogFields(error, { operation: 'capture.input' }), input }, 'CAPTURE_ERROR');
       }
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, CAPTURE_FAILED), 500);
     }
   });
 
@@ -94,8 +104,8 @@ export function createCaptureRoute({ services, logger }) {
         }
         return c.json(result, 200);
       } catch (error) {
-        if (logger) logger.error({ captureId, error_message: error.message, source }, 'DEEP_CAPTURE_TEXT_ERROR');
-        return c.json({ error: error.message }, 500);
+        if (logger) logger.error({ captureId, ...safeErrorLogFields(error, { operation: 'capture.deep_text' }), source }, 'DEEP_CAPTURE_TEXT_ERROR');
+        return c.json(publicErrorBody(error, CAPTURE_FAILED), 500);
       }
     }
 
@@ -138,7 +148,7 @@ export function createCaptureRoute({ services, logger }) {
             imageBlocks.push({ id: `img_${Date.now()}_${imageBlocks.length}`, type: 'image', content: id });
             if (logger) logger.info({ url, imgUrl, id, size }, 'ARTICLE_IMAGE_OK');
           } catch (err) {
-            if (logger) logger.warn({ url, imgUrl, error: err.message }, 'ARTICLE_IMAGE_SKIP');
+            if (logger) logger.warn({ url, imgUrl, ...safeErrorLogFields(err, { operation: 'capture.article_image' }) }, 'ARTICLE_IMAGE_SKIP');
           }
         }
         if (imageBlocks.length > 0) {
@@ -155,9 +165,9 @@ export function createCaptureRoute({ services, logger }) {
       return c.json(result, 200);
     } catch (error) {
       if (logger) {
-        logger.error({ captureId, error_message: error.message, url }, 'DEEP_CAPTURE_ERROR');
+        logger.error({ captureId, ...safeErrorLogFields(error, { operation: 'capture.deep_url' }), url }, 'DEEP_CAPTURE_ERROR');
       }
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, CAPTURE_FAILED), 500);
     }
   });
 
@@ -185,15 +195,16 @@ export function createCaptureRoute({ services, logger }) {
         }, controller.signal, provider);
 
         if (result.fallback) {
-          await send({ error: result.error ?? result.reason ?? 'Échec de la transcription' });
+          // The service's own text is never relayed: the closed reason picks the message.
+          await send(WHISPER_RESULT_ERRORS[result.reason] ?? WHISPER_RESULT_ERRORS.whisper_failed);
         } else {
           await send({ done: true, result });
         }
         if (logger) logger.info({ url, fallback: result.fallback }, 'WHISPER_CAPTURE_DONE');
       } catch (err) {
         if (err.name !== 'AbortError') {
-          await send({ error: err.message });
-          if (logger) logger.error({ error_message: err.message, url }, 'WHISPER_CAPTURE_ERROR');
+          await send(isPublicError(err) ? { error: err.message, code: err.code } : WHISPER_RESULT_ERRORS.whisper_failed);
+          if (logger) logger.error({ ...safeErrorLogFields(err, { errorCode: 'WHISPER_FAILED', operation: 'capture.whisper' }), url }, 'WHISPER_CAPTURE_ERROR');
         }
       }
     });
@@ -227,7 +238,8 @@ export function createCaptureRoute({ services, logger }) {
         await send({ done: true, result });
       } catch (err) {
         if (err.name !== 'AbortError') {
-          await send({ error: err.message });
+          await send(publicErrorBody(err, { code: 'RESUMMARISE_FAILED', message: 'La régénération du résumé a échoué.' }));
+          if (logger) logger.error(safeErrorLogFields(err, { errorCode: 'RESUMMARISE_FAILED', operation: 'capture.resummarise' }), 'RESUMMARISE_ERROR');
         }
       }
     });
@@ -261,7 +273,7 @@ export function createCaptureRoute({ services, logger }) {
         const result = await discoverYouTube(input, { signal: ctrl.signal, allowBareHandle, onEvent: event => { void send(event); } });
         if (logger) logger.info({ mode: classified.mode, status: result.status, total: result.total, duration_ms: result.durationMs }, 'YOUTUBE_DISCOVERY_END');
       } catch (err) {
-        if (logger) logger.error({ error_message: err.message }, 'YOUTUBE_DISCOVERY_FAILED');
+        if (logger) logger.error(safeErrorLogFields(err, { errorCode: 'YOUTUBE_DISCOVERY_FAILED', operation: 'capture.discover' }), 'YOUTUBE_DISCOVERY_FAILED');
         await send({ type: 'error', name: err.name, code: 'INTERNAL', message: 'Échec de la découverte YouTube' });
       } finally {
         c.req.raw.signal.removeEventListener('abort', onClientGone);
@@ -336,8 +348,9 @@ export function createCaptureRoute({ services, logger }) {
         if (logger) logger.info({ url, video_count: info.video_count, playlist: info.title }, 'PLAYLIST_INFO_DONE');
         await send({ type: 'done', result: info });
       } catch (err) {
-        if (logger) logger.error({ error_message: err.message, url }, 'PLAYLIST_INFO_ERROR');
-        await send({ type: 'error', name: err.name, message: err.message });
+        // yt-dlp stderr is untrusted: fixed text; only AbortError is kept distinct (client cancel).
+        if (logger) logger.error({ ...safeErrorLogFields(err, { errorCode: 'PLAYLIST_INFO_FAILED', operation: 'capture.playlist' }), url }, 'PLAYLIST_INFO_ERROR');
+        await send({ type: 'error', name: err?.name === 'AbortError' ? 'AbortError' : 'Error', code: 'PLAYLIST_INFO_FAILED', message: 'Lecture de la playlist impossible.' });
       }
       await writes;
     });

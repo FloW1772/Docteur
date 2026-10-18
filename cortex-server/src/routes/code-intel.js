@@ -15,6 +15,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { bodyLimit } from 'hono/body-limit';
 import { searchText, searchFilenames, searchSymbols, WorkspacePathError as SearchPathError } from '../lib/code-intel-search.js';
 import { gitStatus, gitDiff, gitLog, gitShow, isGitAvailable, GitUnavailableError, InvalidRefError, WorkspacePathError as GitPathError } from '../lib/code-intel-git.js';
+import { safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const local = value => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(value);
 
@@ -79,7 +80,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
       if (pathResponse) return pathResponse;
       if (error.message === 'query_required') return c.json({ ok: false, error: 'query_required' }, 400);
       if (error.message === 'query_too_long') return c.json({ ok: false, error: 'query_too_long' }, 400);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_SEARCH_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_SEARCH_FAILED');
       return c.json({ ok: false, error: 'search_failed' }, 500);
     }
   });
@@ -94,7 +95,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
     } catch (error) {
       if (error.message === 'query_required') return c.json({ ok: false, error: 'query_required' }, 400);
       if (error.message === 'query_too_long') return c.json({ ok: false, error: 'query_too_long' }, 400);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_SYMBOLS_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_SYMBOLS_FAILED');
       return c.json({ ok: false, error: 'search_failed' }, 500);
     }
   });
@@ -106,7 +107,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
       return c.json(result);
     } catch (error) {
       if (error instanceof GitUnavailableError) return c.json({ ok: false, error: 'git_not_found' }, 503);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_GIT_STATUS_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_GIT_STATUS_FAILED');
       return c.json({ ok: false, error: 'git_command_failed' }, 500);
     }
   });
@@ -122,7 +123,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
       const pathResponse = handlePathError(c, error);
       if (pathResponse) return pathResponse;
       if (error instanceof GitUnavailableError) return c.json({ ok: false, error: 'git_not_found' }, 503);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_GIT_DIFF_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_GIT_DIFF_FAILED');
       return c.json({ ok: false, error: 'git_command_failed' }, 500);
     }
   });
@@ -135,7 +136,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
       return c.json(result);
     } catch (error) {
       if (error instanceof GitUnavailableError) return c.json({ ok: false, error: 'git_not_found' }, 503);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_GIT_LOG_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_GIT_LOG_FAILED');
       return c.json({ ok: false, error: 'git_command_failed' }, 500);
     }
   });
@@ -152,7 +153,7 @@ export function createCodeIntelRoute({ logger, isLocal = c => { try { return loc
       if (pathResponse) return pathResponse;
       if (error instanceof InvalidRefError) return c.json({ ok: false, error: 'invalid_ref' }, 400);
       if (error instanceof GitUnavailableError) return c.json({ ok: false, error: 'git_not_found' }, 503);
-      logger?.error?.({ error: error.message }, 'CODE_INTEL_GIT_SHOW_FAILED');
+      logger?.error?.({ ...safeErrorLogFields(error, { operation: 'route.code_intel' }) }, 'CODE_INTEL_GIT_SHOW_FAILED');
       return c.json({ ok: false, error: 'git_command_failed' }, 500);
     }
   });

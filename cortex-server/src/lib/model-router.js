@@ -18,6 +18,7 @@ import { chatCompletionDetailed } from './ollama.js';
 import { MODEL_CATALOG, MODEL_DISTRIBUTIONS } from './local-ai-catalog.js';
 import { evaluateModelFit } from './local-model-fit.js';
 import { getTotalVramBytes } from './local-hardware-profile.js';
+import { SAFE_PROVIDER_ERROR_MESSAGE, providerErrorHint, safeModelTag } from './provider-error-contract.js'; // [SEC-REMED-4]
 
 export const CAPABILITIES = Object.freeze(['TEXT', 'VISION', 'AUDIO', 'EMBEDDING', 'TOOL_USE', 'STRUCTURED_OUTPUT', 'IMAGE_GENERATION', 'LONG_CONTEXT']);
 /** Context length from which a model is tagged LONG_CONTEXT (tokens). */
@@ -335,10 +336,13 @@ export function selectRoute(registry, { capabilities, mode = 'auto', provider = 
 
 // ── Failures ─────────────────────────────────────────────────────────────────
 
+// [SEC-REMED-4] Provider error text is untrusted: it is READ to pick a code, never COPIED into the message or hint
+// (it can echo a credential, a private path, a stack, SQL). Messages are fixed text; the codes are unchanged.
 export function classifyModelError(error, { model = null } = {}) {
   if (error instanceof ModelRouteError) return { code: error.code, message: error.message, hint: error.hint };
   const text = `${error?.name ?? ''} ${error?.code ?? ''} ${error?.message ?? error ?? ''}`;
-  const subject = model ? `« ${model} »` : 'le modèle';
+  const tag = safeModelTag(model);
+  const subject = tag ? `« ${tag} »` : 'le modèle';
   if (/out of memory|cudaMalloc|requires more system memory|insufficient memory|not enough memory|\bOOM\b|memory allocation/i.test(text)) {
     return { code: 'OUT_OF_MEMORY', message: `Mémoire insuffisante pour ${subject}.`, hint: 'Essayez un modèle plus petit ou plus quantifié, réduisez le contexte (num_ctx) ou le nombre de couches GPU (num_gpu), ou fermez d’autres applications.' };
   }
@@ -351,8 +355,8 @@ export function classifyModelError(error, { model = null } = {}) {
   if (/ECONNREFUSED|ECONNRESET|fetch failed|ENOTFOUND|EHOSTUNREACH|socket hang up|connect/i.test(text)) {
     return { code: 'RUNTIME_UNAVAILABLE', message: 'Le runtime local (Ollama) ne répond pas.', hint: 'Démarrez Ollama puis réessayez.' };
   }
-  if (error?.code === 'INVALID_RESPONSE') return { code: 'INVALID_RESPONSE', message: error.message, hint: 'Réessayez, ou choisissez un modèle qui gère mieux ce format.' };
-  return { code: 'PROVIDER_ERROR', message: `Erreur du fournisseur : ${String(error?.message ?? error).slice(0, 300)}`, hint: null };
+  if (error?.code === 'INVALID_RESPONSE') return { code: 'INVALID_RESPONSE', message: `${subject} a renvoyé une réponse inutilisable.`, hint: 'Réessayez, ou choisissez un modèle qui gère mieux ce format.' };
+  return { code: 'PROVIDER_ERROR', message: SAFE_PROVIDER_ERROR_MESSAGE, hint: providerErrorHint(error) };
 }
 
 // ── Execution (exactly the decided route, once) ──────────────────────────────

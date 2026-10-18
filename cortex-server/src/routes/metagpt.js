@@ -6,6 +6,7 @@ import {
 } from '../lib/metagpt-orchestrator.js';
 import { ALLOWED_MISSION_MODES } from '../lib/metagpt-node-policy.js';
 import { hasActiveJobs } from './jobs.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 // Same loopback-only guard shape as openmontage.js/external-agents.js —
 // MetaGPT Studio must never be reachable except from the local machine.
@@ -19,6 +20,14 @@ function sanitizeText(value, maxLength) {
   const cleaned = value.replace(/[\x00-\x1f\x7f]/g, '').trim();
   if (!cleaned) return null;
   return cleaned.slice(0, maxLength);
+}
+
+// [SEC-REMED-4B] A MetaGPT policy error is Error(code) with err.code === err.message (Docteur code such as
+// 'mission_not_found', 'invalid_state_for_planning:CREATED'): it is returned as is. Anything else (filesystem, SQLite,
+// subprocess) is untrusted text → fixed message.
+function metagptErrorBody(err) {
+  if (typeof err?.code === 'string' && err.message === err.code) return { error: err.code, code: err.code };
+  return publicErrorBody(err, { code: 'METAGPT_OPERATION_FAILED', message: 'Opération MetaGPT impossible.' });
 }
 
 export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConnInfo(c).remote.address) } = {}) {
@@ -66,7 +75,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json({ ok: true, ...mission }, 201);
     } catch (err) {
       logger?.warn?.({ error_message: err.message, code: err.code }, 'METAGPT_MISSION_CREATE_DENIED');
-      return c.json({ error: err.message, code: err.code }, 400);
+      return c.json(metagptErrorBody(err), 400);
     }
   });
 
@@ -90,7 +99,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json(result, result.ok ? 200 : 422);
     } catch (err) {
       logger?.error?.({ mission_id: id, error_message: err.message, code: err.code }, 'METAGPT_PLAN_ERROR');
-      return c.json({ error: err.message, code: err.code }, err.code?.startsWith('invalid_') ? 409 : 500);
+      return c.json(metagptErrorBody(err), err.code?.startsWith('invalid_') ? 409 : 500);
     }
   });
 
@@ -104,7 +113,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json(result, result.ok ? 200 : 422);
     } catch (err) {
       logger?.error?.({ mission_id: id, error_message: err.message, code: err.code }, 'METAGPT_CODEGEN_ERROR');
-      return c.json({ error: err.message, code: err.code }, err.code?.startsWith('invalid_') || err.code === 'files_invalid' || err.code === 'mode_does_not_allow_codegen' ? 409 : 500);
+      return c.json(metagptErrorBody(err), err.code?.startsWith('invalid_') || err.code === 'files_invalid' || err.code === 'mode_does_not_allow_codegen' ? 409 : 500);
     }
   });
 
@@ -116,7 +125,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json(result, result.ok ? 200 : 422);
     } catch (err) {
       logger?.error?.({ mission_id: id, error_message: err.message, code: err.code }, 'METAGPT_PREPARE_APPLY_ERROR');
-      return c.json({ error: err.message, code: err.code }, err.code?.startsWith('invalid_') ? 409 : 500);
+      return c.json(metagptErrorBody(err), err.code?.startsWith('invalid_') ? 409 : 500);
     }
   });
 
@@ -149,7 +158,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json(result, 200);
     } catch (err) {
       logger?.warn?.({ mission_id: id, error_message: err.message, code: err.code }, 'METAGPT_APPROVAL_DENIED');
-      return c.json({ error: err.message, code: err.code }, 409);
+      return c.json(metagptErrorBody(err), 409);
     }
   });
 
@@ -161,7 +170,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       return c.json(result, result.ok ? 200 : 422);
     } catch (err) {
       logger?.error?.({ mission_id: id, error_message: err.message, code: err.code }, 'METAGPT_APPLY_ERROR');
-      return c.json({ error: err.message, code: err.code }, err.code?.startsWith('invalid_') ? 409 : 500);
+      return c.json(metagptErrorBody(err), err.code?.startsWith('invalid_') ? 409 : 500);
     }
   });
 
@@ -172,7 +181,7 @@ export function createMetaGptRoute({ logger, isLocal = c => localAddress(getConn
       const result = cancelMission(id, { logger });
       return c.json(result, 200);
     } catch (err) {
-      return c.json({ error: err.message, code: err.code }, 404);
+      return c.json(metagptErrorBody(err), 404);
     }
   });
 

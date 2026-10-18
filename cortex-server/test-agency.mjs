@@ -214,7 +214,8 @@ test('failure isolation + automatic retry + manual retry', async () => {
   const snap = await runToEnd(service, { objective: OBJ });
   assert.equal(task(snap, 'a').status, TASK_STATUS.FAILED);
   assert.equal(task(snap, 'a').attempt, 2, 'one automatic retry');
-  assert.match(task(snap, 'a').error, /model not found/);
+  // [SEC-REMED-4B] the runtime text is classified (stable code → Docteur text), never copied.
+  assert.equal(task(snap, 'a').error, 'Le fournisseur de modèle a rencontré une erreur.');
   assert.equal(task(snap, 'b').status, TASK_STATUS.COMPLETED, 'independent sibling not affected');
   assert.equal(task(snap, 'b').attempt, 2, 'transient provider error recovered by the automatic retry');
   assert.equal(task(snap, 'c').status, TASK_STATUS.BLOCKED);
@@ -386,9 +387,10 @@ test('provider failure: planner down → fallback plan; model down for a task �
   const { service } = makeService({ model });
   const snap = await runToEnd(service, { objective: OBJ });
   assert.equal(snap.run.plan.source, 'fallback');
-  assert.match(snap.run.plan.warnings[0], /planner_failed:ECONNREFUSED/);
+  assert.match(snap.run.plan.warnings[0], /planner_failed:RUNTIME_UNAVAILABLE/); // [SEC-REMED-4B] code, not the raw text
   assert.equal(task(snap, 'recherche').status, TASK_STATUS.FAILED);
-  assert.match(task(snap, 'recherche').error, /ECONNREFUSED/);
+  assert.match(task(snap, 'recherche').error, /ne répond pas/); // [SEC-REMED-4B] Docteur text for RUNTIME_UNAVAILABLE
+  assert.doesNotMatch(task(snap, 'recherche').error, /ECONNREFUSED|127\.0\.0\.1/);
   assert.equal(snap.run.status, RUN_STATUS.FAILED);
 });
 

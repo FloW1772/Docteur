@@ -23,6 +23,7 @@ import { completeWithCascade } from '../providers/gemini.js';
 import { complete as groqComplete } from '../providers/groq.js';
 import { registerJob, updateJob, finishJob } from '../../routes/jobs.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from '../style-examples.js';
+import { publicErrorMessage } from '../safe-error-contract.js'; // [SEC-REMED-4B]
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../..');
@@ -270,7 +271,7 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
         }
       } catch (err) {
         logger?.warn({ jobId, segmentId: seg.id, err: err.message }, 'VIDEO_PIPELINE_SEGMENT_TRANSCRIPTION_FAILED');
-        updateVideoJobSegment(seg.id, { transcript_status: 'error', error_message: err.message });
+        updateVideoJobSegment(seg.id, { transcript_status: 'error', error_message: publicErrorMessage(err, 'Transcription du segment échouée.') });
       }
       transcribedCount++;
       // Clean up the audio chunk once transcribed (success or failure) — disk hygiene.
@@ -302,7 +303,7 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
         updateVideoJobSegment(seg.id, { summary, summary_status: 'done' });
       } catch (err) {
         logger?.warn({ jobId, segmentId: seg.id, err: err.message }, 'VIDEO_PIPELINE_SEGMENT_SUMMARY_FAILED');
-        updateVideoJobSegment(seg.id, { summary_status: 'error', error_message: err.message });
+        updateVideoJobSegment(seg.id, { summary_status: 'error', error_message: publicErrorMessage(err, 'Résumé du segment échoué.') });
       }
       summarizedCount++;
     }
@@ -427,8 +428,10 @@ export async function runVideoPipeline(jobId, { ollamaClient, services, logger }
   } catch (err) {
     if (isCancelled(jobId)) { await cleanupAndStop(jobId, uiJobId); return; }
     logger?.error({ jobId, err: err.message }, 'VIDEO_PIPELINE_ERROR');
-    updateVideoJob(jobId, { status: 'error', current_step: 'Erreur', error_message: err.message });
-    await finishUiJob(uiJobId, 'error', err.message);
+    // [SEC-REMED-4B] yt-dlp / whisper / model text is untrusted: the job keeps a fixed (or Docteur-written) message.
+    const safeMessage = publicErrorMessage(err, 'Le traitement de la vidéo a échoué.');
+    updateVideoJob(jobId, { status: 'error', current_step: 'Erreur', error_message: safeMessage });
+    await finishUiJob(uiJobId, 'error', safeMessage);
   } finally {
     runtime.delete(jobId);
     cleanupJobTmpFiles(jobId);

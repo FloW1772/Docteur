@@ -10,11 +10,57 @@ import { getNotebookDocumentService } from '../lib/notebook-documents-runtime.js
 import { NotebookImportError, SUPPORTED_FORMATS, safeFilename } from '../lib/notebook-parsers.js';
 import { RETENTION_POLICIES } from '../lib/notebook-retention.js';
 import { TRUST_LEVELS } from '../lib/notebook-documents.js';
+import { ErrorCategory } from '../lib/provider-errors.js';
+import { providerErrorLogFields, safeErrorCategory } from '../lib/provider-error-contract.js';
+import { SAFE_RUNTIME_UNAVAILABLE_MESSAGE, safeErrorCode, toSafePublicError } from '../lib/safe-error-contract.js';
 
 const HTTP_BY_CODE = {
   UNSUPPORTED_FORMAT: 415, FILE_TOO_LARGE: 413, SECURITY_BLOCKED: 403, SECRET_DETECTED: 422,
   PARSER_FAILED: 422, INVALID_OPTION: 400, QUEUE_FULL: 429, SOURCE_DELETED: 404,
 };
+const IMPORT_ERROR_MESSAGES = Object.freeze({
+  UNSUPPORTED_FORMAT: 'Format de document non pris en charge.',
+  FILE_TOO_LARGE: 'Le document est trop volumineux.',
+  SECURITY_BLOCKED: 'Le document a été bloqué pour des raisons de sécurité.',
+  SECRET_DETECTED: 'Le document contient des informations sensibles.',
+  PARSER_FAILED: 'Le document n’a pas pu être analysé.',
+  INVALID_OPTION: 'Option d’import invalide.',
+  QUEUE_FULL: 'La file d’import est pleine, réessaie plus tard.',
+  SOURCE_DELETED: 'Le document n’est plus disponible.',
+});
+
+const NOTEBOOK_DOC_ASK_FAILED = {
+  code: 'NOTEBOOK_DOC_ASK_FAILED',
+  message: 'La réponse documentaire du Notebook n’a pas pu être générée.',
+  status: 500,
+};
+const NOTEBOOK_MODEL_UNAVAILABLE = {
+  code: 'MODEL_UNAVAILABLE',
+  message: 'Le modèle local configuré n’est pas disponible.',
+  status: 503,
+};
+const NOTEBOOK_RUNTIME_UNAVAILABLE = {
+  code: 'MODEL_RUNTIME_UNAVAILABLE',
+  message: SAFE_RUNTIME_UNAVAILABLE_MESSAGE,
+  status: 503,
+};
+const RUNTIME_UNAVAILABLE_CATEGORIES = new Set([
+  ErrorCategory.PROVIDER_UNAVAILABLE,
+  ErrorCategory.TIMEOUT,
+  ErrorCategory.NETWORK_ERROR,
+]);
+const RUNTIME_UNAVAILABLE_SYSTEM_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN',
+]);
+
+function toSafeNotebookDocAskError(error) {
+  const category = safeErrorCategory(error);
+  if (category === ErrorCategory.MODEL_UNAVAILABLE) return toSafePublicError(error, NOTEBOOK_MODEL_UNAVAILABLE);
+  if (RUNTIME_UNAVAILABLE_CATEGORIES.has(category) || RUNTIME_UNAVAILABLE_SYSTEM_CODES.has(safeErrorCode(error))) {
+    return toSafePublicError(error, NOTEBOOK_RUNTIME_UNAVAILABLE);
+  }
+  return toSafePublicError(error, NOTEBOOK_DOC_ASK_FAILED);
+}
 
 export function createNotebookDocumentsRoute({ ollamaClient, env, logger }) {
   const app = new Hono();
@@ -22,9 +68,10 @@ export function createNotebookDocumentsRoute({ ollamaClient, env, logger }) {
 
   const failure = (c, err) => {
     if (err instanceof NotebookImportError) {
-      return c.json({ error: err.message, code: err.code, status: err.status }, HTTP_BY_CODE[err.code] ?? 400);
+      const code = Object.hasOwn(IMPORT_ERROR_MESSAGES, err.code) ? err.code : 'PARSER_FAILED';
+      return c.json({ error: IMPORT_ERROR_MESSAGES[code], code, status: err.status }, HTTP_BY_CODE[code] ?? 400);
     }
-    logger?.warn({ code: 'INDEX_FAILED', error: err?.message }, 'NOTEBOOK_DOC_ROUTE_ERROR');
+    logger?.warn({ ...safeErrorLogFields(err, { errorCode: 'INDEX_FAILED', operation: 'notebook.documents' }) }, 'NOTEBOOK_DOC_ROUTE_ERROR');
     return c.json({ error: 'Erreur interne d\'import', code: 'INDEX_FAILED' }, 500);
   };
 
@@ -213,8 +260,11 @@ export function createNotebookDocumentsRoute({ ollamaClient, env, logger }) {
       });
     } catch (err) {
       if (err instanceof NotebookImportError) return failure(c, err);
-      logger?.warn({ code: 'INDEX_FAILED', error: err?.message }, 'NOTEBOOK_DOC_ASK_FAILED');
-      return c.json({ error: err.message }, 500);
+      const safe = toSafeNotebookDocAskError(err);
+      logger?.warn({ notebookId: nb.id, ...providerErrorLogFields(err, {
+        errorCode: safe.code, provider: 'ollama', model: env.ANSWER_MODEL, operation: 'notebook.doc_ask',
+      }) }, 'NOTEBOOK_DOC_ASK_FAILED');
+      return c.json(safe.hint ? { error: safe.message, code: safe.code, hint: safe.hint } : { error: safe.message, code: safe.code }, safe.status);
     }
   });
 

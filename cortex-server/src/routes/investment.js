@@ -17,6 +17,11 @@ import {
 } from '../lib/investment-calc.js';
 import { scoreInvestment } from '../lib/investment-scoring.js';
 import { buildTimeline, buildTimelineEvent, attachMarketInterpretation } from '../lib/investment-timeline.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const INVEST_FAILED = { code: 'INVESTMENT_OPERATION_FAILED', message: 'L’opération d’investissement a échoué.' };
 
 // Investment Agent V1 — analysis + research + PAPER TRADING ONLY.
 // No route here accepts REAL_BUY/REAL_SELL/LIVE_ORDER, no broker
@@ -52,7 +57,7 @@ export function createInvestmentRoute({
     try {
       ddgResults = await search(`${symbol} stock financial results filing`);
     } catch (err) {
-      logger?.warn?.({ symbol, error_message: err.message }, 'INVESTMENT_RESEARCH_SEARCH_FAILED');
+      logger?.warn?.({ symbol, ...safeErrorLogFields(err, { operation: 'route.investment' }) }, 'INVESTMENT_RESEARCH_SEARCH_FAILED');
       return c.json({ error: 'search_unavailable' }, 503);
     }
 
@@ -82,7 +87,7 @@ export function createInvestmentRoute({
         });
         sources.push({ id: sourceId, url: result.url, title: wrapped.metadata.title, retrievedAt: wrapped.metadata.retrievedAt, dataRecency: 'historical' });
       } catch (err) {
-        logger?.warn?.({ url: result.url, error_message: err.message }, 'INVESTMENT_RESEARCH_PAGE_FAILED');
+        logger?.warn?.({ url: result.url, ...safeErrorLogFields(err, { operation: 'route.investment' }) }, 'INVESTMENT_RESEARCH_PAGE_FAILED');
       }
     }
 
@@ -287,7 +292,7 @@ export function createInvestmentRoute({
       simulatedPrice = validatePositiveNumber(body.simulatedPrice, 'simulated_price_invalid');
     } catch (err) {
       const status = err.code === 'real_broker_action_denied' ? 403 : 400;
-      logger?.warn?.({ portfolioId, error_message: err.message, code: err.code }, 'INVESTMENT_TRANSACTION_DENIED');
+      logger?.warn?.({ portfolioId, ...safeErrorLogFields(err, { operation: 'route.investment' }), code: err.code }, 'INVESTMENT_TRANSACTION_DENIED');
       return c.json({ error: err.code }, status);
     }
 
@@ -378,7 +383,7 @@ export function createInvestmentRoute({
         source: { url: source.url, title: source.title, retrievedAt: source.retrieved_at },
       });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, INVEST_FAILED), 400);
     }
 
     const paired = attachMarketInterpretation(event, interpretation);

@@ -254,7 +254,7 @@ test('a crashing discovery (rejected promise) and a timeout are FAILED for that 
   await waitFor(() => !q.getBatch(snap.batchId).summary.active, 'end');
   const end = q.getBatch(snap.batchId);
   assert.deepEqual(statuses(end), [S.FAILED, S.FAILED, S.COMPLETED]);
-  assert.equal(end.jobs[0].error.message, 'unexpected crash');
+  assert.equal(end.jobs[0].error.message, 'Échec de la découverte YouTube'); // [SEC-REMED-4B] an unexpected exception's text is never shown
   assert.equal(end.jobs[1].error.code, 'DISCOVERY_STALLED');
 });
 
@@ -551,7 +551,9 @@ test('friendlyError: a page-level 404 is no longer mislabelled as an age restric
   assert.equal(friendlyError('ERROR: age-restricted video'), 'Vidéo restreinte — connexion requise');
   assert.equal(friendlyError('ERROR: [youtube] x: Private video'), 'Vidéo privée — impossible de télécharger', 'earlier mappings unchanged');
   assert.equal(friendlyError('ERROR: [youtube] x: Video unavailable'), 'Vidéo supprimée ou indisponible');
-  assert.equal(friendlyError('ERROR: something else entirely'), 'ERROR: something else entirely', 'unknown errors still shown verbatim');
+  // [SEC-REMED-4B] an unrecognised yt-dlp stderr line is untrusted subprocess output: fixed text, never verbatim.
+  assert.equal(friendlyError('ERROR: something else entirely'), 'Téléchargement échoué (erreur yt-dlp non reconnue)');
+  assert.equal(friendlyError('ERROR: C:\\Users\\victim\\cookies.txt token=abc'), 'Téléchargement échoué (erreur yt-dlp non reconnue)');
 });
 
 // ─── 7. static audit ────────────────────────────────────────────────────────────────────────────────────────────────

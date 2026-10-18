@@ -1,5 +1,6 @@
 import { Hono }    from 'hono';
 import { PDFParse } from 'pdf-parse';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_PDF_SIZE  = 10 * 1024 * 1024; // 10 MB
 const MIN_TEXT_CHARS_PER_PAGE = 40;      // below this → scanned/image PDF
@@ -92,8 +93,8 @@ export function createCvImportRoute({ logger } = {}) {
       if (msg.includes('password') || msg.includes('encrypted')) {
         return c.json({ error: 'Ce PDF est protégé par mot de passe. Retire la protection puis réessaie.' }, 422);
       }
-      if (logger) logger.warn({ error: err.message, size: buf.length }, 'CV_PDF_PARSE_FAIL');
-      return c.json({ error: `Impossible de lire ce PDF : ${err.message ?? 'erreur inconnue'}` }, 422);
+      if (logger) logger.warn({ ...safeErrorLogFields(err, { operation: 'route.cv_import' }), size: buf.length }, 'CV_PDF_PARSE_FAIL');
+      return c.json(publicErrorBody(err, { code: 'CV_PDF_UNREADABLE', message: 'Impossible de lire ce PDF.' }), 422);
     }
 
     // ── Scanned / image PDF detection ─────────────────────────────────────────

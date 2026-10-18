@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { registerJob, updateJob, finishJob } from '../routes/jobs.js';
 import { getInstallState, assertSafeInstallPath } from './comfyui-install-manager.js';
 import { safeFetch } from './web-egress-guard.js';
+import { PublicError } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 // Verified against https://huggingface.co/Comfy-Org/stable-diffusion-v1-5-archive
 // (file size and license read directly from the repo's file listing).
@@ -46,11 +47,11 @@ const activeDownloads = new Map(); // jobId -> AbortController
 export function startModelDownload(modelId) {
   const entry = MODEL_CATALOG.find((m) => m.id === modelId);
   if (!entry) {
-    throw new Error('Modèle inconnu ou non autorisé');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'Modèle inconnu ou non autorisé');
   }
   const install = getInstallState();
   if (install.status === 'not_installed' || !install.path) {
-    throw new Error('ComfyUI n’est pas installé');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'ComfyUI n’est pas installé');
   }
   const installPath = assertSafeInstallPath(install.path);
   const destDir = checkpointsDir(installPath);
@@ -60,7 +61,7 @@ export function startModelDownload(modelId) {
   const stat = fs.statfsSync(destDir);
   const freeBytes = stat.bavail * stat.bsize;
   if (freeBytes < neededBytes) {
-    throw new Error(`Espace disque insuffisant : ${(freeBytes / 1024 / 1024 / 1024).toFixed(1)} Go disponibles, ${(neededBytes / 1024 / 1024 / 1024).toFixed(1)} Go requis`);
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', `Espace disque insuffisant : ${(freeBytes / 1024 / 1024 / 1024).toFixed(1)} Go disponibles, ${(neededBytes / 1024 / 1024 / 1024).toFixed(1)} Go requis`);
   }
 
   const jobId = randomUUID();
@@ -80,7 +81,7 @@ async function runModelDownload(jobId, entry, destDir, signal) {
   try {
     // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): catalog source host is pinned; redirect hops (CDN) are validated + pinned.
     const res = await safeFetch(entry.source, { signal, trustedHosts: ['huggingface.co'], maxBytes: 20 * 1024 * 1024 * 1024, timeoutMs: 60_000, purpose: 'comfyui-model' });
-    if (!res.ok) throw new Error(`Téléchargement HTTP ${res.status}`);
+    if (!res.ok) throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', `Téléchargement HTTP ${res.status}`);
 
     const total = Number(res.headers.get('content-length')) || Math.round(entry.approxSizeGb * 1024 * 1024 * 1024);
     let received = 0;
@@ -108,7 +109,7 @@ async function runModelDownload(jobId, entry, destDir, signal) {
 
     if (signal.aborted) throw new Error('cancelled');
     if (total > 0 && received < total * 0.99) {
-      throw new Error(`Téléchargement incomplet (${received}/${total} octets)`);
+      throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', `Téléchargement incomplet (${received}/${total} octets)`);
     }
 
     // Atomic finalize — a partial download never appears as an installed model.
@@ -124,7 +125,7 @@ async function runModelDownload(jobId, entry, destDir, signal) {
 
 export function cancelModelDownload(jobId) {
   const controller = activeDownloads.get(jobId);
-  if (!controller) throw new Error('Aucun téléchargement en cours avec cet identifiant');
+  if (!controller) throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'Aucun téléchargement en cours avec cet identifiant');
   controller.abort();
   return { ok: true };
 }
@@ -134,11 +135,11 @@ export function cancelModelDownload(jobId) {
 // resolve inside the registered install's checkpoints directory.
 export function deleteModel(filename) {
   if (typeof filename !== 'string' || !filename || /[\\/]/.test(filename) || filename.includes('..')) {
-    throw new Error('Nom de fichier de modèle invalide');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'Nom de fichier de modèle invalide');
   }
   const install = getInstallState();
   if (!install.path) {
-    throw new Error('ComfyUI n’est pas installé');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'ComfyUI n’est pas installé');
   }
   const installPath = assertSafeInstallPath(install.path);
   const destDir = checkpointsDir(installPath);
@@ -149,11 +150,11 @@ export function deleteModel(filename) {
   const resolvedTarget = path.resolve(target);
   const resolvedDir = path.resolve(destDir);
   if (resolvedTarget !== path.join(resolvedDir, filename) || !resolvedTarget.startsWith(resolvedDir + path.sep)) {
-    throw new Error('Chemin de modèle invalide');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'Chemin de modèle invalide');
   }
 
   if (!fs.existsSync(resolvedTarget)) {
-    throw new Error('Modèle introuvable');
+    throw new PublicError('COMFYUI_MODEL_REQUEST_REFUSED', 'Modèle introuvable');
   }
   fs.unlinkSync(resolvedTarget);
   return { ok: true, deleted: filename };

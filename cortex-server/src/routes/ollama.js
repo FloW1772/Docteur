@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Hono } from 'hono';
+import { publicErrorBody, publicErrorMessage } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const OLLAMA_FAILED = { code: 'OLLAMA_UNAVAILABLE', message: 'Ollama est indisponible.' };
 
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
@@ -121,7 +126,7 @@ export function createOllamaRoute({ services }) {
         total_size: 0,
         free_bytes: getFreeBytes(),
         guarded_models: guardedModels,
-        error: error?.message ?? 'Ollama est indisponible',
+        error: publicErrorMessage(error, 'Ollama est indisponible'), // [SEC-REMED-4B]
       });
     }
   });
@@ -146,7 +151,7 @@ export function createOllamaRoute({ services }) {
         signal: controller.signal,
       });
     } catch (error) {
-      return c.json({ error: error?.message ?? 'Ollama est indisponible' }, 503);
+      return c.json(publicErrorBody(error, { ...OLLAMA_FAILED, message: 'Ollama est indisponible' }), 503);
     }
 
     if (!upstream.ok || !upstream.body) {
@@ -238,7 +243,7 @@ export function createOllamaRoute({ services }) {
         signal: c.req.raw.signal,
       });
     } catch (error) {
-      return c.json({ error: error?.message ?? 'Ollama est indisponible' }, 503);
+      return c.json(publicErrorBody(error, { ...OLLAMA_FAILED, message: 'Ollama est indisponible' }), 503);
     }
 
     if (!response.ok) {

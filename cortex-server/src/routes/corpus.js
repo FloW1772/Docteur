@@ -7,6 +7,11 @@ import { createJob, updateJobProgress, addJobError, finishJob, getJob } from '..
 import { extractContent } from '../lib/deep-capture.js';
 import { assertSafeUrl } from '../lib/url-security.js';
 import { chunkText } from '../lib/chunking.js';
+import { publicErrorBody, publicErrorMessage, safeErrorLogFields, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const CORPUS_FAILED = { code: 'CORPUS_OPERATION_FAILED', message: 'L’opération sur le corpus a échoué.' };
 
 const ALLOWED_EXT = new Set(['.md', '.markdown', '.txt']);
 const DEFAULT_LIMIT = 500;
@@ -198,8 +203,8 @@ export function createCorpusRoute({ services, logger }) {
             sizeBytes += Buffer.byteLength(chunks[ci], 'utf8');
           } catch (err) {
             errorCount++;
-            addJobError(jobId, { name: article.name, error: err.message });
-            logger?.warn({ corpusId, name: article.name, chunk: ci, error: err.message }, 'corpus article import failed');
+            addJobError(jobId, { name: article.name, error: publicErrorMessage(err, 'Élément non importé.') });
+            logger?.warn({ corpusId, name: article.name, chunk: ci, ...safeErrorLogFields(err, { operation: 'route.corpus' }) }, 'corpus article import failed');
           }
           neuronCount++;
           updateJobProgress(jobId, neuronCount);
@@ -220,10 +225,10 @@ export function createCorpusRoute({ services, logger }) {
         reason: errorCount > 0 ? `${errorCount} article(s) en échec sur ${articleChunks.length}` : null,
       });
     })().catch(err => {
-      logger?.error({ corpusId, error: err.message }, 'corpus import background job crashed');
+      logger?.error({ corpusId, ...safeErrorLogFields(err, { operation: 'route.corpus' }) }, 'corpus import background job crashed');
       finishJob(jobId, 'error');
       updateCorpusSource(corpusId, { status: 'error' });
-      insertActivityLog({ opType: 'corpus_import', item: corpusName, result: 'failure', reason: err.message });
+      insertActivityLog({ opType: 'corpus_import', item: corpusName, result: 'failure', reason: safeErrorReason(err, CORPUS_FAILED.code) });
     });
 
     return c.json({ ok: true, corpusId, jobId, matched: totalNeurons }, 202);
@@ -297,8 +302,8 @@ export function createCorpusRoute({ services, logger }) {
           articlesOk++;
         } catch (err) {
           errorCount++;
-          addJobError(jobId, { name: url, error: err.message });
-          logger?.warn({ corpusId, url, error: err.message }, 'corpus search-capture page failed');
+          addJobError(jobId, { name: url, error: publicErrorMessage(err, 'Élément non importé.') });
+          logger?.warn({ corpusId, url, ...safeErrorLogFields(err, { operation: 'route.corpus' }) }, 'corpus search-capture page failed');
         }
         updateJobProgress(jobId, ui + 1);
         await new Promise(r => setImmediate(r)); // yield to event loop between pages
@@ -318,10 +323,10 @@ export function createCorpusRoute({ services, logger }) {
         reason: errorCount > 0 ? `${errorCount} page(s) en échec sur ${urls.length}` : null,
       });
     })().catch(err => {
-      logger?.error({ corpusId, error: err.message }, 'corpus search-capture job crashed');
+      logger?.error({ corpusId, ...safeErrorLogFields(err, { operation: 'route.corpus' }) }, 'corpus search-capture job crashed');
       finishJob(jobId, 'error');
       updateCorpusSource(corpusId, { status: 'error' });
-      insertActivityLog({ opType: 'corpus_search_capture', item: corpusName, result: 'failure', reason: err.message });
+      insertActivityLog({ opType: 'corpus_search_capture', item: corpusName, result: 'failure', reason: safeErrorReason(err, CORPUS_FAILED.code) });
     });
 
     return c.json({ ok: true, corpusId, jobId, matched: urls.length }, 202);
@@ -374,7 +379,7 @@ export function createCorpusRoute({ services, logger }) {
       return c.json({ ok: true, summary: result.text, model_used: result.model, truncated });
     } catch (error) {
       const status = services.isOllamaError(error) ? 503 : 500;
-      return c.json({ error: error.message }, status);
+      return c.json(publicErrorBody(error, CORPUS_FAILED), status);
     }
   });
 
@@ -397,7 +402,7 @@ export function createCorpusRoute({ services, logger }) {
         deletePageFromStore(page.id);
         deleted++;
       } catch (err) {
-        logger?.warn({ id: page.id, error: err.message }, 'corpus neuron delete failed');
+        logger?.warn({ id: page.id, ...safeErrorLogFields(err, { operation: 'route.corpus' }) }, 'corpus neuron delete failed');
       }
     }
     deleteCorpusSource(id);

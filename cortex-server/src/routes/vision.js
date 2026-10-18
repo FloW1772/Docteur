@@ -4,6 +4,8 @@ import { getImagePath, validateImageId } from '../lib/image.js';
 import { verifyModelAvailability, chatCompletion } from '../lib/ollama.js';
 import { insertActivityLog } from '../lib/sqlite.js';
 import { hasActiveJobs } from './jobs.js';
+import { classifyModelError } from '../lib/model-router.js'; // [SEC-REMED-4B] stable code + fixed text
+import { safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 // llava:7b (~4.7 Go, quantification Q4) plutôt que qwen2-vl:7b (~6 Go+, exige
 // une version récente d'Ollama) : sur une carte 8 Go, llava laisse une marge
@@ -112,9 +114,12 @@ export function createVisionRoute({ ollamaClient, env, logger }) {
 
       return c.json({ ok: true, answer, model_used: VISION_MODEL, latency_ms });
     } catch (err) {
-      const timedOut = err.message === 'TIMEOUT';
+      // [SEC-REMED-4B] The runtime's error text is untrusted: it is READ to classify (timeout / memory / other),
+      // never returned, logged or stored. Client, log and activity log get a stable code + fixed text.
+      const timedOut = err?.message === 'TIMEOUT';
       const memErr    = isMemoryError(err);
-      logger?.error({ err: err.message, timedOut, memErr }, 'vision analyze failed');
+      const failure   = timedOut ? { code: 'TIMEOUT' } : memErr ? { code: 'OUT_OF_MEMORY' } : classifyModelError(err, { model: VISION_MODEL });
+      logger?.error({ ...safeErrorLogFields(err, { errorCode: failure.code, operation: 'vision.analyze' }), timedOut, memErr }, 'vision analyze failed');
 
       // Release the model's VRAM slot explicitly on failure too — a stuck/
       // failed load must never leave VRAM occupied for the next attempt.
@@ -125,19 +130,20 @@ export function createVisionRoute({ ollamaClient, env, logger }) {
 
       insertActivityLog({
         opType: 'vision_analyze', item: question.slice(0, 200),
-        result: 'failure', reason: timedOut ? 'timeout' : memErr ? 'memory' : err.message, durationMs: Date.now() - started,
+        result: 'failure', reason: timedOut ? 'timeout' : memErr ? 'memory' : failure.code, durationMs: Date.now() - started,
       });
 
       const reasonMessage = timedOut
         ? `L'analyse a dépassé ${VISION_TIMEOUT_MS / 1000} s sans réponse — le modèle de vision semble bloqué.`
         : memErr
           ? 'Mémoire GPU insuffisante pour charger le modèle de vision.'
-          : `Erreur Ollama : ${err.message}`;
+          : failure.message;
 
       // Local failure only — this route never has a cloud fallback path.
       return c.json({
         ok: false,
         fallback_suggested: true,
+        code: failure.code,
         error: `${reasonMessage} Utilisez l'OCR à la place.`,
       });
     }

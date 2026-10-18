@@ -11,11 +11,13 @@ mock.module('./src/lib/whisper.js', { namedExports: {
 const { initSqlite, insertVideoJob, getVideoJobById } = await import('./src/lib/sqlite.js');
 const { runVideoPipeline, requestCancel, removeJobDir } = await import('./src/lib/video-pipeline/pipeline.js');
 const { createVideoSummaryRoute } = await import('./src/routes/video-summary.js');
+const { PublicError } = await import('./src/lib/safe-error-contract.js');
 initSqlite(':memory:');
 test('download failure is persisted and returned as terminal API error', async () => {
   const id=crypto.randomUUID();const message='Le site refuse le téléchargement de cette vidéo.';
   insertVideoJob({id,url:'https://www.youtube.com/watch?v=test'});
-  download=async()=>{throw Error(message);};
+  // [SEC-REMED-4B] the real downloader raises its Docteur-written refusal as a PublicError (kept); raw text is not.
+  download=async()=>{throw new PublicError('VIDEO_DOWNLOAD_REFUSED', message, { status: 403 });};
   try {
     await runVideoPipeline(id);
     assert.equal(getVideoJobById(id).status,'error');

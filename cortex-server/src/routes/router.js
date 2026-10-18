@@ -2,6 +2,12 @@ import { Hono } from 'hono';
 import { getModelStatuses, getCloudProviderStatuses, clearProviderCooldown } from '../lib/router.js';
 import { recordSuccess, recordFailure } from '../lib/provider-state.js';
 import { ErrorCategory } from '../lib/provider-errors.js';
+// [SEC-REMED-4B] provider / CLI / PAIR error text is untrusted: fixed text from the closed category table.
+import { providerErrorHint, safeErrorCategory } from '../lib/provider-error-contract.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js';
+
+const ROUTER_FAILED = { code: 'ROUTER_REQUEST_FAILED', message: 'Opération du routeur impossible.', status: 500 };
+const PAIR_TEST_FAILED = 'PAIR injoignable ou en erreur : vérifiez l’endpoint et que le serveur PAIR tourne.';
 import {
   getRouterSettings, getRouterStats, setRouterSettings,
   getCloudKeys, setCloudKey, getCloudKeysMasked, getCloudKeyStatuses, getCloudStatsThisMonth,
@@ -90,7 +96,7 @@ export function createRouterRoute({ services }) {
         cloud_keys: getCloudKeysMasked(),
       });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -104,7 +110,7 @@ export function createRouterRoute({ services }) {
       setRouterSettings(body);
       return c.json({ ok: true, settings: getRouterSettings() });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -126,7 +132,7 @@ export function createRouterRoute({ services }) {
       setCloudKey(provider, key ?? '');
       return c.json({ ok: true, masked: getCloudKeysMasked() });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -140,7 +146,7 @@ export function createRouterRoute({ services }) {
       setMeta('pair_endpoint', endpoint || 'http://localhost:8080');
       return c.json({ ok: true, endpoint: pairProvider.endpoint });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -151,7 +157,7 @@ export function createRouterRoute({ services }) {
       const { pairProvider } = await import('../lib/providers/pair.js');
       return c.json({ endpoint: pairProvider.endpoint || storedEndpoint });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -164,12 +170,12 @@ export function createRouterRoute({ services }) {
         recordSuccess('pair');
         return c.json({ ok: true, model: result.model });
       } else {
-        const entry = recordFailure('pair', new Error(result.error || 'PAIR connection failed'));
-        return c.json({ ok: false, error: result.error, state: entry.state });
+        const entry = recordFailure('pair', new Error('PAIR connection failed'));
+        return c.json({ ok: false, error: PAIR_TEST_FAILED, state: entry.state });
       }
     } catch (error) {
       const entry = recordFailure('pair', error);
-      return c.json({ ok: false, error: error.message, state: entry.state });
+      return c.json({ ok: false, error: PAIR_TEST_FAILED, state: entry.state });
     }
   });
 
@@ -197,7 +203,8 @@ export function createRouterRoute({ services }) {
         return c.json({ ok: true, model: result.model, authMode: result.authMode, state: 'ready' });
       } catch (error) {
         const entry = recordFailure(provider, error);
-        return c.json({ ok: false, error: error.message, authMode: error.authMode ?? 'none', state: entry.state, category: error.category ?? ErrorCategory.UNKNOWN });
+        const authMode = ['setup_token', 'cli_session', 'none'].includes(error?.authMode) ? error.authMode : 'none'; // closed set (ClaudeAuthMode)
+        return c.json({ ok: false, error: providerErrorHint(error), authMode, state: entry.state, category: safeErrorCategory(error) ?? ErrorCategory.UNKNOWN });
       }
     }
 
@@ -221,31 +228,9 @@ export function createRouterRoute({ services }) {
       return c.json({ ok: true, model: result.model, state: 'ready' });
     } catch (error) {
       const entry = recordFailure(provider, error);
-      // Never expose the key in the error message — providers sometimes echo
-      // the submitted (invalid) key back verbatim in their own error text
-      // (e.g. OpenAI's "Incorrect API key provided: <key>"), so strip both
-      // the key=... pattern AND the literal apiKey value we just sent, not
-      // just what the upstream provider happened to mask itself.
-      let safe = String(error.message ?? 'Erreur inconnue').replace(/key=[A-Za-z0-9_-]+/gi, 'key=***');
-      if (apiKey) {
-        safe = safe.split(apiKey).join('***');
-        // Some providers echo the key back partially masked themselves (e.g.
-        // OpenAI's "Incorrect API key provided: sk-Xy****...***-abcd"), so an
-        // exact full-value match above can miss it. Fall back to stripping
-        // the key's own prefix/suffix (6+ chars — long enough to be
-        // identifying, short enough to survive partial upstream masking).
-        // Providers commonly mask to "first ~8 chars ... last ~4 chars" —
-        // strip any substring of the key 4+ chars long so partial echoes
-        // (in either position, any masking style) can't survive.
-        const MIN_FRAGMENT = 4;
-        for (let len = Math.min(apiKey.length, 12); len >= MIN_FRAGMENT; len--) {
-          for (let start = 0; start + len <= apiKey.length; start++) {
-            const fragment = apiKey.slice(start, start + len);
-            if (safe.includes(fragment)) safe = safe.split(fragment).join('***');
-          }
-        }
-      }
-      return c.json({ ok: false, error: safe, state: entry.state, category: error.category ?? ErrorCategory.UNKNOWN });
+      // [SEC-REMED-4B] Providers echo the submitted key (whole or partially masked), bodies, paths: redacting their
+      // text by pattern is not a control. The client gets the fixed hint of the closed category only.
+      return c.json({ ok: false, error: providerErrorHint(error), state: entry.state, category: safeErrorCategory(error) ?? ErrorCategory.UNKNOWN });
     }
   });
 
@@ -254,7 +239,7 @@ export function createRouterRoute({ services }) {
     const key = getCloudKeys().freellmapi_key;
     if (!settings.baseUrl || !key) return c.json({ configured: false, models: [] });
     try { return c.json({ configured: true, models: await freellmapiProvider.listModels({ ...settings, apiKey: key }, { force: c.req.query('force') === '1' }) }); }
-    catch (error) { return c.json({ configured: true, models: [], error: error.message }, 502); }
+    catch (error) { return c.json({ configured: true, models: [], error: providerErrorHint(error), category: safeErrorCategory(error) ?? ErrorCategory.UNKNOWN }, 502); }
   });
 
   route.get('/router/freellmapi/health', async (c) => {
@@ -481,7 +466,7 @@ export function createRouterRoute({ services }) {
       setRouterSettings({ gemini_rpm: n });
       return c.json({ ok: true, rpm: n });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 
@@ -492,7 +477,7 @@ export function createRouterRoute({ services }) {
       const cloudMonth = getCloudStatsThisMonth();
       return c.json({ stats, cloud_month: cloudMonth });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, ROUTER_FAILED), 500);
     }
   });
 

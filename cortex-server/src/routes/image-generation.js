@@ -16,6 +16,11 @@ import {
   cancelInstall, waitForComfyUiReady,
 } from '../lib/comfyui-install-manager.js';
 import { getModelCatalog, startModelDownload, deleteModel, cancelModelDownload } from '../lib/comfyui-model-manager.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const IMAGE_GEN_FAILED = { code: 'IMAGE_GENERATION_FAILED', message: 'L’opération de génération d’image a échoué.' };
 
 const MAX_DIMENSION = 2048;
 const MIN_DIMENSION = 64;
@@ -35,7 +40,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       const status = await getProvidersStatus();
       return c.json({ ok: true, strictLocal: isStrictLocalMode(), providers: status });
     } catch (err) {
-      logger?.warn?.({ error: err.message }, 'IMAGE_GEN_STATUS_ERROR');
+      logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.image_generation' }) }, 'IMAGE_GEN_STATUS_ERROR');
       return c.json({ error: 'Impossible de vérifier les providers' }, 500);
     }
   });
@@ -89,7 +94,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       setImageCloudKey(id, typeof body.value === 'string' ? body.value : null);
       return c.json({ ok: true, configured: !!body.value });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -158,7 +163,7 @@ export function createImageGenerationRoute({ logger } = {}) {
     } catch (err) {
       updateImageGeneration(genId, { status: 'failed', errorCode: 'unknown' });
       finishJob(jobId, 'failed', { errorCode: 'unknown' });
-      logger?.warn?.({ genId, error: err.message }, 'IMAGE_GENERATION_EXCEPTION');
+      logger?.warn?.({ genId, ...safeErrorLogFields(err, { operation: 'route.image_generation' }) }, 'IMAGE_GENERATION_EXCEPTION');
       return c.json({ error: 'Erreur inattendue lors de la génération', error_code: 'unknown' }, 500);
     }
   });
@@ -192,7 +197,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ jobId: result.jobId }, 'COMFYUI_INSTALL_STARTED');
       return c.json({ ok: true, ...result });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -203,7 +208,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ jobId: c.req.param('jobId') }, 'COMFYUI_INSTALL_CANCELLED');
       return c.json(result);
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -217,7 +222,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       if (!result.ok) return c.json({ error: result.error }, 404);
       return c.json({ ok: true, install: getInstallState() });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -227,7 +232,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       const install = detachExternalInstall();
       return c.json({ ok: true, install });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -243,7 +248,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       });
       return c.json({ ok: true, install });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -253,7 +258,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({}, 'COMFYUI_STOP');
       return c.json({ ok: true, install });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -266,7 +271,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ deleteModels }, 'COMFYUI_UNINSTALL');
       return c.json({ ok: true, ...result });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -284,7 +289,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ modelId, jobId: result.jobId }, 'MODEL_DOWNLOAD_STARTED');
       return c.json({ ok: true, ...result });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -295,7 +300,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ filename }, 'MODEL_DELETED');
       return c.json(result);
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 
@@ -305,7 +310,7 @@ export function createImageGenerationRoute({ logger } = {}) {
       logger?.info?.({ jobId: c.req.param('jobId') }, 'MODEL_DOWNLOAD_CANCELLED');
       return c.json(result);
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
 

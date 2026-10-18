@@ -20,15 +20,20 @@ import {
   getMissionFindings, getMissionEvidence, getMissionEvents, getMissionReport,
 } from '../lib/cyber-orchestrator.js';
 import { CyberAuditPolicyError } from '../lib/cyber-policy.js';
+import { safeErrorLogFields } from '../lib/safe-error-contract.js';
 
 const localAddress = value => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(value);
 
 function statusForError(err) {
-  if (err instanceof CyberAuditPolicyError || typeof err?.code === 'string') {
+  if (err instanceof CyberAuditPolicyError) {
     if (err.code === 'mission_not_found') return 404;
     return 409;
   }
   return 500;
+}
+
+function cyberErrorBody(err, fallback = 'cyber_audit_internal_error') {
+  return { error: err instanceof CyberAuditPolicyError ? err.code : fallback };
 }
 
 const defaultGateway = {
@@ -77,8 +82,12 @@ export function createCyberAuditRoute({ logger, isLocal = c => { try { return lo
       logger?.info?.({ mission_id: mission.id }, 'CYBER_AUDIT_MISSION_CREATED');
       return c.json({ ok: true, mission }, 201);
     } catch (err) {
-      logger?.warn?.({ error_message: err.message, code: err.code }, 'CYBER_AUDIT_MISSION_CREATE_DENIED');
-      return c.json({ error: err.code || err.message }, 400);
+      const policyDenied = err instanceof CyberAuditPolicyError;
+      logger?.warn?.(safeErrorLogFields(err, {
+        errorCode: policyDenied ? 'CYBER_AUDIT_POLICY_DENIED' : 'INTERNAL_ERROR',
+        operation: 'cyber_audit.create',
+      }), 'CYBER_AUDIT_MISSION_CREATE_DENIED');
+      return c.json(cyberErrorBody(err), policyDenied ? 400 : 500);
     }
   });
 
@@ -101,8 +110,12 @@ export function createCyberAuditRoute({ logger, isLocal = c => { try { return lo
       logger?.info?.({ mission_id: id }, 'CYBER_AUDIT_MISSION_STARTED');
       return c.json({ ok: true, mission }, 200);
     } catch (err) {
-      logger?.warn?.({ mission_id: id, error_message: err.message, code: err.code }, 'CYBER_AUDIT_START_DENIED');
-      return c.json({ error: err.code || err.message }, statusForError(err));
+      const policyDenied = err instanceof CyberAuditPolicyError;
+      logger?.warn?.({ mission_id: id, ...safeErrorLogFields(err, {
+        errorCode: policyDenied ? 'CYBER_AUDIT_POLICY_DENIED' : 'INTERNAL_ERROR',
+        operation: 'cyber_audit.start',
+      }) }, 'CYBER_AUDIT_START_DENIED');
+      return c.json(cyberErrorBody(err), statusForError(err));
     }
   });
 
@@ -114,7 +127,12 @@ export function createCyberAuditRoute({ logger, isLocal = c => { try { return lo
       logger?.info?.({ mission_id: id }, 'CYBER_AUDIT_MISSION_CANCELLED');
       return c.json({ ok: true, mission }, 200);
     } catch (err) {
-      return c.json({ error: err.code || err.message }, statusForError(err));
+      const policyDenied = err instanceof CyberAuditPolicyError;
+      logger?.warn?.({ mission_id: id, ...safeErrorLogFields(err, {
+        errorCode: policyDenied ? 'CYBER_AUDIT_POLICY_DENIED' : 'INTERNAL_ERROR',
+        operation: 'cyber_audit.cancel',
+      }) }, 'CYBER_AUDIT_CANCEL_DENIED');
+      return c.json(cyberErrorBody(err), statusForError(err));
     }
   });
 

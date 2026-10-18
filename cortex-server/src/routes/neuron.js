@@ -1,8 +1,14 @@
 import { Hono } from 'hono';
+import { parseIntParam } from '../lib/http-params.js';
 import {
   savePageToStoreIfNewer, deletePageFromStore, getAllPagesFromStore, getPageFromStore, repairLinksFromMetadata,
   getDatabase, getRecentPagesFromStore, getAllPagesMetaFromStore, getPageCountsFromStore,
 } from '../lib/sqlite.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const NEURON_FAILED = { code: 'NEURON_OPERATION_FAILED', message: 'Opération sur le neurone impossible.' };
 
 export function createNeuronRoute({ services, logger }) {
   const route = new Hono();
@@ -10,12 +16,12 @@ export function createNeuronRoute({ services, logger }) {
   // GET /api/neurons/recent?limit=N — metadata only (no blocks), for fast startup
   route.get('/neurons/recent', (c) => {
     const raw   = c.req.query('limit');
-    const limit = Math.min(raw ? (parseInt(raw, 10) || 50) : 50, 500);
+    const limit = Math.min(Math.max(parseIntParam(raw, 50), 1), 500);
     try {
       const pages = getRecentPagesFromStore(limit);
       return c.json({ ok: true, pages, limit });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -25,7 +31,7 @@ export function createNeuronRoute({ services, logger }) {
       const counts = getPageCountsFromStore();
       return c.json({ ok: true, ...counts });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -49,7 +55,7 @@ export function createNeuronRoute({ services, logger }) {
       }
       return response;
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -59,7 +65,7 @@ export function createNeuronRoute({ services, logger }) {
       const pages = getAllPagesFromStore();
       return c.json({ ok: true, pages });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -71,7 +77,7 @@ export function createNeuronRoute({ services, logger }) {
       if (!page) return c.json({ error: 'not found' }, 404);
       return c.json({ ok: true, page });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -91,7 +97,7 @@ export function createNeuronRoute({ services, logger }) {
       bulkSync();
       return c.json({ ok: true, saved });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -121,9 +127,9 @@ export function createNeuronRoute({ services, logger }) {
       return c.json({ ok: true, skipped: !saved });
     } catch (error) {
       if (captureId && logger) {
-        logger.error({ captureId, neuronId: id, elapsedMs: Math.round(performance.now() - started), error: error.message }, 'SAVE_FAILED');
+        logger.error({ captureId, neuronId: id, elapsedMs: Math.round(performance.now() - started), ...safeErrorLogFields(error, { operation: 'route.neuron' }) }, 'SAVE_FAILED');
       }
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -133,7 +139,7 @@ export function createNeuronRoute({ services, logger }) {
       const result = repairLinksFromMetadata();
       return c.json({ ok: true, ...result });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 
@@ -145,7 +151,7 @@ export function createNeuronRoute({ services, logger }) {
       deletePageFromStore(id);
       return c.json({ ok: true, deleted }, 200);
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, NEURON_FAILED), 500);
     }
   });
 

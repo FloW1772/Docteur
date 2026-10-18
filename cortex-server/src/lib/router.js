@@ -11,6 +11,9 @@ export { clearCooldown as clearProviderCooldown } from './provider-state.js';
 
 // Import des nouveaux providers
 import { pairProvider } from './providers/pair.js';
+// [SEC-REMED-4B] provider / runtime error text is untrusted: logs get allowlisted fields, aggregates get codes.
+import { PublicError, safeErrorLogFields, safeErrorCode } from './safe-error-contract.js';
+import { safeErrorCategory, safeModelTag } from './provider-error-contract.js';
 import { claudeOAuthProvider } from './providers/claude-oauth.js';
 import { codexProvider } from './providers/codex.js';
 
@@ -44,6 +47,16 @@ function logRoute(action, provider, model, logger, { fallback = false, feature =
     fallback,
     ...(durationMs == null ? {} : { duration_ms: durationMs }),
   }, 'AI_ROUTE');
+}
+
+// [SEC-REMED-4B] One failed attempt, as recorded in an aggregate failure: never the provider's text.
+function attemptRecord(level, model, err) {
+  return { level, model: safeModelTag(model), errorCode: safeErrorCategory(err) ?? safeErrorCode(err) ?? 'MODEL_ERROR' };
+}
+function allModelsFailed(attempts) {
+  return Object.assign(new PublicError('ALL_MODELS_FAILED', 'Tous les modèles ont échoué.', {
+    status: 503, hint: 'Vérifiez qu’Ollama tourne et qu’un modèle est installé, ou réessayez plus tard.',
+  }), { attempts });
 }
 
 export const CLOUD_PROVIDER_IDS = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai', 'freellmapi', 'claude-oauth', 'codex'];
@@ -423,7 +436,7 @@ export async function runAiTask({
       return { text, response: text, provider: candidate.providerId, model, responseFormat, fallback };
     } catch (error) {
       lastError = error;
-      logger?.warn({ feature, task_type: taskType, provider: candidate.providerId, error: error.message }, 'AI_TASK_PROVIDER_FAILED');
+      logger?.warn({ feature, task_type: taskType, ...safeErrorLogFields(error, { errorCode: 'AI_TASK_PROVIDER_FAILED', operation: 'router.ai_task' }), provider: candidate.providerId }, 'AI_TASK_PROVIDER_FAILED');
       if (candidate.allowFallback === false) break;
     }
   }
@@ -474,7 +487,7 @@ export async function tryCloudFallbackChain(messages, { logger, settingsOverride
       const result = await candidate.call(messages);
       return { text: result.text, provider: candidate.providerId, model: result.model ?? candidate.providerId };
     } catch (err) {
-      logger?.warn({ provider: candidate.providerId, error: err.category ?? 'UNKNOWN', message: err.message }, 'Cloud provider failed, trying next');
+      logger?.warn({ ...safeErrorLogFields(err, { errorCode: 'CLOUD_PROVIDER_FAILED', operation: 'router.cloud_chain' }), provider: candidate.providerId }, 'Cloud provider failed, trying next');
       if (candidate.allowFallback === false) break;
     }
   }
@@ -509,14 +522,26 @@ export async function routedCompletion(client, { action, input, context = {}, me
     }
     // Ultimate fallback: use whatever model is configured
     const fallbackModel = settings?.fallback_model ?? 'llama3.2:3b';
-    const response = await chatCompletion(client, fallbackModel, messages);
+    let response;
+    try {
+      response = await chatCompletion(client, fallbackModel, messages);
+    } catch (err) {
+      logger?.warn(safeErrorLogFields(err, { errorCode: 'ALL_MODELS_FAILED', operation: 'router.strict_local' }), 'strict local: every local model failed');
+      throw allModelsFailed([attemptRecord(0, fallbackModel, err)]);
+    }
     logRoute(action, 'local', fallbackModel, logger, { fallback: true });
     return { response, model: fallbackModel, level: 0, provider: 'local', quotaHit: false, routingReason: 'mode local strict' };
   }
 
   if (!routerEnabled) {
     const model = settings?.fallback_model ?? 'llama3.2:3b';
-    const response = await chatCompletion(client, model, messages);
+    let response;
+    try {
+      response = await chatCompletion(client, model, messages);
+    } catch (err) {
+      logger?.warn(safeErrorLogFields(err, { errorCode: 'ALL_MODELS_FAILED', operation: 'router.disabled' }), 'router disabled: local model failed');
+      throw allModelsFailed([attemptRecord(0, model, err)]);
+    }
     logRoute(action, 'local', model, logger);
     return { response, model, level: 0, provider: 'local', quotaHit: false, routingReason: 'router désactivé' };
   }
@@ -586,9 +611,9 @@ export async function routedCompletion(client, { action, input, context = {}, me
       } catch (err) {
         if (err.isQuota) {
           anyQuotaHit = true;
-          logger?.warn({ provider: candidate.providerId, category: err.category, error: err.message }, 'quota épuisé, essai provider suivant');
+          logger?.warn({ ...safeErrorLogFields(err, { errorCode: 'QUOTA_EXCEEDED', operation: 'router.cloud' }), provider: candidate.providerId }, 'quota épuisé, essai provider suivant');
         } else {
-          logger?.warn({ provider: candidate.providerId, category: err.category ?? 'UNKNOWN', error: err.message }, 'Cloud provider failed, trying next');
+          logger?.warn({ ...safeErrorLogFields(err, { errorCode: 'CLOUD_PROVIDER_FAILED', operation: 'router.cloud' }), provider: candidate.providerId }, 'Cloud provider failed, trying next');
         }
         if (candidate.allowFallback === false) break;
       }
@@ -601,7 +626,7 @@ export async function routedCompletion(client, { action, input, context = {}, me
       : 'Tous les providers cloud ont échoué — bascule sur le modèle local.';
     logger?.warn({ action, targetLevel }, warning);
 
-    const localErrors = [];
+    const localAttempts = [];
     for (let level = 3; level >= 1; level--) {
       const model = findModelForLevel(level, installedNames ?? []);
       if (!model) continue;
@@ -618,16 +643,16 @@ export async function routedCompletion(client, { action, input, context = {}, me
           warning,
         };
       } catch (err) {
-        localErrors.push(`niveau ${level} (${model}): ${err.message}`);
+        localAttempts.push(attemptRecord(level, model, err));
       }
     }
-    const detail = localErrors.length ? ` Détails: ${localErrors.join('; ')}` : '';
-    throw new Error(`Tous les modèles ont échoué.${detail}`);
+    logger?.warn({ action, attempts: localAttempts }, 'cloud then local: every model failed');
+    throw allModelsFailed(localAttempts);
   }
 
   // ── Local path (L1-3) ────────────────────────────────────────────────────
   const localReason = quotaBlocked ? 'quota épuisé → local' : (routingReason ?? 'local suffisant');
-  const errors = [];
+  const attempts = [];
 
   // Essayer PAIR en premier (priorité 1 pour les providers locaux)
   let pairAttempted = false;
@@ -657,14 +682,14 @@ export async function routedCompletion(client, { action, input, context = {}, me
           pairAttemptMs,
         };
       }
-      logger?.warn({ reason: pairHealth.error }, 'PAIR_FAILED');
+      logger?.warn({ reason: 'PAIR_UNHEALTHY' }, 'PAIR_FAILED'); // [SEC-REMED-4B] the PAIR peer's text is untrusted
     }
   } catch (err) {
     if (pairAttempted && pairStarted > 0 && pairAttemptMs === 0) {
       pairAttemptMs = Math.round(performance.now() - pairStarted);
     }
-    errors.push(`pair: ${err.message}`);
-    if (pairAttempted) logger?.warn({ reason: err.message }, 'PAIR_FAILED');
+    attempts.push(attemptRecord(1, 'pair', err));
+    if (pairAttempted) logger?.warn({ reason: 'PAIR_ERROR', ...safeErrorLogFields(err, { errorCode: 'PAIR_FAILED', operation: 'router.pair' }) }, 'PAIR_FAILED');
   }
   if (pairAttempted) logger?.info({ provider: 'ollama' }, 'FALLBACK');
 
@@ -681,10 +706,10 @@ export async function routedCompletion(client, { action, input, context = {}, me
         pairAttempted, pairAttemptMs,
       };
     } catch (err) {
-      errors.push(`niveau ${level} (${model}): ${err.message}`);
+      attempts.push(attemptRecord(level, model, err));
     }
   }
 
-  const detail = errors.length ? ` Détails: ${errors.join('; ')}` : '';
-  throw new Error(`Tous les modèles ont échoué.${detail}`);
+  logger?.warn({ action, attempts }, 'local: every model failed');
+  throw allModelsFailed(attempts);
 }

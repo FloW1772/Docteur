@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import { listBackups, runBackup } from '../lib/backup.js';
 import { savePageToStore, upsertFileOriginal, upsertFileResult, getFileOriginals, getFileResults, getAllPagesFromStore, getTodoItems, addTodoItem, getAllConversationsForBackup, listPreferenceFacts, getAllGeneratedPrompts, insertGeneratedPrompt } from '../lib/sqlite.js';
 import { IMAGE_DIR } from '../lib/image.js';
+import { PublicError, publicErrorBody, publicErrorMessage, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const BACKUP_FAILED = { code: 'BACKUP_OPERATION_FAILED', message: 'Opération de sauvegarde impossible.' };
 
 export function createBackupRoute({ services, logger }) {
   const route = new Hono();
@@ -13,7 +18,7 @@ export function createBackupRoute({ services, logger }) {
       const backups = listBackups(services.lancedbPath);
       return c.json({ backups, count: backups.length });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
     }
   });
 
@@ -104,7 +109,7 @@ export function createBackupRoute({ services, logger }) {
         },
       });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
     }
   });
 
@@ -114,7 +119,7 @@ export function createBackupRoute({ services, logger }) {
       const result = await runBackup(services.lancedbPath);
       return c.json({ ok: true, ...result });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
     }
   });
 
@@ -174,8 +179,8 @@ export function createBackupRoute({ services, logger }) {
           savePageToStore(page);
           indexed++;
         } catch (err) {
-          errors.push({ id: neuron.id, title: neuron.title, error: err.message });
-          logger?.warn({ id: neuron.id, error: err.message }, 'import neuron failed');
+          errors.push({ id: neuron.id, title: neuron.title, error: publicErrorMessage(err, 'Élément non restauré.') });
+          logger?.warn({ id: neuron.id, ...safeErrorLogFields(err, { operation: 'route.backup' }) }, 'import neuron failed');
         }
       }
 
@@ -188,7 +193,7 @@ export function createBackupRoute({ services, logger }) {
             upsertFileOriginal(file);
             restoredFiles++;
           } catch (err) {
-            errors.push({ id: file.id, title: file.original_name, error: err.message });
+            errors.push({ id: file.id, title: file.original_name, error: publicErrorMessage(err, 'Élément non restauré.') });
           }
         }
       }
@@ -199,7 +204,7 @@ export function createBackupRoute({ services, logger }) {
             upsertFileResult(file);
             restoredFiles++;
           } catch (err) {
-            errors.push({ id: file.id, title: file.stored_name ?? file.original_name ?? 'résultat', error: err.message });
+            errors.push({ id: file.id, title: file.stored_name ?? file.original_name ?? 'résultat', error: publicErrorMessage(err, 'Élément non restauré.') });
           }
         }
       }
@@ -243,7 +248,7 @@ export function createBackupRoute({ services, logger }) {
 
       return c.json({ ok: true, indexed, total: body.neurons.length, restoredFiles, restoredTodos, reconstructedBlocks, restoredPrompts, errors });
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, BACKUP_FAILED), 500);
     }
   });
 

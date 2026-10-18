@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { scanPagesForSecrets } from '../lib/secret-scan.js';
+import { safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 export function createSecretScanRoute({ logger } = {}) {
   const route = new Hono();
@@ -23,7 +24,7 @@ export function createSecretScanRoute({ logger } = {}) {
       }
       return c.json(result);
     } catch (error) {
-      if (logger) logger.error({ error: error.message }, 'secret-scan: failed');
+      if (logger) logger.error({ ...safeErrorLogFields(error, { operation: 'route.secret_scan' }) }, 'secret-scan: failed');
       return c.json({ error: 'Échec du scan' }, 500);
     }
   });

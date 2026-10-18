@@ -62,7 +62,9 @@ function getEntry(providerId) {
 // configured duration (or the provider's own Retry-After if longer/shorter
 // and more specific, e.g. Gemini/OpenAI 429 responses).
 export function recordFailure(providerId, err) {
-  const category = err?.category ?? ErrorCategory.UNKNOWN;
+  // [SEC-REMED-4B] only the closed category is kept: `reason` / `lastError` reach /api/router/* responses, and the
+  // provider's own text (credential echo, body, path) is untrusted.
+  const category = typeof err?.category === 'string' && Object.values(ErrorCategory).includes(err.category) ? err.category : ErrorCategory.UNKNOWN;
   const baseCooldown = COOLDOWN_MS[category] ?? 60 * 1000;
   const retryAfterMs = typeof err?.retryAfterMs === 'number' ? err.retryAfterMs : null;
   const cooldownMs = retryAfterMs ?? baseCooldown;
@@ -70,9 +72,9 @@ export function recordFailure(providerId, err) {
   const entry = {
     state: categoryToState(category),
     until: cooldownMs > 0 ? Date.now() + cooldownMs : 0,
-    reason: err?.message ?? category,
+    reason: category,
     category,
-    lastError: err?.message ?? null,
+    lastError: category,
     lastCheckedAt: Date.now(),
   };
   _state.set(providerId, entry);

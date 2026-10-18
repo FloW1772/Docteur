@@ -1,5 +1,6 @@
 import { assertSafeUrl } from './url-security.js';
 import { safeFetch } from './web-egress-guard.js';
+import { publicErrorMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const COMMON_SUBDOMAINS = new Set(['www', 'm', 'mobile', 'amp', 'blog', 'news', 'info']);
 
@@ -261,7 +262,7 @@ async function captureYouTube(url) {
         parentStrategy: 'failed',
         status: 'limited',
         warning: 'parent_not_identified',
-        error: String(error?.message ?? error),
+        error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
       }),
     };
   }
@@ -358,7 +359,7 @@ async function captureTwitter(url) {
           parentStrategy: 'failed',
           status: 'limited',
           warning: 'parent_not_identified',
-          error: String(error?.message ?? error),
+          error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
         }),
         child: makeChild(`@${username}`, 'note', url, {
           sourceType: 'twitter',
@@ -366,7 +367,7 @@ async function captureTwitter(url) {
           sourceName: username,
           status: 'limited',
           warning: 'parent_not_identified',
-          error: String(error?.message ?? error),
+          error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
         }),
       };
     }
@@ -412,7 +413,7 @@ async function captureReddit(url) {
         parentStrategy: 'subreddit',
         status: 'limited',
         warning: 'parent_not_identified',
-        error: String(error?.message ?? error),
+        error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
       }),
       child: makeChild(`r/${subreddit}`, 'note', url, {
         sourceType: 'reddit',
@@ -420,7 +421,7 @@ async function captureReddit(url) {
         sourceName: subreddit,
         status: 'limited',
         warning: 'parent_not_identified',
-        error: String(error?.message ?? error),
+        error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
       }),
     };
   }
@@ -463,7 +464,7 @@ async function captureArticle(url) {
         parentStrategy: 'domain',
         status: 'limited',
         warning: 'parent_not_identified',
-        error: String(error?.message ?? error),
+        error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
       }),
       child: makeChild(parentTitle, 'reference', url, {
         sourceType: 'web',
@@ -471,7 +472,7 @@ async function captureArticle(url) {
         sourceName: parentTitle,
         status: 'limited',
         warning: 'parent_not_identified',
-        error: String(error?.message ?? error),
+        error: publicErrorMessage(error, 'Extraction impossible.'), // [SEC-REMED-4B] fetch / parser text untrusted
       }),
     };
   }

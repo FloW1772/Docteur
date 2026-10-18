@@ -120,6 +120,9 @@ import { createAgencyService, createRouterComplete, createKnowledgeSearch } from
 import { createAgencyStore } from './lib/agency-store.js';
 import { createAgencyRoute } from './routes/agency.js';
 import { createModelRouterRoute } from './routes/model-router.js'; // [Model Router V1]
+// [SEC-REMED-4B] error text from a runtime / provider / subprocess is untrusted: codes + fixed text only cross the boundary
+import { PublicError, isPublicError, createSafeErrorHandler, safeErrorLogFields, safeErrorReason } from './lib/safe-error-contract.js';
+import { classifyModelError } from './lib/model-router.js';
 import { createDocumentToolboxRoute } from './routes/document-toolbox.js'; // [Document Toolbox PDF V1]
 import { createMediaStudioService } from './lib/media-studio.js'; // [Media Studio V1]
 import { createMediaStudioStore } from './lib/media-studio-store.js';
@@ -219,16 +222,17 @@ logger.info({ state: rootPolicyStatus.state, version: rootPolicyStatus.version, 
 // unhandledRejection: log with the full stack and keep running — an isolated
 // async failure somewhere shouldn't take down neurons, RAG, and everything
 // else along with it.
+// [SEC-REMED-4B] An unhandled rejection is by definition unclassified: its message / stack may carry a provider body,
+// a credential echo or a private path, so only allowlisted fields are logged (no message, no stack).
 process.on('unhandledRejection', (reason) => {
-  const err = reason instanceof Error ? reason : new Error(String(reason));
-  logger.error({ err: err.message, stack: err.stack }, 'unhandled promise rejection — process kept alive');
+  logger.error(safeErrorLogFields(reason, { errorCode: 'UNHANDLED_REJECTION', operation: 'process' }), 'unhandled promise rejection — process kept alive');
 });
 
 // uncaughtException: Node's own state may be inconsistent past this point, so
 // exiting is the safer choice — but always with a clear, loud trace first so
 // it's never a silent/mysterious crash.
 process.on('uncaughtException', (err) => {
-  logger.error({ err: err.message, stack: err.stack }, 'uncaught exception — process terminating');
+  logger.error(safeErrorLogFields(err, { errorCode: 'UNCAUGHT_EXCEPTION', operation: 'process' }), 'uncaught exception — process terminating');
   process.exit(1);
 });
 
@@ -344,7 +348,7 @@ async function ollamaHealth() {
       models: [],
       embeddingAvailable: false,
       answerAvailable: false,
-      error: error.message
+      error: classifyModelError(error).message // [SEC-REMED-4B] fixed text, never the runtime's own
     };
   }
 }
@@ -386,9 +390,7 @@ async function healthSnapshot() {
 async function ensureOllamaAvailableOrThrow() {
   const health = await ollamaHealth();
   if (!health.connected) {
-    const error = new Error('Ollama est indisponible. Verifie que le service tourne sur le port configure.');
-    error.code = 'OLLAMA_DOWN';
-    throw error;
+    throw new PublicError('OLLAMA_DOWN', 'Ollama est indisponible. Verifie que le service tourne sur le port configure.', { status: 503 });
   }
 
   return health;
@@ -623,6 +625,20 @@ function shouldFallbackToExtraction(answer) {
   return normalized.length === 0 || normalized.includes('je ne peux pas') || normalized.includes('je ne peux pas vous aider') || normalized.includes('i cannot') || normalized.includes('cannot help') || normalized.includes('je n\'ai pas') || normalized.includes('remarque');
 }
 
+// [SEC-REMED-4B] Stable code + Docteur-written text for a failed model call (PublicError keeps its own; anything else
+// is classified by classifyModelError, which reads the runtime / provider text and never copies it).
+function safeModelFailure(err, model = null) {
+  if (isPublicError(err)) return { code: err.code, message: err.message, hint: err.hint };
+  return classifyModelError(err, { model });
+}
+
+// [SEC-REMED-4B] A local answer failure as the client sees it: the stable classifyModelError code (TIMEOUT,
+// MODEL_NOT_FOUND, OUT_OF_MEMORY, RUNTIME_UNAVAILABLE, PROVIDER_ERROR…) and its Docteur-written text — never the
+// runtime's own error text.
+function localAnswerError(failure) {
+  return new PublicError(failure.code, `Réponse locale impossible : ${failure.message}`, { status: 503, hint: failure.hint });
+}
+
 async function answerQuestion(payload) {
   await ensureOllamaAvailableOrThrow();
 
@@ -710,7 +726,7 @@ async function answerQuestion(payload) {
         } catch { /* article isolé indisponible — on continue */ }
       }
     } catch (err) {
-      logger.warn({ error: err.message }, 'kiwix search failed during answerQuestion');
+      logger.warn(safeErrorLogFields(err, { errorCode: 'KIWIX_SEARCH_FAILED', operation: 'answer.kiwix' }), 'kiwix search failed during answerQuestion');
     }
   }
   if (kiwixScope === 'archives') {
@@ -775,7 +791,10 @@ async function answerQuestion(payload) {
       chosenProvider = 'local';
       chosenReason   = chatMem.localOnly && sources.every(s => !isLocalOnlySource(s)) ? 'mémoire · local imposé' : 'privé · neurones sensibles → local imposé';
     } catch (err) {
-      throw new Error(`Réponse locale impossible : ${err.message}`);
+      // [SEC-REMED-4B] the runtime text only selects a code (TIMEOUT, MODEL_NOT_FOUND…); the client gets fixed text.
+      const failure = classifyModelError(err, { model: env.ANSWER_MODEL });
+      logger.warn(safeErrorLogFields(err, { errorCode: failure.code, operation: 'answer.private_local' }), 'answer: local model failed (private sources)');
+      throw localAnswerError(failure);
     }
   }
 
@@ -803,8 +822,9 @@ async function answerQuestion(payload) {
       chosenProvider = 'local';
       chosenReason   = 'privé · 100% local';
     } catch (err) {
-      logger.warn({ model: actualModel, error: err.message }, '14b failed, fallback to 7b');
-      routingError   = err.message;
+      const failure = classifyModelError(err, { model: actualModel });
+      logger.warn({ model: actualModel, ...safeErrorLogFields(err, { errorCode: failure.code, operation: 'answer.powerful' }) }, '14b failed, fallback to 7b');
+      routingError   = failure.code;
       chosenWarning  = 'Le modèle puissant n\'a pas pu répondre — bascule automatique sur qwen2.5:7b.';
       try {
         rawAnswer    = await chatCompletion(ollamaClient, env.ANSWER_MODEL, messages);
@@ -812,7 +832,9 @@ async function answerQuestion(payload) {
         chosenLevel  = 0;
         chosenReason = 'fallback 7b (14b indisponible)';
       } catch (err2) {
-        throw new Error(`14b et 7b ont échoué : ${err2.message}`);
+        const failure2 = classifyModelError(err2, { model: env.ANSWER_MODEL });
+        logger.warn(safeErrorLogFields(err2, { errorCode: failure2.code, operation: 'answer.powerful_fallback' }), 'answer: 7b fallback failed');
+        throw new PublicError('LOCAL_MODELS_FAILED', '14b et 7b ont échoué : aucun modèle local n’a pu répondre.', { status: 503, hint: failure2.hint });
       }
     } finally {
       // Powerful model evicts nomic-embed-text from VRAM. Re-warm it now so the next indexNeuron
@@ -844,8 +866,20 @@ async function answerQuestion(payload) {
     chosenWarning  = result.warning ?? null;
     chosenReason   = result.routingReason ?? null;
   } catch (err) {
-    routingError = err.message;
-    rawAnswer    = await chatCompletion(ollamaClient, env.ANSWER_MODEL, messages);
+    // [SEC-REMED-4B] router_logs / activity_log get a code, never the aggregated runtime / provider text.
+    routingError = isPublicError(err) ? err.code : 'ROUTING_FAILED';
+    logger.warn(safeErrorLogFields(err, { errorCode: routingError, operation: 'answer.routed' }), 'answer: routed completion failed, local fallback');
+    try {
+      rawAnswer    = await chatCompletion(ollamaClient, env.ANSWER_MODEL, messages);
+    } catch (fallbackErr) {
+      const failure = classifyModelError(fallbackErr, { model: env.ANSWER_MODEL });
+      logRouterCall({
+        actionType: routerAction, chosenLevel: 0, chosenModel: env.ANSWER_MODEL, inputLength: payload.question.length,
+        responseLength: 0, latencyMs: Date.now() - routingStarted, success: false, errorMessage: failure.code, provider: 'local', quotaHit: false,
+      });
+      logger.warn(safeErrorLogFields(fallbackErr, { errorCode: failure.code, operation: 'answer.local_fallback' }), 'answer: local fallback failed');
+      throw localAnswerError(failure);
+    }
     chosenModel  = env.ANSWER_MODEL;
     chosenLevel  = 0;
   }
@@ -943,30 +977,40 @@ async function compareModels({ question, models, max_context, onEvent }) {
     const started = Date.now();
 
     if (CLOUD_COMPARE_IDS.has(modelId)) {
-      if (hasPrivateSources) throw new Error('neurones privés — cloud désactivé');
-      if (strictLocal) throw new Error('mode strictement local actif');
+      // [SEC-REMED-4B] Docteur-written refusals keep their text (PublicError); provider failures are classified below.
+      if (hasPrivateSources) throw new PublicError('PRIVATE_SOURCES_LOCAL_ONLY', 'neurones privés — cloud désactivé');
+      if (strictLocal) throw new PublicError('STRICT_LOCAL_MODE', 'mode strictement local actif');
 
       if (modelId === 'gemini') {
-        if (!keys.gemini_key) throw new Error('clé Gemini non configurée');
+        if (!keys.gemini_key) throw new PublicError('PROVIDER_NOT_CONFIGURED', 'clé Gemini non configurée');
         const result = await geminiCascade({ apiKey: keys.gemini_key, messages, logger });
         return { answer: result.text, model_used: result.model ?? 'gemini', provider: 'gemini', latency_ms: Date.now() - started };
       }
       if (modelId === 'groq') {
-        if (!keys.groq_key) throw new Error('clé Groq non configurée');
+        if (!keys.groq_key) throw new PublicError('PROVIDER_NOT_CONFIGURED', 'clé Groq non configurée');
         const result = await groqProvider.complete({ apiKey: keys.groq_key, messages, model: routerSettings?.groq_model });
         return { answer: result.text, model_used: result.model ?? 'groq', provider: 'groq', latency_ms: Date.now() - started };
       }
       if (modelId === 'openrouter') {
-        if (!keys.openrouter_key) throw new Error('clé OpenRouter non configurée');
+        if (!keys.openrouter_key) throw new PublicError('PROVIDER_NOT_CONFIGURED', 'clé OpenRouter non configurée');
         const result = await openrouterProvider.complete({ apiKey: keys.openrouter_key, messages });
         return { answer: result.text, model_used: result.model ?? 'openrouter', provider: 'openrouter', latency_ms: Date.now() - started };
       }
-      throw new Error(`Provider inconnu : ${modelId}`);
+      throw new PublicError('UNKNOWN_PROVIDER', 'Provider inconnu.');
     }
 
     // Local Ollama model
     const text = await chatCompletion(ollamaClient, modelId, messages);
     return { answer: text, model_used: modelId, provider: 'local', latency_ms: Date.now() - started };
+  }
+
+  // [SEC-REMED-4B] A failed model is reported with a stable code + fixed text: a PublicError keeps its own (Docteur)
+  // text; a runtime / provider failure is classified (its text is read, never copied). Logs get allowlisted fields.
+  function compareFailureEvent(modelId, err) {
+    if (isPublicError(err)) return { type: 'error', model_id: modelId, code: err.code, error: err.message };
+    const failure = classifyModelError(err, { model: modelId });
+    logger.warn(safeErrorLogFields(err, { errorCode: failure.code, operation: 'compare.model' }), 'compare: model failed');
+    return { type: 'error', model_id: modelId, code: failure.code, error: failure.message, hint: failure.hint ?? null };
   }
 
   const localModels = modelList.filter(m => !CLOUD_COMPARE_IDS.has(m));
@@ -980,7 +1024,7 @@ async function compareModels({ question, models, max_context, onEvent }) {
         const r = await callOneModel(modelId);
         await onEvent({ type: 'result', model_id: modelId, ...r, sources: cleanSources });
       } catch (err) {
-        await onEvent({ type: 'error', model_id: modelId, error: err.message });
+        await onEvent(compareFailureEvent(modelId, err));
       }
     }
   }
@@ -992,7 +1036,7 @@ async function compareModels({ question, models, max_context, onEvent }) {
       const r = await callOneModel(modelId);
       await onEvent({ type: 'result', model_id: modelId, ...r, sources: cleanSources });
     } catch (err) {
-      await onEvent({ type: 'error', model_id: modelId, error: err.message });
+      await onEvent(compareFailureEvent(modelId, err));
     }
   });
 
@@ -1095,12 +1139,14 @@ async function analyzeDeepCaptureMessages({ messages, input, wordCount, captureI
     });
     return { ok: true, response: result.response, model: result.model, aiMs, pairAttemptMs };
   } catch (err) {
+    const failure = safeModelFailure(err);
+    logger.warn({ captureId, ...safeErrorLogFields(err, { errorCode: failure.code, operation: 'capture.deep_analysis' }) }, 'deep capture analysis failed');
     logRouterCall({
       actionType: 'deep_capture', chosenLevel: 0, chosenModel: null,
       inputLength: input.length, responseLength: 0, latencyMs: 0,
-      success: false, errorMessage: err.message, provider: null,
+      success: false, errorMessage: failure.code, provider: null,
     });
-    return { ok: false, error: err.message, aiMs: Math.round(performance.now() - aiStarted), pairAttemptMs: 0 };
+    return { ok: false, error: failure.message, code: failure.code, aiMs: Math.round(performance.now() - aiStarted), pairAttemptMs: 0 };
   }
 }
 
@@ -1223,13 +1269,15 @@ async function deepCapture(url, captureId, { checkDuplicate = false } = {}) {
       quotaHit:       result.quotaHit ?? false,
     });
   } catch (err) {
+    const failure = safeModelFailure(err);
+    logger.warn({ captureId, ...safeErrorLogFields(err, { errorCode: failure.code, operation: 'capture.deep_analysis' }) }, 'deep capture analysis failed');
     logRouterCall({
       actionType: 'deep_capture', chosenLevel: 0, chosenModel: null,
       inputLength: extraction.text.length, responseLength: 0, latencyMs: 0,
-      success: false, errorMessage: err.message, provider: null,
+      success: false, errorMessage: failure.code, provider: null,
     });
     return {
-      fallback: true, reason: 'analysis_failed', error: err.message, captureId,
+      fallback: true, reason: 'analysis_failed', error: failure.message, code: failure.code, captureId,
       timings: {
         ...(extraction.timings ?? {}), pairAttemptMs,
         aiMs: Math.round(performance.now() - aiStarted),
@@ -1408,7 +1456,9 @@ async function deepCaptureWhisper(url, onProgress, signal, provider = 'local') {
       transcription = await transcribeYouTube(url, { onProgress, signal });
     } catch (err) {
       if (err.name === 'AbortError') throw err;
-      return { fallback: true, reason: 'whisper_failed', error: err.message };
+      // [SEC-REMED-4B] whisper / yt-dlp stderr (tracebacks, paths, environment) is untrusted: code + fixed text only.
+      logger?.warn(safeErrorLogFields(err, { errorCode: 'WHISPER_FAILED', operation: 'capture.whisper_transcribe' }), 'whisper transcription failed');
+      return { fallback: true, reason: 'whisper_failed', code: 'WHISPER_FAILED', error: 'La transcription a échoué.' };
     }
   }
 
@@ -1467,12 +1517,14 @@ async function deepCaptureWhisper(url, onProgress, signal, provider = 'local') {
       latencyMs: 0, success: true, provider: result.provider ?? 'local', quotaHit: result.quotaHit ?? false,
     });
   } catch (err) {
+    const failure = safeModelFailure(err);
+    logger?.warn(safeErrorLogFields(err, { errorCode: failure.code, operation: 'capture.whisper_analysis' }), 'whisper transcription analysis failed');
     logRouterCall({
       actionType: 'deep_capture_whisper', chosenLevel: 0, chosenModel: null,
       inputLength: analysisText.length, responseLength: 0, latencyMs: 0,
-      success: false, errorMessage: err.message, provider: null,
+      success: false, errorMessage: failure.code, provider: null,
     });
-    return { fallback: true, reason: 'analysis_failed', error: err.message };
+    return { fallback: true, reason: 'analysis_failed', code: failure.code, error: failure.message };
   }
 
   const childTitle  = title || 'Transcription Whisper';
@@ -1635,7 +1687,7 @@ const services = {
       });
       return result;
     } catch (err) {
-      insertActivityLog({ opType: 'question', item: String(payload.question ?? '').slice(0, 200), result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      insertActivityLog({ opType: 'question', item: String(payload.question ?? '').slice(0, 200), result: 'failure', reason: safeModelFailure(err).code, durationMs: Date.now() - started }); // [SEC-REMED-4B] code only
       throw err;
     }
   },
@@ -1665,7 +1717,7 @@ const services = {
       });
       return result;
     } catch (err) {
-      insertActivityLog({ opType: 'capture_deep', item: url, result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      insertActivityLog({ opType: 'capture_deep', item: url, result: 'failure', reason: safeErrorReason(err, 'CAPTURE_DEEP_FAILED'), durationMs: Date.now() - started }); // [SEC-REMED-4B]
       throw err;
     }
   },
@@ -1682,7 +1734,7 @@ const services = {
       });
       return result;
     } catch (err) {
-      insertActivityLog({ opType: 'capture_deep', item: source ?? 'texte collé', result: 'failure', reason: err.message, durationMs: Date.now() - started });
+      insertActivityLog({ opType: 'capture_deep', item: source ?? 'texte collé', result: 'failure', reason: safeErrorReason(err, 'CAPTURE_DEEP_FAILED'), durationMs: Date.now() - started }); // [SEC-REMED-4B]
       throw err;
     }
   },
@@ -1723,7 +1775,7 @@ const services = {
       return { text, model: actualModel };
     } catch (err) {
       // Fallback to 7b if 14b fails
-      logger.warn({ model: actualModel, error: err.message }, '14b failed in candidature, fallback 7b');
+      logger.warn({ model: actualModel, ...safeErrorLogFields(err, { errorCode: classifyModelError(err).code, operation: 'candidature.powerful' }) }, '14b failed in candidature, fallback 7b');
       const text = await chatCompletion(ollamaClient, env.ANSWER_MODEL, messages);
       return { text, model: env.ANSWER_MODEL };
     } finally {
@@ -1994,13 +2046,10 @@ app.route('/api', createOmegaInteractiveRoute({ logger }));
 app.route('/api', createOmegaAdminRoute({ logger }));
 app.route('/api', createOmegaOutboundRoute({ logger, certificateFingerprint: TLS_CERTIFICATE_FINGERPRINT }));
 
-app.onError((error, c) => {
-  const status = services.isOllamaError(error) ? 503 : 500;
-  // Strip any ?key=... or key=... fragments before logging/sending (Gemini key in URL)
-  const safeMsg = error.message.replace(/key=[A-Za-z0-9_\-.]+/gi, 'key=***');
-  logger.error({ error: safeMsg, status }, 'request error');
-  return c.json({ error: safeMsg }, status);
-});
+// [SEC-REMED-4B] Global boundary: an exception that reached here is UNKNOWN — its text (provider body, stack, path,
+// SQL diagnostic, credential echo…) is never returned nor logged. PublicError / HTTPException keep their own contract,
+// an unreachable model runtime stays a distinct 503, everything else is 500 INTERNAL_ERROR (safe-error-contract.js).
+app.onError(createSafeErrorHandler({ logger, isRuntimeUnavailable: services.isOllamaError }));
 
 app.notFound((c) => c.json({ error: 'Route introuvable' }, 404));
 
@@ -2065,7 +2114,7 @@ const httpServer = serve({
       const result = await optimizeTable(env.LANCEDB_PATH);
       logger.info(result, 'LANCEDB_AUTO_COMPACT_DONE');
     } catch (err) {
-      logger.warn({ error: err.message }, 'LANCEDB_AUTO_COMPACT_FAILED');
+      logger.warn(safeErrorLogFields(err, { errorCode: 'LANCEDB_AUTO_COMPACT_FAILED', operation: 'lancedb.compact' }), 'LANCEDB_AUTO_COMPACT_FAILED'); // [SEC-REMED-4B]
     } finally { checkingCompaction = false; }
   };
   void checkCompaction();
@@ -2100,7 +2149,7 @@ const httpServer = serve({
     // checkYtDlp() itself never rejects today (every failure path resolves
     // null — see lib/ytdlp.js), but this call is defended anyway so a future
     // change to that function can never produce an unhandled rejection here.
-    logger.warn({ err: err?.message }, 'yt-dlp check échouée de façon inattendue — téléchargement vidéo probablement désactivé');
+    logger.warn(safeErrorLogFields(err, { errorCode: 'YTDLP_CHECK_FAILED', operation: 'ytdlp.check' }), 'yt-dlp check échouée de façon inattendue — téléchargement vidéo probablement désactivé'); // [SEC-REMED-4B] subprocess text untrusted
   });
 });
 

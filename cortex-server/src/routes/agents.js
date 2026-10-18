@@ -5,6 +5,7 @@ import {
   getAllAgents, getAgentById, insertAgent, updateAgent, deleteAgent,
   getRunsByAgent, getPendingOutputs, markOutputConsumed,
 } from '../lib/sqlite.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_AGENTS = 10;
 
@@ -87,7 +88,9 @@ export function createAgentsRoute({ logger, ollamaClient, services } = {}) {
       });
     } catch (err) {
       const status = err.strict_local ? 503 : err.no_key ? 503 : 500;
-      return c.json({ error: err.message, strict_local: !!err.strict_local, no_key: !!err.no_key }, status);
+      // [SEC-REMED-4B] agent-runner raises PublicError for its own refusals (strict local, missing key); model / provider
+      // failures are untrusted text → fixed message.
+      return c.json({ ...publicErrorBody(err, { code: 'AGENT_RUN_FAILED', message: 'L’exécution de l’agent a échoué.' }), strict_local: !!err.strict_local, no_key: !!err.no_key }, status);
     }
   });
 

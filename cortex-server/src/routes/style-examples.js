@@ -3,6 +3,11 @@
 import { Hono } from 'hono';
 import crypto from 'node:crypto';
 import { getStyleExampleSettings, setStyleExampleSettings } from '../lib/sqlite.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const STYLE_FAILED = { code: 'STYLE_EXAMPLE_FAILED', message: 'L’opération sur l’exemple de style a échoué.' };
 
 export function createStyleExamplesRoute({ services, logger }) {
   const route = new Hono();
@@ -40,8 +45,8 @@ export function createStyleExamplesRoute({ services, logger }) {
       });
       return c.json({ id, ...result }, 200);
     } catch (err) {
-      logger?.warn({ err: err.message }, 'style-examples: save failed');
-      return c.json({ error: err.message }, 500);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.style_examples' }) }, 'style-examples: save failed');
+      return c.json(publicErrorBody(err, STYLE_FAILED), 500);
     }
   });
 
@@ -89,8 +94,8 @@ export function createStyleExamplesRoute({ services, logger }) {
       const result = await services.runLocalStandard(messages);
       return c.json({ summary: result.text.trim(), model_used: result.model });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'style-examples: regenerate failed');
-      return c.json({ error: `Modèle local indisponible : ${err.message}` }, 503);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.style_examples' }) }, 'style-examples: regenerate failed');
+      return c.json(publicErrorBody(err, { code: 'LOCAL_MODEL_UNAVAILABLE', message: 'Modèle local indisponible.' }), 503);
     }
   });
 

@@ -23,6 +23,11 @@ import * as onedrive from '../lib/connectors/onedrive-connector.js';
 import * as googleDrive from '../lib/connectors/google-drive-connector.js';
 import { listConnectorDefinitions, isActiveConnector } from '../lib/connector-registry.js';
 import { generateCodeVerifier, deriveCodeChallenge, PKCE_METHOD } from '../lib/pkce.js';
+import { publicErrorBody } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const CONNECTOR_FAILED = { code: 'CONNECTOR_OPERATION_FAILED', message: 'L’opération sur le connecteur a échoué.' };
 
 const CONNECTORS = Object.assign(Object.create(null), { youtube, onedrive, google_drive: googleDrive });
 
@@ -262,7 +267,7 @@ export function createConnectorsRoute({ services, logger }) {
     let fileIds;
     if (provider === 'google_drive') {
       try { fileIds = googleDrive.validateFileIds(body?.file_ids); }
-      catch (error) { return c.json({ error: error.message }, 400); }
+      catch (error) { return c.json(publicErrorBody(error, CONNECTOR_FAILED), 400); }
     }
     if (activeSyncs.has(provider)) return c.json({ error: 'Synchronisation déjà en cours' }, 409);
     const controller = new AbortController();

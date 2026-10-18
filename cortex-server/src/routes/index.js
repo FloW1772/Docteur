@@ -1,4 +1,9 @@
 import { Hono } from 'hono';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const INDEX_FAILED = { code: 'INDEX_OPERATION_FAILED', message: 'Opération d’indexation impossible.' };
 
 export function createIndexRoute({ services, logger }) {
   const route = new Hono();
@@ -50,8 +55,7 @@ export function createIndexRoute({ services, logger }) {
 
       if (logger) {
         logger.error({
-          error_message: error.message,
-          error_stack:   error.stack,
+          ...safeErrorLogFields(error, { operation: 'route.index' }),
           neuron_id:     body.id,
           neuron_title:  body.title,
           content_length: body.content?.length ?? 0,
@@ -62,19 +66,18 @@ export function createIndexRoute({ services, logger }) {
             captureId,
             neuronId: body.id,
             elapsedMs: Math.round(performance.now() - t0),
-            error: error.message,
+            ...safeErrorLogFields(error, { operation: 'route.index' }),
           }, 'INDEX_FAILED');
         }
       } else {
         console.error('[INDEX_ERROR]', {
-          message: error.message,
-          stack:   error.stack,
+          ...safeErrorLogFields(error, { operation: 'route.index' }),
           id:      body.id,
           title:   body.title,
         });
       }
 
-      return c.json({ error: error.message, detail: 'Index operation failed' }, status);
+      return c.json({ ...publicErrorBody(error, isOllama ? { code: 'MODEL_RUNTIME_UNAVAILABLE', message: 'Le moteur de modèle local est indisponible.' } : INDEX_FAILED), detail: 'Index operation failed' }, status);
     }
   });
 
@@ -91,8 +94,8 @@ export function createIndexRoute({ services, logger }) {
       }
       return c.json({ ok: true, ...result }, 200);
     } catch (error) {
-      if (logger) logger.error({ error_message: error.message }, 'LANCEDB_OPTIMIZE_ERROR');
-      return c.json({ error: error.message }, 500);
+      if (logger) logger.error({ ...safeErrorLogFields(error, { operation: 'route.index' }) }, 'LANCEDB_OPTIMIZE_ERROR');
+      return c.json(publicErrorBody(error, INDEX_FAILED), 500);
     }
   });
 
@@ -102,7 +105,7 @@ export function createIndexRoute({ services, logger }) {
       const stats = await services.getFragmentStats();
       return c.json(stats ?? { error: 'no table' }, 200);
     } catch (error) {
-      return c.json({ error: error.message }, 500);
+      return c.json(publicErrorBody(error, INDEX_FAILED), 500);
     }
   });
 

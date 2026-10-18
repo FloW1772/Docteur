@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import Database from 'better-sqlite3';
 import * as secretStore from './secret-store.js';
 import { RADIO_STATIONS } from './radio-catalog.js';
+import { PublicError } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 let database;
 let statements;
@@ -2824,7 +2825,7 @@ export function getImageCloudKeyStatuses() {
 }
 
 export function setImageCloudKey(id, value) {
-  if (!IMAGE_CLOUD_PROVIDERS.includes(id)) throw new Error(`Clé image inconnue: ${id}`);
+  if (!IMAGE_CLOUD_PROVIDERS.includes(id)) throw new PublicError('UNKNOWN_IMAGE_PROVIDER', 'Clé image inconnue.', { status: 400 });
   secretStore.setSecret(id, value || null);
 }
 
@@ -3899,7 +3900,7 @@ export function countPreferenceFacts() {
 export function addPreferenceFact(fact, meta = {}) {
   if (!database) return null;
   if (countPreferenceFacts() >= MAX_PREFERENCE_FACTS) {
-    throw new Error(`Limite de ${MAX_PREFERENCE_FACTS} faits retenus atteinte — supprimez-en un avant d'en ajouter un nouveau.`);
+    throw new PublicError('PREFERENCE_LIMIT_REACHED', `Limite de ${MAX_PREFERENCE_FACTS} faits retenus atteinte — supprimez-en un avant d'en ajouter un nouveau.`, { status: 400 });
   }
   const id = crypto.randomUUID();
   const now = new Date().toISOString();

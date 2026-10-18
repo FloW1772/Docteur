@@ -6,6 +6,7 @@ import {
 } from '../lib/sqlite.js';
 import { getRouterSettings } from '../lib/sqlite.js';
 import { parseIntParam } from '../lib/http-params.js';
+import { publicErrorBody, safeErrorLogFields, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_SKILLS         = 30;
 const MAX_INPUT_CHARS    = 12_000;
@@ -148,8 +149,8 @@ export function createSkillsRoute({ services, logger }) {
 
       return c.json({ instruction: result.text.trim(), suggested_name: suggestedName, model_used: result.model });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'skills: generate failed');
-      return c.json({ error: `Modèle local indisponible : ${err.message}` }, 503);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.skills' }) }, 'skills: generate failed');
+      return c.json(publicErrorBody(err, { code: 'LOCAL_MODEL_UNAVAILABLE', message: 'Modèle local indisponible.' }), 503);
     }
   });
 
@@ -186,8 +187,8 @@ export function createSkillsRoute({ services, logger }) {
       const result = await services.runLocalStandard(messages);
       return c.json({ instruction: result.text.trim(), model_used: result.model });
     } catch (err) {
-      logger?.warn({ err: err.message }, 'skills: refine failed');
-      return c.json({ error: `Modèle local indisponible : ${err.message}` }, 503);
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.skills' }) }, 'skills: refine failed');
+      return c.json(publicErrorBody(err, { code: 'LOCAL_MODEL_UNAVAILABLE', message: 'Modèle local indisponible.' }), 503);
     }
   });
 
@@ -238,13 +239,13 @@ export function createSkillsRoute({ services, logger }) {
       bumpSkillRunCount(id);
       return c.json({ run_id: runId, output: result.text.trim(), model_used: result.model, latency_ms: latency });
     } catch (err) {
-      logger?.warn({ err: err.message, skill_id: id }, 'skills: run failed');
+      logger?.warn({ ...safeErrorLogFields(err, { operation: 'route.skills' }), skill_id: id }, 'skills: run failed');
       updateSkillRun(runId, {
         finished_at:   new Date().toISOString(),
         status:        'error',
-        error_message: err.message,
+        error_message: safeErrorReason(err, 'SKILL_RUN_FAILED'),
       });
-      return c.json({ error: `Exécution échouée : ${err.message}` }, 503);
+      return c.json(publicErrorBody(err, { code: 'SKILL_RUN_FAILED', message: 'Exécution échouée : le modèle n’a pas pu répondre.' }), 503);
     }
   });
 
@@ -252,7 +253,7 @@ export function createSkillsRoute({ services, logger }) {
   route.get('/skills/:id/runs', (c) => {
     const id = c.req.param('id');
     if (!getSkillById(id)) return c.json({ error: 'Compétence introuvable' }, 404);
-    const limit = Math.min(parseIntParam(c.req.query('limit'), 30), 100);
+    const limit = Math.min(Math.max(parseIntParam(c.req.query('limit'), 30), 1), 100);
     return c.json({ runs: getSkillRuns(id, limit) });
   });
 

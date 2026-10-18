@@ -27,6 +27,7 @@ import { getMeta, setMeta } from './sqlite.js';
 import { registerJob, updateJob, finishJob } from '../routes/jobs.js';
 import { getComfyUiStatus, COMFYUI_DEFAULT_ENDPOINT } from './providers/comfyui.js';
 import { safeFetch } from './web-egress-guard.js';
+import { PublicError, publicErrorMessage, safeErrorCode } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -81,7 +82,7 @@ const FORBIDDEN_EXACT = new Set(['', '.', '..']);
 
 export function assertSafeInstallPath(candidatePath, { mustBeManagedRoot = false } = {}) {
   if (typeof candidatePath !== 'string' || FORBIDDEN_EXACT.has(candidatePath.trim())) {
-    throw new Error('Chemin invalide');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin invalide');
   }
 
   const resolved = path.resolve(candidatePath);
@@ -89,7 +90,7 @@ export function assertSafeInstallPath(candidatePath, { mustBeManagedRoot = false
 
   // Reject drive/filesystem roots outright (C:\, /, etc.)
   if (resolved === root) {
-    throw new Error('Chemin refusé : racine du disque');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin refusé : racine du disque');
   }
 
   // Reject well-known dangerous absolute roots
@@ -104,7 +105,7 @@ export function assertSafeInstallPath(candidatePath, { mustBeManagedRoot = false
 
   const resolvedLower = resolved.toLowerCase();
   if (dangerous.includes(resolvedLower)) {
-    throw new Error('Chemin refusé : dossier système ou racine du projet');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin refusé : dossier système ou racine du projet');
   }
 
   // Reject any ancestor of the project root, or the project root's own parent
@@ -112,13 +113,13 @@ export function assertSafeInstallPath(candidatePath, { mustBeManagedRoot = false
   // its own subtree).
   const projectParent = path.resolve(ROOT, '..').toLowerCase();
   if (resolvedLower === projectParent) {
-    throw new Error('Chemin refusé : dossier parent du projet');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin refusé : dossier parent du projet');
   }
 
   if (mustBeManagedRoot) {
     const managedResolved = path.resolve(DEFAULT_MANAGED_PATH).toLowerCase();
     if (resolvedLower !== managedResolved) {
-      throw new Error('Chemin refusé : ne correspond pas à l’installation gérée enregistrée');
+      throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin refusé : ne correspond pas à l’installation gérée enregistrée');
     }
   }
 
@@ -132,7 +133,7 @@ export function assertSafeInstallPath(candidatePath, { mustBeManagedRoot = false
 // the actual zip-slip vector (an entry named "../../evil" or "C:\evil").
 export function assertSafeArchiveEntry(entryName, destRoot) {
   if (typeof entryName !== 'string' || !entryName) {
-    throw new Error('Entrée d’archive invalide');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Entrée d’archive invalide');
   }
   if (path.isAbsolute(entryName) || /^[A-Za-z]:/.test(entryName)) {
     throw new Error(`Entrée d’archive refusée (chemin absolu) : ${entryName}`);
@@ -158,7 +159,7 @@ function checkDiskSpace(targetDir, neededBytes) {
   if (freeBytes < neededBytes) {
     const freeGb = (freeBytes / 1024 / 1024 / 1024).toFixed(1);
     const neededGb = (neededBytes / 1024 / 1024 / 1024).toFixed(1);
-    throw new Error(`Espace disque insuffisant : ${freeGb} Go disponibles, ${neededGb} Go requis`);
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', `Espace disque insuffisant : ${freeGb} Go disponibles, ${neededGb} Go requis`);
   }
 }
 
@@ -171,7 +172,7 @@ let installInFlight = false;
 
 export function startManagedInstall({ destination } = {}) {
   if (installInFlight) {
-    throw new Error('Une installation est déjà en cours');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Une installation est déjà en cours');
   }
   const dest = destination ? assertSafeInstallPath(destination) : DEFAULT_MANAGED_PATH;
   assertSafeInstallPath(dest); // re-validate regardless of source
@@ -243,23 +244,22 @@ const activeInstallControllers = new Map();
 
 export function cancelInstall(jobId) {
   const controller = activeInstallControllers.get(jobId);
-  if (!controller) throw new Error('Aucune installation en cours avec cet identifiant');
+  if (!controller) throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Aucune installation en cours avec cet identifiant');
   controller.abort();
   return { ok: true };
 }
 
 function sanitizeErrorForState(err) {
-  // Never surface raw stack traces / absolute paths beyond what's already
-  // user-visible (the install destination) into persisted state read by the UI.
-  const msg = String(err?.message ?? 'Erreur inconnue');
-  return msg.slice(0, 300);
+  // [SEC-REMED-4B] persisted state read by the UI: a PublicError keeps its (Docteur) text; download / archive /
+  // filesystem text is untrusted (paths, upstream bodies) → fixed text.
+  return publicErrorMessage(err, 'Installation interrompue (téléchargement, extraction ou écriture impossible).');
 }
 
 async function downloadWithProgress(url, destPath, { signal, onProgress, expectedApproxBytes }) {
   // WEB EGRESS GUARD (FIXED_EXTERNAL_PROVIDER): the first hop is the pinned release host; every redirect hop (CDN) is
   // fully validated + pinned. Large-download cap, no overall deadline.
   const res = await safeFetch(url, { signal, trustedHosts: ['github.com'], maxBytes: 20 * 1024 * 1024 * 1024, timeoutMs: 60_000, purpose: 'comfyui-install' });
-  if (!res.ok) throw new Error(`Téléchargement HTTP ${res.status}`);
+  if (!res.ok) throw new PublicError('COMFYUI_REQUEST_REFUSED', `Téléchargement HTTP ${res.status}`);
 
   const total = Number(res.headers.get('content-length')) || expectedApproxBytes || 0;
   let received = 0;
@@ -289,7 +289,7 @@ async function downloadWithProgress(url, destPath, { signal, onProgress, expecte
 
   if (total > 0 && received < total * 0.99) {
     fs.rmSync(destPath, { force: true });
-    throw new Error(`Téléchargement incomplet (${received}/${total} octets)`);
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', `Téléchargement incomplet (${received}/${total} octets)`);
   }
 }
 
@@ -358,7 +358,7 @@ export function useExistingInstall({ installPath }) {
 export function detachExternalInstall() {
   const current = getInstallState();
   if (current.kind !== 'external') {
-    throw new Error('Aucune installation externe à dissocier');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Aucune installation externe à dissocier');
   }
   if (current.status === 'running' && current.pid) {
     stopProcessIfOwned(current.pid);
@@ -391,17 +391,17 @@ let runningProcess = null; // { pid, child }
 export function startComfyUi() {
   const current = getInstallState();
   if (current.status === 'not_installed' || !current.path) {
-    throw new Error('ComfyUI n’est pas installé');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'ComfyUI n’est pas installé');
   }
   if (current.status === 'running') {
-    throw new Error('ComfyUI est déjà en cours d’exécution');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'ComfyUI est déjà en cours d’exécution');
   }
 
   const resolvedPath = assertSafeInstallPath(current.path);
   const launch = resolveComfyUiExecutable(resolvedPath);
   if (!launch) {
     setInstallState({ status: 'error', lastError: 'Exécutable ComfyUI introuvable dans ce dossier' });
-    throw new Error('Exécutable ComfyUI introuvable dans ce dossier (installation incomplète ou dossier invalide)');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Exécutable ComfyUI introuvable dans ce dossier (installation incomplète ou dossier invalide)');
   }
 
   let child;
@@ -416,8 +416,8 @@ export function startComfyUi() {
     // Some platforms/error kinds throw synchronously from spawn() rather
     // than emitting an async 'error' event (e.g. a non-executable file) —
     // handle both so a bad install folder never crashes the Cortex server.
-    setInstallState({ status: 'error', lastError: `Échec du démarrage : ${err.code ?? err.message}` });
-    throw new Error('Échec du démarrage de ComfyUI (exécutable invalide)');
+    setInstallState({ status: 'error', lastError: `Échec du démarrage : ${safeErrorCode(err) ?? 'erreur du processus'}` });
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Échec du démarrage de ComfyUI (exécutable invalide)');
   }
 
   const logTail = { stdout: [], stderr: [] };
@@ -429,7 +429,7 @@ export function startComfyUi() {
   child.on('error', (err) => {
     if (runningProcess?.pid === child.pid) {
       runningProcess = null;
-      setInstallState({ status: 'error', pid: null, startedAt: null, lastError: `Échec du démarrage : ${err.code ?? err.message}` });
+      setInstallState({ status: 'error', pid: null, startedAt: null, lastError: `Échec du démarrage : ${safeErrorCode(err) ?? 'erreur du processus'}` });
     }
   });
 
@@ -477,7 +477,7 @@ export async function waitForComfyUiReady(endpoint = COMFYUI_DEFAULT_ENDPOINT, t
 // before signaling it — never kills an arbitrary PID from stored state alone.
 function stopProcessIfOwned(pid) {
   if (!runningProcess || runningProcess.pid !== pid) {
-    throw new Error('Ce processus n’a pas été démarré par Docteur dans cette session — arrêt refusé');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Ce processus n’a pas été démarré par Docteur dans cette session — arrêt refusé');
   }
   runningProcess.child.kill();
   runningProcess = null;
@@ -486,10 +486,10 @@ function stopProcessIfOwned(pid) {
 export function stopComfyUi() {
   const current = getInstallState();
   if (current.status !== 'running' && current.status !== 'starting') {
-    throw new Error('ComfyUI n’est pas en cours d’exécution');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'ComfyUI n’est pas en cours d’exécution');
   }
   if (!current.pid) {
-    throw new Error('Aucun PID connu pour ce processus');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Aucun PID connu pour ce processus');
   }
   stopProcessIfOwned(current.pid);
   setInstallState({ status: 'stopped', pid: null, startedAt: null });
@@ -510,10 +510,10 @@ export function _setRunningProcessForTest(proc) {
 export function uninstallManaged({ deleteModels = false } = {}) {
   const current = getInstallState();
   if (current.kind !== 'managed') {
-    throw new Error('Seule une installation gérée par Docteur peut être désinstallée');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Seule une installation gérée par Docteur peut être désinstallée');
   }
   if (!current.path) {
-    throw new Error('Chemin d’installation inconnu');
+    throw new PublicError('COMFYUI_REQUEST_REFUSED', 'Chemin d’installation inconnu');
   }
 
   const resolved = assertSafeInstallPath(current.path, { mustBeManagedRoot: true });

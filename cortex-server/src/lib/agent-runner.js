@@ -28,6 +28,7 @@ import { buildPersonaToneNote, getPersonaSettings } from './persona.js';
 import { assertSafeUrl } from './url-security.js';
 import { DETAIL_LEVELS, DETAIL_LEVEL_LABELS, normalizeDetailLevel, detailLevelInstruction } from './detail-level.js';
 import { findStyleExamples, buildStyleExamplesBlock, describeUsedExamples } from './style-examples.js';
+import { PublicError, publicErrorMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const MAX_ACTIVE_AGENTS  = 10;
 const AGENT_TIMEOUT_MS   = 5 * 60 * 1000; // 5 min max per agent run
@@ -140,12 +141,12 @@ const SIMILARITY_THRESHOLD = 0.55; // above this, treated as "essentially the sa
 async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleExampleType }, { logger, services }) {
   const settings = getRouterSettings();
   if (settings?.strict_local_mode === true) {
-    throw Object.assign(new Error('Mode strictement local activé — agent veille cloud désactivé.'), { strict_local: true });
+    throw Object.assign(new PublicError('STRICT_LOCAL_MODE', 'Mode strictement local activé — agent veille cloud désactivé.', { status: 503 }), { strict_local: true });
   }
 
   const keys = getCloudKeys();
   if (!keys.gemini_key) {
-    throw Object.assign(new Error('Clé Gemini non configurée. Ajoute-la dans Paramètres > Fournisseurs cloud.'), { no_key: true });
+    throw Object.assign(new PublicError('PROVIDER_NOT_CONFIGURED', 'Clé Gemini non configurée. Ajoute-la dans Paramètres > Fournisseurs cloud.', { status: 503 }), { no_key: true });
   }
 
   setGeminiRpm(settings.gemini_rpm ?? 10);
@@ -209,10 +210,10 @@ async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleEx
     } catch (err) {
       lastErr = err;
       recordFailure('gemini', err);
-      if (err.isAuth) throw Object.assign(new Error('Clé Gemini invalide ou révoquée.'), { auth: true });
+      if (err.isAuth) throw Object.assign(new PublicError('PROVIDER_AUTH_FAILED', 'Clé Gemini invalide ou révoquée.', { status: 502 }), { auth: true });
     }
   }
-  throw lastErr ?? new Error('Grounding Google Search indisponible sur ton quota actuel.');
+  throw lastErr ?? new PublicError('GROUNDING_UNAVAILABLE', 'Grounding Google Search indisponible sur ton quota actuel.', { status: 503 });
 }
 
 // ── Résumé de vidéo longue — ne bloque PAS sur le pipeline complet (des
@@ -221,12 +222,12 @@ async function runVeille({ subject, mode, detailLevel, useStyleExamples, styleEx
 // (synthèse) arrive plus tard comme un nouveau neurone créé par le pipeline
 // lui-même (voir video-pipeline/pipeline.js).
 async function runVideoSummaryAgent({ url, resumeType = 'auto', whisperProvider = 'auto', synthesisProvider = 'local' }, { logger, ollamaClient, services }) {
-  if (!url?.trim()) throw new Error('Lien vidéo manquant.');
+  if (!url?.trim()) throw new PublicError('INVALID_INPUT', 'Lien vidéo manquant.');
   assertSafeUrl(url);
 
   const active = getActiveVideoJob();
   if (active || hasActiveJobs()) {
-    throw new Error('Un traitement lourd est déjà en cours (résumé de vidéo ou autre lot) — réessaie plus tard.');
+    throw new PublicError('GPU_BUSY', 'Un traitement lourd est déjà en cours (résumé de vidéo ou autre lot) — réessaie plus tard.', { status: 409 });
   }
 
   const estimate = await estimateVideo(url);
@@ -316,7 +317,7 @@ export const AGENT_TYPES = {
 
 export async function executeAgent(agent, { triggeredBy = 'manual', logger, ollamaClient, services } = {}) {
   const type = AGENT_TYPES[agent.type];
-  if (!type) throw new Error(`Type d'agent inconnu : ${agent.type}`);
+  if (!type) throw new PublicError('UNKNOWN_AGENT_TYPE', 'Type d\'agent inconnu.');
 
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
@@ -345,7 +346,7 @@ export async function executeAgent(agent, { triggeredBy = 'manual', logger, olla
     updateAgentRun(runId, {
       finished_at:   new Date().toISOString(),
       status:        'error',
-      error_message: err.message ?? String(err),
+      error_message: publicErrorMessage(err, 'Exécution échouée : le modèle ou le fournisseur n’a pas pu répondre.'), // [SEC-REMED-4B] shown in the run history
     });
     logger?.warn({ agentId: agent.id, type: agent.type, err: err.message, triggeredBy }, 'agent run failed');
     throw err;

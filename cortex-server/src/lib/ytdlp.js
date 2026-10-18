@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { killProcessTree } from './process-tree.js';
 import { prepareYtDlp } from './media-egress.js';
+import { PublicError } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -92,7 +93,7 @@ export function downloadVideo(url, folder, { onProgress, signal } = {}) {
 
     proc.on('error', err => {
       if (err.code === 'ENOENT') {
-        reject(new Error('yt-dlp introuvable. Lance : winget install yt-dlp  — ou place yt-dlp.exe dans cortex-server/bin/'));
+        reject(new PublicError('YTDLP_NOT_FOUND', 'yt-dlp introuvable. Lance : winget install yt-dlp  — ou place yt-dlp.exe dans cortex-server/bin/', { status: 503 }));
       } else {
         reject(err);
       }
@@ -104,7 +105,7 @@ export function downloadVideo(url, folder, { onProgress, signal } = {}) {
         e.name = 'AbortError';
         return reject(e);
       }
-      if (code !== 0) return reject(new Error(friendlyError(lastStderr)));
+      if (code !== 0) return reject(new PublicError('YTDLP_ERROR', friendlyError(lastStderr), { status: 502 }));
 
       // Fallback: scan folder for most recent mp4/mkv/webm if path not captured
       if (!finalPath) {
@@ -415,7 +416,7 @@ export function getPlaylistInfo(url, {
 
     proc.on('error', err => {
       clearTimeout(inactivityTimer);
-      if (err.code === 'ENOENT') reject(new Error('yt-dlp introuvable. Lance : winget install yt-dlp'));
+      if (err.code === 'ENOENT') reject(new PublicError('YTDLP_NOT_FOUND', 'yt-dlp introuvable. Lance : winget install yt-dlp', { status: 503 }));
       else reject(err);
     });
 
@@ -431,7 +432,7 @@ export function getPlaylistInfo(url, {
         e.name = 'TimeoutError';
         return reject(e);
       }
-      if (code !== 0) return reject(new Error(friendlyError(stderr)));
+      if (code !== 0) return reject(new PublicError('YTDLP_ERROR', friendlyError(stderr), { status: 502 }));
       consumeLines(true);
       resolve({
         title: playlistTitle,
@@ -459,6 +460,7 @@ export function friendlyError(raw) {
   // "age" as a word only: a bare substring also matched "page" ("Unable to download API page: HTTP Error 404")
   if (/\bage\b|age[- ]restrict|confirm your age/.test(lower) || lower.includes('sign in')) return 'Vidéo restreinte — connexion requise';
   if (lower.includes('http error 404') || lower.includes('does not exist')) return 'Contenu introuvable (chaîne, vidéo ou page inexistante)';
-  const lines = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('[debug]') && !l.startsWith('WARNING'));
-  return lines[lines.length - 1] || 'Téléchargement échoué';
+  // [SEC-REMED-4B] an unrecognised stderr line is untrusted subprocess output (paths, URLs with tokens, environment):
+  // it is never relayed — the closed table above is the only text that leaves this function.
+  return 'Téléchargement échoué (erreur yt-dlp non reconnue)';
 }

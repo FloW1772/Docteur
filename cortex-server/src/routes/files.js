@@ -32,6 +32,11 @@ import {
   getFileResults,
   insertActivityLog,
 } from '../lib/sqlite.js';
+import { publicErrorBody, safeErrorReason } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const FILE_FAILED = { code: 'FILE_OPERATION_FAILED', message: 'Fichier illisible ou opération impossible.' };
 
 function fileExists(filePath) {
   try {
@@ -193,7 +198,7 @@ export function createFilesRoute({ rootDir, logger } = {}) {
       const preview = await parseOriginalFile(buffer, original.original_name);
       return c.json({ ...buildDetail(rootDir, original), preview });
     } catch (error) {
-      return c.json({ error: error instanceof Error ? error.message : String(error) }, 422);
+      return c.json(publicErrorBody(error, FILE_FAILED), 422);
     }
   });
 
@@ -249,9 +254,9 @@ export function createFilesRoute({ rootDir, logger } = {}) {
       insertActivityLog({ opType: 'file_import', item: original.original_name, result: 'success' });
       return c.json({ ok: true, original, preview_kind: parsed.kind, detail_url: `/api/files/originals/${encodeURIComponent(original.id)}` }, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      insertActivityLog({ opType: 'file_import', item: file.name, result: 'failure', reason: message });
-      return c.json({ error: message }, 422);
+      // [SEC-REMED-4B] parser / filesystem text is untrusted; PublicError (unsupported format…) keeps its text.
+      insertActivityLog({ opType: 'file_import', item: file.name, result: 'failure', reason: safeErrorReason(error, FILE_FAILED.code) });
+      return c.json(publicErrorBody(error, FILE_FAILED), 422);
     }
   });
 
@@ -309,7 +314,7 @@ export function createFilesRoute({ rootDir, logger } = {}) {
       return c.json({ ok: true, result: resultRecord });
     } catch (error) {
       if (result?.resultPath) deleteIfExists(result.resultPath);
-      return c.json({ error: error instanceof Error ? error.message : String(error) }, 422);
+      return c.json(publicErrorBody(error, FILE_FAILED), 422);
     }
   });
 

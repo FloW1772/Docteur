@@ -9,6 +9,11 @@ import {
 import * as db from '../lib/sqlite.js';
 import { scoreLead } from '../lib/sales-scoring.js';
 import { draftOutreachMessage, draftCrmNote } from '../lib/sales-draft.js';
+import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
+
+// [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
+// code + this fixed text (a PublicError keeps its own Docteur-written message).
+const SALES_FAILED = { code: 'SALES_OPERATION_FAILED', message: 'L’opération commerciale a échoué.' };
 
 // Business/Sales Agent V1 — RESEARCH → ANALYZE → SCORE → DRAFT → HUMAN
 // REVIEW only. This file never sends an email, never writes to a real
@@ -81,7 +86,7 @@ export function createSalesRoute({
     try {
       ddgResults = await search(query);
     } catch (err) {
-      logger?.warn?.({ leadId, error_message: err.message }, 'SALES_RESEARCH_SEARCH_FAILED');
+      logger?.warn?.({ leadId, ...safeErrorLogFields(err, { operation: 'route.sales' }) }, 'SALES_RESEARCH_SEARCH_FAILED');
       return c.json({ error: 'search_unavailable' }, 503);
     }
 
@@ -106,7 +111,7 @@ export function createSalesRoute({
         });
         sources.push({ id: sourceId, url: result.url, title: wrapped.metadata.title, retrievedAt: wrapped.metadata.retrievedAt, untrusted: true });
       } catch (err) {
-        logger?.warn?.({ url: result.url, error_message: err.message }, 'SALES_RESEARCH_PAGE_FAILED');
+        logger?.warn?.({ url: result.url, ...safeErrorLogFields(err, { operation: 'route.sales' }) }, 'SALES_RESEARCH_PAGE_FAILED');
       }
     }
 
@@ -160,7 +165,7 @@ export function createSalesRoute({
         ? draftCrmNote({ lead, score, sources: db.getSalesResearchSourcesForLead(leadId) })
         : draftOutreachMessage({ lead, score, tone: typeof body.tone === 'string' ? body.tone : 'neutral' });
     } catch (err) {
-      return c.json({ error: err.message }, 400);
+      return c.json(publicErrorBody(err, SALES_FAILED), 400);
     }
 
     const draftId = randomUUID();

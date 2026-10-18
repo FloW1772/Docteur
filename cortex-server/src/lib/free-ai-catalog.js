@@ -17,6 +17,7 @@
 
 import { ErrorCategory, classifiedError, classifyNetworkError } from './provider-errors.js';
 import { safeFetch } from './web-egress-guard.js';
+import { publicErrorMessage } from './safe-error-contract.js'; // [SEC-REMED-4B]
 
 // Fixed, allowlisted source — never derived from user/query input, so this
 // can never become an SSRF vector via a caller-supplied URL.
@@ -181,7 +182,7 @@ export async function getCatalog({ force = false } = {}) {
     return { result, stale: false, fromCache: false, error: null };
   } catch (error) {
     if (cache) {
-      return { result: cache, stale: true, fromCache: true, error: error.message };
+      return { result: cache, stale: true, fromCache: true, error: publicErrorMessage(error, 'Catalogue distant indisponible — copie locale utilisée.') }; // [SEC-REMED-4B]
     }
     throw error;
   }
