@@ -11,7 +11,7 @@
  * only; correlation/anomaly judgment belongs to a later MA phase.
  */
 import crypto from 'node:crypto';
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 import { redactMaitreEvidenceMetadata } from './maitre-evidence.js';
 
 // Closed, explicit registry scope (mission §16) — read-only, no
@@ -54,17 +54,18 @@ function buildRegistryScript(hive, regPath) {
   // — hive is always one of the two fixed literals above, never
   // interpolated from external input.
   const psPath = `${hive}:\\${regPath}`;
-  const psPathLiteral = toPsSingleQuotedLiteral(psPath);
-  return `
+  const data = { REGISTRY_PATH: psPath };
+  return { script: `
 $ErrorActionPreference = 'Stop'
 try {
-  $item = Get-ItemProperty -Path ${psPathLiteral} -ErrorAction Stop
+  $registryPath = [string]$env:DOCTEUR_PS_DATA_REGISTRY_PATH
+  $item = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
   $names = $item.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS(Path|ParentPath|ChildName|Provider)$' } | ForEach-Object { @{ name = $_.Name; value = "$($_.Value)" } }
   @{ ok = $true; entries = @($names) } | ConvertTo-Json -Compress -Depth 4
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
-`;
+`, data };
 }
 
 /**
@@ -80,7 +81,8 @@ export async function getRegistryRunEntries({ exec = runReadOnlyPowerShell, chec
   const warnings = [];
 
   for (const key of REGISTRY_RUN_KEYS) {
-    const result = await exec(buildRegistryScript(key.hive, key.path));
+    const invocation = buildRegistryScript(key.hive, key.path);
+    const result = await exec(invocation.script, { data: invocation.data });
     if (!result.ok) {
       warnings.push({ key: `${key.hive}\\${key.path}`, reason: result.reason });
       continue;

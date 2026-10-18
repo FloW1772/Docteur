@@ -32,7 +32,7 @@ after(() => {
 // might issue with a benign, empty-shaped response.
 function mockExec() {
   const createdRules = new Set();
-  return async (script) => {
+  return async (script, { data = {} } = {}) => {
     if (script.includes('Get-CimInstance') || script.includes('Get-Process')) {
       return { ok: true, stdout: JSON.stringify([]) };
     }
@@ -50,13 +50,11 @@ function mockExec() {
     // correctly reports exists:true, mirroring what real Windows
     // Firewall would report without ever touching it.
     if (script.includes('New-NetFirewallRule')) {
-      const m = script.match(/-DisplayName\s+'([^']+)'/);
-      if (m) createdRules.add(m[1]);
+      if (data.FIREWALL_RULE_NAME) createdRules.add(data.FIREWALL_RULE_NAME);
       return { ok: true, stdout: JSON.stringify({ ok: true }) };
     }
     if (script.includes('Get-NetFirewallRule')) {
-      const m = script.match(/-DisplayName\s+'([^']+)'/);
-      const exists = m ? createdRules.has(m[1]) : false;
+      const exists = data.FIREWALL_RULE_NAME ? createdRules.has(data.FIREWALL_RULE_NAME) : false;
       return { ok: true, stdout: JSON.stringify({ ok: true, exists }) };
     }
     return { ok: true, stdout: JSON.stringify([]) };

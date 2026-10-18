@@ -19,13 +19,13 @@
  * time, each step individually verified.
  *
  * No runNetsh()/runFirewallCommand(command)/executePowerShell(script) —
- * every PowerShell script here is a FIXED, Docteur-authored template
- * with only data values (rule names, actionIds) interpolated via
- * toPsSingleQuotedLiteral, never a caller-supplied command string
+ * every PowerShell script here is a FIXED, Docteur-authored template;
+ * rule names and addresses travel in child-only environment variables,
+ * never in PowerShell source and never as caller-supplied command text
  * (mission §21).
  */
 import crypto from 'node:crypto';
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 import {
   insertMaitreIsolationState, getMaitreIsolationStateById, updateMaitreIsolationState,
   findActiveMaitreIsolationState,
@@ -85,11 +85,11 @@ try {
 `;
 
 function buildCheckRulesScript(ruleNames) {
-  const namesLiteral = toPsSingleQuotedLiteral(ruleNames.join(','));
-  return `
+  const data = { FIREWALL_RULE_NAMES_JSON: JSON.stringify(ruleNames) };
+  return { script: `
 $ErrorActionPreference = 'Stop'
 try {
-  $names = (${namesLiteral}).Split(',')
+  $names = @($env:DOCTEUR_PS_DATA_FIREWALL_RULE_NAMES_JSON | ConvertFrom-Json)
   $found = @()
   foreach ($n in $names) {
     $r = Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue
@@ -99,7 +99,7 @@ try {
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
-`;
+`, data };
 }
 
 /**
@@ -155,34 +155,35 @@ async function defaultLoopbackCheck() {
 // ── HOST_ISOLATION — transactional, step-by-step application ──────────────
 
 function buildCreateBlockRuleScript({ ruleName, direction, remoteAddress }) {
-  const ruleNameLiteral = toPsSingleQuotedLiteral(ruleName);
-  const remoteAddressLiteral = toPsSingleQuotedLiteral(remoteAddress);
-  return `
+  const data = { FIREWALL_RULE_NAME: ruleName, REMOTE_ADDRESS: remoteAddress };
+  return { script: `
 $ErrorActionPreference = 'Stop'
 try {
-  $addrs = (${remoteAddressLiteral}).Split(',')
-  New-NetFirewallRule -DisplayName ${ruleNameLiteral} -Direction ${direction} -RemoteAddress $addrs -Action Block -ErrorAction Stop | Out-Null
+  $ruleName = [string]$env:DOCTEUR_PS_DATA_FIREWALL_RULE_NAME
+  $addrs = ([string]$env:DOCTEUR_PS_DATA_REMOTE_ADDRESS).Split(',')
+  New-NetFirewallRule -DisplayName $ruleName -Direction ${direction} -RemoteAddress $addrs -Action Block -ErrorAction Stop | Out-Null
   @{ ok = $true } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
-`;
+`, data };
 }
 
 function buildRemoveRuleScript(ruleName) {
-  const ruleNameLiteral = toPsSingleQuotedLiteral(ruleName);
-  return `
+  const data = { FIREWALL_RULE_NAME: ruleName };
+  return { script: `
 $ErrorActionPreference = 'Stop'
 try {
-  $existing = Get-NetFirewallRule -DisplayName ${ruleNameLiteral} -ErrorAction SilentlyContinue
+  $ruleName = [string]$env:DOCTEUR_PS_DATA_FIREWALL_RULE_NAME
+  $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
   if ($existing) {
-    Remove-NetFirewallRule -DisplayName ${ruleNameLiteral} -ErrorAction Stop | Out-Null
+    Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop | Out-Null
   }
   @{ ok = $true; existed = ($null -ne $existing) } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
-`;
+`, data };
 }
 
 function isAccessDenied(envelope) {
@@ -199,7 +200,8 @@ async function rollbackCreatedRules(createdRuleNames, { exec }) {
   const stillPresent = [];
   for (const ruleName of createdRuleNames) {
     try {
-      const result = await exec(buildRemoveRuleScript(ruleName), { timeoutMs: FIREWALL_TIMEOUT_MS });
+      const invocation = buildRemoveRuleScript(ruleName);
+      const result = await exec(invocation.script, { timeoutMs: FIREWALL_TIMEOUT_MS, data: invocation.data });
       const envelope = result.ok ? parseJsonEnvelope(result.stdout) : null;
       if (!envelope?.ok) stillPresent.push(ruleName);
     } catch {
@@ -237,7 +239,8 @@ export async function applyHostIsolation({
   for (const step of steps) {
     let result;
     try {
-      result = await exec(buildCreateBlockRuleScript(step), { timeoutMs: FIREWALL_TIMEOUT_MS });
+      const invocation = buildCreateBlockRuleScript(step);
+      result = await exec(invocation.script, { timeoutMs: FIREWALL_TIMEOUT_MS, data: invocation.data });
     } catch (err) {
       result = { ok: false, reason: 'exec_error', detail: err?.message };
     }
@@ -284,7 +287,8 @@ export async function applyHostIsolation({
   // Verification (mission §13): confirm all four rules exist AND loopback
   // is still reachable. Never contact an external host to "test" the
   // block — only local rule presence + local loopback probe.
-  const verifyRules = await exec(buildCheckRulesScript(Object.values(ruleNames)), { timeoutMs: FIREWALL_TIMEOUT_MS });
+  const verifyInvocation = buildCheckRulesScript(Object.values(ruleNames));
+  const verifyRules = await exec(verifyInvocation.script, { timeoutMs: FIREWALL_TIMEOUT_MS, data: verifyInvocation.data });
   const verifyEnvelope = verifyRules.ok ? parseJsonEnvelope(verifyRules.stdout) : null;
   const allRulesPresent = verifyEnvelope?.ok && Object.values(ruleNames).every(n => (verifyEnvelope.found ?? []).includes(n));
   const loopbackStillWorks = await loopbackCheck();
@@ -393,7 +397,8 @@ export async function restoreHostNetwork({
       continue;
     }
     try {
-      const result = await exec(buildRemoveRuleScript(ruleName), { timeoutMs: FIREWALL_TIMEOUT_MS });
+      const invocation = buildRemoveRuleScript(ruleName);
+      const result = await exec(invocation.script, { timeoutMs: FIREWALL_TIMEOUT_MS, data: invocation.data });
       const envelope = result.ok ? parseJsonEnvelope(result.stdout) : null;
       if (!envelope?.ok) stillPresent.push(ruleName);
     } catch {

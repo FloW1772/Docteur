@@ -76,15 +76,15 @@ test('NEGATIVE: a stored blob that is not strict base64 never starts PowerShell,
   assert.ok(!/calc|Start-Process|QUJD/.test(all), 'no hostile value in any console output');
 });
 
-test('NEGATIVE: the refusal message carries no value (static) and the interpolation sites are all guarded', () => {
+test('NEGATIVE: refusal carries no value and scripts never interpolate a secret', () => {
   const src = fs.readFileSync(fileURLToPath(new URL('./src/lib/secret-store.js', import.meta.url)), 'utf8');
   const message = src.match(/throw new Error\('DPAPI: valeur chiffrée invalide[^']*'\)/);
   assert.ok(message, 'refusal throws a constant message');
   assert.doesNotMatch(message[0], /\$\{/, 'no interpolation in the message');
-  // every `FromBase64String('${…}')` splice must go through the guard
+  // Values go through validated stdin; no value is placed in PowerShell code.
   const splices = [...src.matchAll(/FromBase64String\('\$\{([^}]*)\}'\)/g)].map(m => m[1]);
-  assert.equal(splices.length, 2, 'protect + unprotect');
-  for (const expr of splices) assert.match(expr, /^assertStrictBase64\(\w+\)$/, 'guarded');
+  assert.equal(splices.length, 0, 'no interpolation of secrets');
+  assert.match(src, /input: assertStrictBase64\(input\)/, 'stdin is guarded before spawn');
 });
 
 test('CONTROL: the recorder is really wired — a WELL-FORMED blob does reach the (mocked) launcher exactly once', () => {
@@ -93,7 +93,8 @@ test('CONTROL: the recorder is really wired — a WELL-FORMED blob does reach th
   assert.equal(store.getSecret('wellformed', { migrateLegacy: false }), null);   // the mocked process "fails" → null, as for any undecryptable blob
   assert.equal(spawnCalls.length, before + 1, 'one launch recorded');
   const script = spawnCalls.at(-1)[1].at(-1);
-  assert.ok(script.includes("FromBase64String('QUJDREVGR0g=')"), 'the validated value is what is spliced');
+  assert.ok(!script.includes('QUJDREVGR0g='), 'ciphertext is absent from process arguments');
+  assert.equal(spawnCalls.at(-1)[2].input, 'QUJDREVGR0g=', 'the validated value is passed via stdin');
 });
 
 test('POSITIVE (pure): the shapes Docteur actually writes are accepted — every padding class, long values', () => {

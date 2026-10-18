@@ -17,7 +17,7 @@
  * stored/returned as an opaque string, exactly like Observateur treats
  * a process name or Cyber Audit treats a crawled page's text.
  */
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 
 // Minimal channel allowlist per mission §8 ("commencer minimal"). Any
 // channel not in this list is rejected before a PowerShell process is
@@ -76,17 +76,15 @@ export async function queryWindowsEventLog({
   const boundedMaxEvents = Math.max(1, Math.min(Number(maxEvents) || DEFAULT_MAX_EVENTS, MAX_EVENTS_CAP));
   const boundedSinceDays = Math.max(1, Math.min(Number(sinceDays) || 1, MAX_LOOKBACK_DAYS));
 
-  // Channel/eventId are validated (allowlist / integer) BEFORE being
-  // embedded, and even then only via the single-quoted-literal escaper
-  // — this is a fixed script shape with safe literal substitution, not
-  // a dynamically assembled command built from external text.
-  const channelLiteral = toPsSingleQuotedLiteral(channel);
+  // The channel stays data even after allowlist validation. Only bounded
+  // integers are inserted into the fixed script shape below.
   const eventIdClause = Number.isInteger(eventId) ? `; Id = ${Number(eventId)}` : '';
 
   const script = `
 $ErrorActionPreference = 'Stop'
 try {
-  $events = Get-WinEvent -FilterHashtable @{ LogName = ${channelLiteral}; StartTime = (Get-Date).AddDays(-${boundedSinceDays})${eventIdClause} } -MaxEvents ${boundedMaxEvents} |
+  $channel = [string]$env:DOCTEUR_PS_DATA_EVENT_LOG_CHANNEL
+  $events = Get-WinEvent -FilterHashtable @{ LogName = $channel; StartTime = (Get-Date).AddDays(-${boundedSinceDays})${eventIdClause} } -MaxEvents ${boundedMaxEvents} |
     Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, MachineName, Message
   @{ ok = $true; events = @($events) } | ConvertTo-Json -Compress -Depth 4
 } catch {
@@ -94,7 +92,7 @@ try {
 }
 `;
 
-  const result = await exec(script);
+  const result = await exec(script, { data: { EVENT_LOG_CHANNEL: channel } });
   if (!result.ok) {
     return { available: false, reason: result.reason, events: [] };
   }

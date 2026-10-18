@@ -302,26 +302,31 @@ test('BLOCK_REMOTE_IP: exact MAÎTRE rule name is created (Docteur-MAITRE-<actio
   const inc = incident();
   const { proposal, approval } = await approvedProposal(inc, 'BLOCK_REMOTE_IP', { ip: '203.0.113.20' });
   let capturedScript = '';
-  const exec = async (script) => {
+  const capturedData = [];
+  const exec = async (script, { data = {} } = {}) => {
     capturedScript += script;
+    capturedData.push(data);
     if (script.includes('Get-NetFirewallRule')) return { ok: true, stdout: JSON.stringify({ ok: true, exists: capturedScript.includes('New-NetFirewallRule') }) };
     return { ok: true, stdout: JSON.stringify({ ok: true }) };
   };
   const run = await executeApprovedAction(proposal.id, { approvalId: approval.id, exec, checkPlatform: alwaysWindows });
   assert.equal(run.result.ruleName, `Docteur-MAITRE-${proposal.id}`);
+  assert.equal(capturedScript.includes(run.result.ruleName), false, 'rule name must not be embedded in PowerShell source');
+  assert.ok(capturedData.some(data => data.FIREWALL_RULE_NAME === run.result.ruleName));
 });
 
 test('BLOCK_REMOTE_IP: existing non-MAÎTRE rule is never touched (only the exact Docteur-owned rule name is queried/created)', async () => {
   const inc = incident();
   const { proposal, approval } = await approvedProposal(inc, 'BLOCK_REMOTE_IP', { ip: '203.0.113.30' });
-  const scripts = [];
-  const exec = async (script) => {
-    scripts.push(script);
-    return { ok: true, stdout: JSON.stringify({ ok: true, exists: scripts.length > 2 }) };
+  const calls = [];
+  const exec = async (script, { data = {} } = {}) => {
+    calls.push({ script, data });
+    return { ok: true, stdout: JSON.stringify({ ok: true, exists: calls.length > 2 }) };
   };
   await executeApprovedAction(proposal.id, { approvalId: approval.id, exec, checkPlatform: alwaysWindows });
-  for (const script of scripts) {
-    assert.match(script, /Docteur-MAITRE-/, 'every firewall script must scope to the exact MAÎTRE rule name');
+  for (const { script, data } of calls) {
+    assert.match(data.FIREWALL_RULE_NAME, /^Docteur-MAITRE-/, 'every firewall call must scope to the exact MAÎTRE rule name as data');
+    assert.equal(script.includes(data.FIREWALL_RULE_NAME), false, 'firewall data must stay out of PowerShell source');
     assert.doesNotMatch(script, /Get-NetFirewallRule\s+-All|Remove-NetFirewallRule\s+-All/i);
   }
 });

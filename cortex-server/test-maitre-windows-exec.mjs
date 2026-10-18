@@ -7,28 +7,27 @@
 import './test-setup.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isWindows, toPsSingleQuotedLiteral, runReadOnlyPowerShell } from './src/lib/maitre-windows-exec.js';
+import {
+  isWindows, runReadOnlyPowerShell, buildPowerShellChildEnv, POWERSHELL_DATA_ENV,
+} from './src/lib/maitre-windows-exec.js';
 
 test('isWindows: matches process.platform === "win32"', () => {
   assert.equal(isWindows(), process.platform === 'win32');
 });
 
-test('toPsSingleQuotedLiteral: escapes embedded single quotes (PowerShell doubling convention)', () => {
-  assert.equal(toPsSingleQuotedLiteral("O'Brien"), "'O''Brien'");
+test('PowerShell data transport: closed slots build a child-only environment without mutating the parent', () => {
+  const parent = { PATH: 'fixture', docteur_ps_data_file_path: 'stale-parent-value' };
+  const child = buildPowerShellChildEnv({ FILE_PATH: "C:\\O’Brien.exe" }, parent);
+  assert.deepEqual(parent, { PATH: 'fixture', docteur_ps_data_file_path: 'stale-parent-value' });
+  assert.equal(child.PATH, 'fixture');
+  assert.equal(child.docteur_ps_data_file_path, undefined, 'case-insensitive reserved parent value must be scrubbed');
+  assert.equal(child[POWERSHELL_DATA_ENV.FILE_PATH], "C:\\O’Brien.exe");
 });
 
-test('toPsSingleQuotedLiteral: a value with no special characters passes through unchanged inside quotes', () => {
-  assert.equal(toPsSingleQuotedLiteral('System'), "'System'");
-});
-
-test('toPsSingleQuotedLiteral: prompt-injection-shaped input becomes an inert quoted literal, not a command break-out', () => {
-  const malicious = "'; Remove-Item C:\\ -Recurse -Force; '";
-  const literal = toPsSingleQuotedLiteral(malicious);
-  // Every single quote must be doubled — there is no way for this
-  // value to terminate the surrounding quoted string early.
-  const quoteCount = (literal.match(/'/g) || []).length;
-  const originalQuoteCount = (malicious.match(/'/g) || []).length;
-  assert.equal(quoteCount, originalQuoteCount * 2 + 2, 'every embedded quote must be doubled plus the two wrapping quotes');
+test('PowerShell data transport: arbitrary environment names, non-strings and NUL are refused', () => {
+  assert.throws(() => buildPowerShellChildEnv({ PATH: 'attacker-controlled' }), /unsupported data slot/);
+  assert.throws(() => buildPowerShellChildEnv({ FILE_PATH: 123 }), /must be a string/);
+  assert.throws(() => buildPowerShellChildEnv({ FILE_PATH: 'a\0b' }), /contains NUL/);
 });
 
 test('runReadOnlyPowerShell: throws synchronously if called when isWindows() would be false — caller must gate first', async () => {

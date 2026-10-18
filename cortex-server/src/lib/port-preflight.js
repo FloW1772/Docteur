@@ -21,7 +21,7 @@
 import { execFile } from 'node:child_process';
 import { isIP } from 'node:net';
 import path from 'node:path';
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral, MAX_OUTPUT_BYTES } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell, MAX_OUTPUT_BYTES } from './maitre-windows-exec.js';
 
 const SYSTEM_ROOT = process.env.SystemRoot || 'C:\\Windows';
 const NETSTAT_EXE = path.join(SYSTEM_ROOT, 'System32', 'NETSTAT.EXE');
@@ -43,7 +43,7 @@ const PROBE_TIMEOUT_MS = 5_000;
 // listener means any error at all is a probe failure, and an empty listener
 // table (impossible on a live Windows host: RPC/SMB always listen) is also
 // treated as a failed probe rather than as "port free".
-const OWNER_SCRIPT = (host, port) => `
+const OWNER_SCRIPT = (port) => `
 $ErrorActionPreference = 'Stop'
 try {
   $all = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
@@ -51,7 +51,8 @@ try {
   Write-Output (@{probeFailed=$true; category=[string]$_.CategoryInfo.Category} | ConvertTo-Json -Compress); exit 0
 }
 if ($all.Count -eq 0) { Write-Output (@{probeFailed=$true; category='EmptyListenerTable'} | ConvertTo-Json -Compress); exit 0 }
-$conn = $all | Where-Object { $_.LocalAddress -eq ${toPsSingleQuotedLiteral(host)} -and $_.LocalPort -eq ${Number(port)} } | Select-Object -First 1
+$listenerHost = [string]$env:DOCTEUR_PS_DATA_LISTENER_HOST
+$conn = $all | Where-Object { $_.LocalAddress -eq $listenerHost -and $_.LocalPort -eq ${Number(port)} } | Select-Object -First 1
 if (-not $conn) { Write-Output (@{listening=$false} | ConvertTo-Json -Compress); exit 0 }
 $proc = $null
 try { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$conn.OwningProcess)" -ErrorAction Stop } catch { $proc = $null }
@@ -172,7 +173,7 @@ function parseJsonLine(stdout) {
 async function probeWithPowerShell(host, port, runPowerShell) {
   let result;
   try {
-    result = await runPowerShell(OWNER_SCRIPT(host, port), { timeoutMs: PROBE_TIMEOUT_MS });
+    result = await runPowerShell(OWNER_SCRIPT(port), { timeoutMs: PROBE_TIMEOUT_MS, data: { LISTENER_HOST: String(host) } });
   } catch {
     return { conclusive: false, reason: 'powershell_unavailable' };
   }

@@ -157,7 +157,8 @@ test('static safety: PowerShell cmdlet invocations are exactly the certified MA-
   ]);
   const ALLOWED_CMDLETS = new Set([
     'Start-MpScan', 'Stop-Process', 'New-NetFirewallRule', 'Get-NetFirewallRule',
-    'Remove-ItemProperty', 'Disable-ScheduledTask', 'Set-Service', 'ConvertTo-Json', 'Out-Null',
+    'Remove-ItemProperty', 'Get-ScheduledTask', 'Disable-ScheduledTask', 'Get-Service', 'Set-Service', 'Where-Object',
+    'ConvertTo-Json', 'ConvertFrom-Json', 'Out-Null',
     // MA-10 additions — all read-only queries or scoped rule create/remove,
     // matched against the strict allowlist/naming checks above.
     'Get-NetAdapter', 'Get-NetFirewallProfile', 'Remove-NetFirewallRule', 'Select-Object',

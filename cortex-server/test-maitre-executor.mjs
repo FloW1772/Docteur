@@ -126,15 +126,13 @@ test('COLLECT_EVIDENCE FILE_METADATA: fails cleanly for a missing file', async (
 });
 
 test('COLLECT_EVIDENCE PROCESS_SNAPSHOT: uses fixture exec, never touches real processes in this test', async () => {
-  // inspectProcess (MA-4) has its own exec injection, but
-  // maitre-executor.js does not currently thread exec through to it —
-  // this test documents that PROCESS_SNAPSHOT in the automated suite
-  // runs against the REAL local process list (read-only, bounded,
-  // matching MA-4's own test precedent of exercising the real OS for
-  // process inspection). It must never throw regardless of platform.
   const inc = incident();
   const proposal = await readyEvidenceProposal(inc, { evidenceType: 'PROCESS_SNAPSHOT', pid: process.pid });
-  const run = await executeApprovedAction(proposal.id);
+  const exec = fakeExecOk({
+    ok: true,
+    process: { ProcessId: process.pid, ParentProcessId: 1, Name: 'node.exe', ExecutablePath: 'C:\\fixture\\node.exe', CreationDate: '/Date(1789891757000)/' },
+  });
+  const run = await executeApprovedAction(proposal.id, { exec, checkPlatform: alwaysWindows });
   assert.equal(run.status, 'SUCCEEDED');
   assert.equal(run.result.metadata.pid, process.pid);
 });

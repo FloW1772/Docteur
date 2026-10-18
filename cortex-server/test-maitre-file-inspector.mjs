@@ -170,6 +170,21 @@ test('getFileSignature: unsigned file (Status=2) is an observation, never "unsaf
   assert.doesNotMatch(JSON.stringify(result), /unsafe|malware|dangerous/i);
 });
 
+test('getFileSignature: hostile path is absent from source and transported only as FILE_PATH data', async () => {
+  const filePath = "C:\\space unicode é\\a'‘’‚‛;&|`$(),.exe";
+  let captured;
+  const exec = async (script, options) => {
+    captured = { script, options };
+    return { ok: true, stdout: JSON.stringify({ ok: true, status: 2, subject: null, thumbprint: null, timestamp: null }) };
+  };
+  const result = await getFileSignature(filePath, { exec, checkPlatform: alwaysWindows });
+  assert.equal(result.available, true);
+  assert.doesNotMatch(captured.script, /a['‘’‚‛];&\|/);
+  assert.doesNotMatch(captured.script, /C:\\space unicode/);
+  assert.match(captured.script, /Get-AuthenticodeSignature -LiteralPath \$filePath/);
+  assert.deepEqual(captured.options.data, { FILE_PATH: filePath });
+});
+
 test('getFileSignature: unsupported platform never calls exec', async () => {
   let called = false;
   const exec = async () => { called = true; return { ok: true, stdout: '{}' }; };

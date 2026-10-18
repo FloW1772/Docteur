@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 
 const MAX_HASH_FILE_BYTES = 500 * 1024 * 1024; // 500 MB — refuse to stream-hash beyond this in MA-4 (bounded work, not a hard system limit)
 const HASH_TIMEOUT_MS = 30_000;
@@ -145,19 +145,11 @@ export async function getFileMetadata(filePath) {
  * SIGNED = SAFE or UNSIGNED = MALWARE — returns only the observation.
  * Windows-only: NOT_SUPPORTED elsewhere.
  */
-export async function getFileSignature(filePath, { exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
-  if (!isLocalPathAllowed(filePath)) {
-    return { available: false, reason: 'path_not_allowed' };
-  }
-  if (!checkPlatform()) {
-    return { available: false, reason: 'NOT_SUPPORTED' };
-  }
-
-  const pathLiteral = toPsSingleQuotedLiteral(filePath);
-  const script = `
+const FILE_SIGNATURE_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  $sig = Get-AuthenticodeSignature -FilePath ${pathLiteral}
+  $filePath = [string]$env:DOCTEUR_PS_DATA_FILE_PATH
+  $sig = Get-AuthenticodeSignature -LiteralPath $filePath
   $out = @{
     ok = $true
     status = [int]$sig.Status
@@ -171,7 +163,15 @@ try {
 }
 `;
 
-  const result = await exec(script);
+export async function getFileSignature(filePath, { exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
+  if (!isLocalPathAllowed(filePath)) {
+    return { available: false, reason: 'path_not_allowed' };
+  }
+  if (!checkPlatform()) {
+    return { available: false, reason: 'NOT_SUPPORTED' };
+  }
+
+  const result = await exec(FILE_SIGNATURE_SCRIPT, { data: { FILE_PATH: filePath } });
   if (!result.ok) {
     return { available: false, reason: result.reason };
   }

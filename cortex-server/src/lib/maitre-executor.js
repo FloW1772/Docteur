@@ -39,7 +39,7 @@ import {
 } from './sqlite.js';
 import { getActionProposal, validateApproval, consumeApproval } from './maitre-approval.js';
 import { getIncident, createEvidence } from './maitre-store.js';
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 import { inspectProcess, classifyProcessCriticality } from './maitre-process-inspector.js';
 import { inspectFile, isLocalPathAllowed } from './maitre-file-inspector.js';
 import { getPersistenceSnapshot } from './maitre-persistence-inspector.js';
@@ -90,25 +90,25 @@ const EVIDENCE_METADATA_MAX_ITEMS = 50;
  * are inherited from each inspector's own limits (mission §6) — this
  * function adds no separate unbounded path.
  */
-async function collectEvidenceExecutor(action) {
+async function collectEvidenceExecutor(action, { exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
   const { evidenceType } = action.target;
 
   if (evidenceType === 'PROCESS_SNAPSHOT') {
-    const result = await inspectProcess(action.target.pid);
+    const result = await inspectProcess(action.target.pid, { exec, checkPlatform });
     if (!result.available) fail('collect_evidence_process_unavailable', { reason: result.reason });
     return { type: 'PROCESS_SNAPSHOT', metadata: result.process };
   }
 
   if (evidenceType === 'FILE_METADATA' || evidenceType === 'FILE_HASH') {
     if (!isLocalPathAllowed(action.target.path)) fail('collect_evidence_path_not_allowed');
-    const result = await inspectFile(action.target.path);
+    const result = await inspectFile(action.target.path, { exec, checkPlatform });
     if (!result.available) fail('collect_evidence_file_unavailable', { reason: result.reason });
     return { type: evidenceType, metadata: result, sha256: result.sha256 };
   }
 
   if (evidenceType === 'DEFENDER_RESULT') {
-    const status = await getDefenderStatus();
-    const detections = await getDefenderDetections();
+    const status = await getDefenderStatus({ exec, checkPlatform });
+    const detections = await getDefenderDetections({ exec, checkPlatform });
     return {
       type: 'DEFENDER_RESULT',
       metadata: { status, detections: (detections.detections ?? []).slice(0, EVIDENCE_METADATA_MAX_ITEMS) },
@@ -116,7 +116,7 @@ async function collectEvidenceExecutor(action) {
   }
 
   if (evidenceType === 'PERSISTENCE_METADATA') {
-    const snapshot = await getPersistenceSnapshot();
+    const snapshot = await getPersistenceSnapshot({ exec, checkPlatform });
     return { type: 'PERSISTENCE_METADATA', metadata: { items: snapshot.items.slice(0, EVIDENCE_METADATA_MAX_ITEMS), sourceAvailability: snapshot.sourceAvailability } };
   }
 
@@ -141,18 +141,16 @@ async function collectEvidenceExecutor(action) {
 // not an oversight.
 const SCAN_TIMEOUT_MS = 15_000;
 
-function buildScanScript(path) {
-  const pathLiteral = toPsSingleQuotedLiteral(path);
-  return `
+const SCAN_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  Start-MpScan -ScanType CustomScan -ScanPath ${pathLiteral} -ErrorAction Stop
+  $scanPath = [string]$env:DOCTEUR_PS_DATA_SCAN_PATH
+  Start-MpScan -ScanType CustomScan -ScanPath $scanPath -ErrorAction Stop
   @{ ok = $true; status = 'COMPLETED' } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
-}
 
 function parseJsonEnvelope(stdout) {
   try {
@@ -180,10 +178,10 @@ async function defenderScanExecutor(action, { exec = runReadOnlyPowerShell, chec
   // TOCTOU re-check (mission §16): the file must still exist and pass
   // the same local-path policy immediately before scanning it.
   if (!isLocalPathAllowed(path)) fail('scan_target_path_not_allowed');
-  const metadata = await inspectFile(path);
+  const metadata = await inspectFile(path, { exec, checkPlatform });
   if (!metadata.available) fail('scan_target_changed', { reason: metadata.reason });
 
-  const result = await exec(buildScanScript(path), { timeoutMs: SCAN_TIMEOUT_MS });
+  const result = await exec(SCAN_SCRIPT, { timeoutMs: SCAN_TIMEOUT_MS, data: { SCAN_PATH: path } });
   if (!result.ok) {
     if (result.reason === 'timeout') return { scanStatus: 'UNKNOWN', reason: 'timeout' };
     return { scanStatus: 'FAILED', reason: result.reason };
@@ -315,15 +313,15 @@ function firewallRuleName(actionId) {
   return `Docteur-MAITRE-${actionId}`;
 }
 
-function buildBlockIpScript({ ruleName, ip, direction, protocol }) {
-  const ruleNameLiteral = toPsSingleQuotedLiteral(ruleName);
-  const ipLiteral = toPsSingleQuotedLiteral(ip);
+function buildBlockIpScript({ direction, protocol }) {
   const psDirection = direction === 'inbound' ? 'Inbound' : direction === 'both' ? 'Inbound' : 'Outbound'; // 'both' handled by two calls below when needed
   const psProtocol = protocol === 'tcp' ? 'TCP' : protocol === 'udp' ? 'UDP' : 'Any';
   return `
 $ErrorActionPreference = 'Stop'
 try {
-  New-NetFirewallRule -DisplayName ${ruleNameLiteral} -Direction ${psDirection} -RemoteAddress ${ipLiteral} -Action Block -Protocol ${psProtocol} -ErrorAction Stop | Out-Null
+  $ruleName = [string]$env:DOCTEUR_PS_DATA_FIREWALL_RULE_NAME
+  $remoteAddress = [string]$env:DOCTEUR_PS_DATA_REMOTE_ADDRESS
+  New-NetFirewallRule -DisplayName $ruleName -Direction ${psDirection} -RemoteAddress $remoteAddress -Action Block -Protocol ${psProtocol} -ErrorAction Stop | Out-Null
   @{ ok = $true } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
@@ -331,18 +329,16 @@ try {
 `;
 }
 
-function buildCheckRuleExistsScript(ruleName) {
-  const ruleNameLiteral = toPsSingleQuotedLiteral(ruleName);
-  return `
+const CHECK_RULE_EXISTS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  $rule = Get-NetFirewallRule -DisplayName ${ruleNameLiteral} -ErrorAction Stop
+  $ruleName = [string]$env:DOCTEUR_PS_DATA_FIREWALL_RULE_NAME
+  $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction Stop
   @{ ok = $true; exists = ($null -ne $rule) } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $true; exists = $false } | ConvertTo-Json -Compress
 }
 `;
-}
 
 async function blockRemoteIpExecutor(action, { exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
   if (!checkPlatform()) return { firewallStatus: 'UNKNOWN', reason: 'NOT_SUPPORTED' };
@@ -354,7 +350,8 @@ async function blockRemoteIpExecutor(action, { exec = runReadOnlyPowerShell, che
   // Idempotency at the firewall level: if a rule with this exact
   // Docteur-owned name already exists (e.g. a retried execution after a
   // partial failure), do not create a duplicate.
-  const existsCheck = await exec(buildCheckRuleExistsScript(ruleName), { timeoutMs: FIREWALL_TIMEOUT_MS });
+  const ruleData = { FIREWALL_RULE_NAME: ruleName };
+  const existsCheck = await exec(CHECK_RULE_EXISTS_SCRIPT, { timeoutMs: FIREWALL_TIMEOUT_MS, data: ruleData });
   if (existsCheck.ok) {
     const existsEnvelope = parseJsonEnvelope(existsCheck.stdout);
     if (existsEnvelope?.ok && existsEnvelope.exists) {
@@ -362,7 +359,10 @@ async function blockRemoteIpExecutor(action, { exec = runReadOnlyPowerShell, che
     }
   }
 
-  const result = await exec(buildBlockIpScript({ ruleName, ip, direction, protocol }), { timeoutMs: FIREWALL_TIMEOUT_MS });
+  const result = await exec(buildBlockIpScript({ direction, protocol }), {
+    timeoutMs: FIREWALL_TIMEOUT_MS,
+    data: { ...ruleData, REMOTE_ADDRESS: ip },
+  });
   if (!result.ok) {
     if (result.reason === 'timeout') return { firewallStatus: 'UNKNOWN', reason: 'timeout' };
     return { firewallStatus: 'FAILED', reason: result.reason };
@@ -380,7 +380,7 @@ async function blockRemoteIpExecutor(action, { exec = runReadOnlyPowerShell, che
 
   // Verification (mission §24): confirm the exact rule now exists,
   // never generate outbound network traffic to "test" the block.
-  const verify = await exec(buildCheckRuleExistsScript(ruleName), { timeoutMs: FIREWALL_TIMEOUT_MS });
+  const verify = await exec(CHECK_RULE_EXISTS_SCRIPT, { timeoutMs: FIREWALL_TIMEOUT_MS, data: ruleData });
   const verifyEnvelope = verify.ok ? parseJsonEnvelope(verify.stdout) : null;
   if (!verifyEnvelope?.exists) {
     return { firewallStatus: 'UNKNOWN', reason: 'verification_inconclusive' };
@@ -402,47 +402,44 @@ async function blockRemoteIpExecutor(action, { exec = runReadOnlyPowerShell, che
 const PERSISTENCE_TIMEOUT_MS = 8_000;
 const DISABLED_PERSISTENCE_DIR_NAME = 'docteur-maitre-disabled-persistence';
 
-function buildDisableRegistryScript(hive, regPath, valueName) {
-  const psPath = `${hive}:\\${regPath}`;
-  const psPathLiteral = toPsSingleQuotedLiteral(psPath);
-  const valueNameLiteral = toPsSingleQuotedLiteral(valueName);
-  return `
+const DISABLE_REGISTRY_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  Remove-ItemProperty -Path ${psPathLiteral} -Name ${valueNameLiteral} -ErrorAction Stop
+  $registryPath = [string]$env:DOCTEUR_PS_DATA_REGISTRY_PATH
+  $valueName = [string]$env:DOCTEUR_PS_DATA_REGISTRY_VALUE_NAME
+  Remove-ItemProperty -LiteralPath $registryPath -Name $valueName -ErrorAction Stop
   @{ ok = $true } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
-}
 
-function buildDisableScheduledTaskScript(taskPath, taskName) {
-  const fullNameLiteral = toPsSingleQuotedLiteral(taskName);
-  const taskPathLiteral = toPsSingleQuotedLiteral(taskPath || '\\');
-  return `
+const DISABLE_SCHEDULED_TASK_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  Disable-ScheduledTask -TaskName ${fullNameLiteral} -TaskPath ${taskPathLiteral} -ErrorAction Stop | Out-Null
+  $taskName = [string]$env:DOCTEUR_PS_DATA_TASK_NAME
+  $taskPath = [string]$env:DOCTEUR_PS_DATA_TASK_PATH
+  $matches = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName -eq $taskName -and $_.TaskPath -eq $taskPath })
+  if ($matches.Count -ne 1) { throw 'scheduled_task_exact_match_failed' }
+  $matches[0] | Disable-ScheduledTask -ErrorAction Stop | Out-Null
   @{ ok = $true } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
-}
 
-function buildDisableServiceScript(serviceName) {
-  const nameLiteral = toPsSingleQuotedLiteral(serviceName);
-  return `
+const DISABLE_SERVICE_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {
-  Set-Service -Name ${nameLiteral} -StartupType Disabled -ErrorAction Stop
+  $serviceName = [string]$env:DOCTEUR_PS_DATA_SERVICE_NAME
+  $matches = @(Get-Service -ErrorAction Stop | Where-Object { $_.Name -eq $serviceName })
+  if ($matches.Count -ne 1) { throw 'service_exact_match_failed' }
+  Set-Service -InputObject $matches[0] -StartupType Disabled -ErrorAction Stop
   @{ ok = $true } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; errorId = $_.FullyQualifiedErrorId; message = $_.Exception.Message } | ConvertTo-Json -Compress
 }
 `;
-}
 
 function isFirewallOrRegistryAccessDenied(envelope) {
   const detail = envelope?.message ?? '';
@@ -454,7 +451,7 @@ async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPower
 
   const { persistenceItemId, persistenceType } = action.target;
 
-  const snapshot = await getPersistenceSnapshot();
+  const snapshot = await getPersistenceSnapshot({ exec, checkPlatform });
   const item = snapshot.items.find(i => i.id === persistenceItemId);
   if (!item) fail('persistence_target_changed', { reason: 'item_not_found' });
   if (item.type !== persistenceType) fail('persistence_target_changed', { reason: 'type_mismatch' });
@@ -470,11 +467,20 @@ async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPower
   if (item.type === 'REGISTRY_RUN' || item.type === 'REGISTRY_RUNONCE') {
     const [hive, ...pathParts] = item.scope.split('\\');
     const regPath = pathParts.join('\\');
-    scriptResult = await exec(buildDisableRegistryScript(hive, regPath, item.name), { timeoutMs: PERSISTENCE_TIMEOUT_MS });
+    scriptResult = await exec(DISABLE_REGISTRY_SCRIPT, {
+      timeoutMs: PERSISTENCE_TIMEOUT_MS,
+      data: { REGISTRY_PATH: `${hive}:\\${regPath}`, REGISTRY_VALUE_NAME: item.name },
+    });
   } else if (item.type === 'SCHEDULED_TASK') {
-    scriptResult = await exec(buildDisableScheduledTaskScript(item.scope, item.name), { timeoutMs: PERSISTENCE_TIMEOUT_MS });
+    scriptResult = await exec(DISABLE_SCHEDULED_TASK_SCRIPT, {
+      timeoutMs: PERSISTENCE_TIMEOUT_MS,
+      data: { TASK_PATH: item.scope || '\\', TASK_NAME: item.name },
+    });
   } else if (item.type === 'AUTO_START_SERVICE') {
-    scriptResult = await exec(buildDisableServiceScript(item.name), { timeoutMs: PERSISTENCE_TIMEOUT_MS });
+    scriptResult = await exec(DISABLE_SERVICE_SCRIPT, {
+      timeoutMs: PERSISTENCE_TIMEOUT_MS,
+      data: { SERVICE_NAME: item.name },
+    });
   } else if (item.type === 'STARTUP_FILE') {
     return disableStartupFileEntry(item, rollbackMetadata);
   } else {
@@ -495,7 +501,7 @@ async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPower
 
   // Verification (mission §25): re-read ONLY the targeted item, never a
   // broader scan.
-  const verifySnapshot = await getPersistenceSnapshot();
+  const verifySnapshot = await getPersistenceSnapshot({ exec, checkPlatform });
   const stillPresent = verifySnapshot.items.some(i => i.id === persistenceItemId);
   if (stillPresent) return { persistenceStatus: 'UNKNOWN', reason: 'verification_inconclusive', rollbackMetadata };
 

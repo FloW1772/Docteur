@@ -14,7 +14,7 @@
  * (e.g. hashFile in maitre-file-inspector.js) it is passed as a
  * separate, escaped literal, never string-glued into a script.
  */
-import { isWindows, runReadOnlyPowerShell, toPsSingleQuotedLiteral } from './maitre-windows-exec.js';
+import { isWindows, runReadOnlyPowerShell } from './maitre-windows-exec.js';
 import { getLiveMonitorConnections } from './sqlite.js';
 import { redactMaitreEvidenceMetadata } from './maitre-evidence.js';
 
@@ -71,8 +71,7 @@ export function classifyProcessCriticality({ pid, name }) {
 }
 
 // Fixed, Docteur-authored scripts — no interpolation except a validated
-// PID (integer, coerced with Number() + Number.isInteger() before ever
-// reaching toPsSingleQuotedLiteral/embedding).
+// PID (integer, coerced with Number() + Number.isInteger() before embedding).
 const LIST_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 try {

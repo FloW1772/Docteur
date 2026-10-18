@@ -64,10 +64,9 @@ async function approvedRestoreProposal(inc, relatedActionId) {
 
 // A mock exec that services the isolation preflight (adapters/profiles
 // query), the 4 rule-creation calls, removal calls, and the final
-// verification call. Rule names are extracted from each script's own
-// -DisplayName so the verify step automatically reflects reality (mirrors
-// buildCreateBlockRuleScript/buildRemoveRuleScript's real -DisplayName
-// parameter, never guessed/hardcoded). ruleStepResults is 0-indexed
+// verification call. Rule names are read from the separate structured
+// data channel so the verify step automatically reflects reality.
+// ruleStepResults is 0-indexed
 // among the New-NetFirewallRule calls only; any call beyond its length
 // defaults to success. removedRuleNames (if passed) collects every
 // Remove-NetFirewallRule -DisplayName seen, for assertions. createdOut
@@ -77,14 +76,14 @@ async function approvedRestoreProposal(inc, relatedActionId) {
 function mockIsolationExec({ preflightOk = true, ruleStepResults = [], removedRuleNames = null, createdOut = null } = {}) {
   let ruleCallIndex = 0;
   const created = createdOut ?? [];
-  return async (script) => {
+  return async (script, { data = {} } = {}) => {
     if (script.includes('Get-NetAdapter')) {
       if (!preflightOk) return { ok: false, reason: 'exec_failed' };
       return { ok: true, stdout: JSON.stringify({ ok: true, adapters: [{ Name: 'Wi-Fi', Status: 'Up' }], firewallProfiles: [{ Name: 'Public', Enabled: 1 }] }) };
     }
     if (script.includes('New-NetFirewallRule')) {
-      const m = script.match(/-DisplayName\s+'([^']+)'/);
-      const ruleName = m ? m[1] : null;
+      const ruleName = data.FIREWALL_RULE_NAME ?? null;
+      assert.equal(script.includes(ruleName), false, 'rule name must stay out of PowerShell source');
       const outcome = ruleCallIndex < ruleStepResults.length ? ruleStepResults[ruleCallIndex] : true;
       ruleCallIndex += 1;
       if (outcome === true) {
@@ -96,8 +95,9 @@ function mockIsolationExec({ preflightOk = true, ruleStepResults = [], removedRu
       return { ok: true, stdout: JSON.stringify({ ok: false, errorId: 'SomeOtherError', message: 'failed' }) };
     }
     if (script.includes('Remove-NetFirewallRule')) {
-      const m = script.match(/-DisplayName\s+'([^']+)'/);
-      if (m && removedRuleNames) removedRuleNames.push(m[1]);
+      const ruleName = data.FIREWALL_RULE_NAME ?? null;
+      assert.equal(script.includes(ruleName), false, 'rule name must stay out of PowerShell source');
+      if (ruleName && removedRuleNames) removedRuleNames.push(ruleName);
       return { ok: true, stdout: JSON.stringify({ ok: true, existed: true }) };
     }
     if (script.includes('$found = @()')) {

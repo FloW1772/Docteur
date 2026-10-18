@@ -43,7 +43,7 @@ const NETSTAT_FAILED = async () => ({ ok: false, reason: 'exec_failed', detail: 
 function psRouter({ owner, identity }) {
   const calls = [];
   const fn = async (script, opts) => {
-    calls.push(script);
+    calls.push({ script, opts });
     if (script.includes('Get-NetTCPConnection')) return owner(script, opts);
     return identity ? identity(script, opts) : { ok: false, reason: 'exec_failed', detail: 'no identity fake' };
   };
@@ -202,12 +202,15 @@ test('invalid port is rejected before any probe runs (never free)', async () => 
   assert.equal(isValidPort(31742), true);
 });
 
-test('host is embedded only as a PowerShell single-quoted literal', async () => {
+test('host is transported only as PowerShell data, never embedded in source', async () => {
   const run = psRouter({ owner: psJson({ listening: false }) });
-  await checkPortOwnership("127.0.0.1'; Remove-Item C:\\x; '", SCRATCH_PORT, { ...W, runPowerShell: run, runNetstat: NETSTAT_FAILED });
+  const hostileHost = "127.0.0.1'; Remove-Item C:\\x; '";
+  await checkPortOwnership(hostileHost, SCRATCH_PORT, { ...W, runPowerShell: run, runNetstat: NETSTAT_FAILED });
   assert.equal(run.calls.length, 1);
-  assert.ok(run.calls[0].includes("'127.0.0.1''; Remove-Item C:\\x; '''"), 'quote must be doubled inside a single literal');
-  assert.match(run.calls[0], /\$_\.LocalPort -eq 31742 \}/);
+  assert.doesNotMatch(run.calls[0].script, /Remove-Item|127\.0\.0\.1'/, 'untrusted host must not become PowerShell source');
+  assert.match(run.calls[0].script, /\$env:DOCTEUR_PS_DATA_LISTENER_HOST/);
+  assert.match(run.calls[0].script, /\$_\.LocalPort -eq 31742 \}/);
+  assert.deepEqual(run.calls[0].opts?.data, { LISTENER_HOST: hostileHost });
 });
 
 test('static safety: netstat runs via execFile with constant argv and no shell', () => {
@@ -247,7 +250,11 @@ test('REAL: Get-NetTCPConnection Access Denied while port is held → owned_by_u
     const r = await checkPortOwnership('127.0.0.1', SCRATCH_PORT, { runPowerShell: deniedPowerShell(DENY_NETTCP) });
     assert.equal(r.state, 'owned_by_unknown');
     assert.equal(r.pid, process.pid);
-    assert.match(String(r.cmdLine), /test-port-preflight-probes\.mjs/);
+    // Restricted Windows profiles may allow netstat to expose the PID while
+    // denying the follow-up CIM identity read. Both outcomes are fail-closed:
+    // a readable identity must be this test; an unreadable one stays unknown.
+    if (r.cmdLine !== null) assert.match(String(r.cmdLine), /test-port-preflight-probes\.mjs/);
+    else assert.equal(r.name, null);
     assert.equal(await stillHeld(SCRATCH_PORT), true, 'occupant must never be stopped');
   } finally {
     srv.close();
