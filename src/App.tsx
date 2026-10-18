@@ -57,6 +57,7 @@ const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioM
 const AgencyStudioModal = lazy(() => import('./components/modals/AgencyStudioModal')); // [Agency V1]
 const DocumentToolboxModal = lazy(() => import('./components/modals/DocumentToolboxModal')); // [Document Toolbox PDF V1]
 const MediaStudioModal = lazy(() => import('./components/modals/MediaStudioModal')); // [Media Studio V1]
+const KnowledgeGraphModal = lazy(() => import('./components/modals/KnowledgeGraphModal')); // [Knowledge Graph V1]
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 const SalesStudioModal = lazy(() => import('./components/modals/SalesStudioModal'));
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
@@ -2378,6 +2379,7 @@ export default function App() {
   const [toolboxInitialDoc, setToolboxInitialDoc] = useState<string | null>(null); // [Browser Media Bridge V1]
   useModalOpenTracking(toolboxOpen);
   const [mediaStudioOpen, setMediaStudioOpen] = useState(false); // [Media Studio V1]
+  const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false); // [Knowledge Graph V1]
   const [mediaStudioImport, setMediaStudioImport] = useState<MediaStudioImportRequest | null>(null);
   const mediaStudioImportSeq = useRef(0);
   useModalOpenTracking(mediaStudioOpen);
@@ -2449,6 +2451,7 @@ export default function App() {
       case 'agency':          setAgencyOpen(true); break;
       case 'document-toolbox': setToolboxOpen(true); break;
       case 'media-studio':    setMediaStudioOpen(true); break;
+      case 'knowledge-graph': setKnowledgeGraphOpen(true); break; // [Knowledge Graph V1]
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sales':           setSalesStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
@@ -5494,6 +5497,7 @@ export default function App() {
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {agencyOpen && <Suspense fallback={null}><AgencyStudioModal onClose={() => setAgencyOpen(false)} onOutputsSaved={importPendingAgentOutputs} /></Suspense>}
       {mediaStudioOpen && <Suspense fallback={null}><MediaStudioModal pendingImport={mediaStudioImport} onClose={() => { setMediaStudioOpen(false); setMediaStudioImport(null); }} /></Suspense>}
+      {knowledgeGraphOpen && <Suspense fallback={null}><KnowledgeGraphModal onClose={() => setKnowledgeGraphOpen(false)} onOpenNeuron={(pageId) => setSelectedId(pageId)} onOpenUrl={(url, title) => openInDocteurReader({ url, title })} /></Suspense>}
       {toolboxOpen && <Suspense fallback={null}><DocumentToolboxModal initialDocId={toolboxInitialDoc} onClose={() => { setToolboxOpen(false); setToolboxInitialDoc(null); }} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}
       {salesStudioOpen && <Suspense fallback={null}><SalesStudioModal onClose={() => setSalesStudioOpen(false)} /></Suspense>}

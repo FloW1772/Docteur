@@ -116,6 +116,7 @@ import { extractContent } from './lib/deep-capture.js';
 import { runCanonicalArticleCapture, articleInputFromExtraction, canonicalizeUrl, findDuplicateArticle } from './lib/canonical-article.js';
 import { getAllPagesMetaFromStore } from './lib/sqlite.js';
 import { insertAgentOutput } from './lib/sqlite.js'; // [Agency V1] reuse of the agent-outputs pipeline
+import { listNotebooks as listNotebooksForKg } from './lib/sqlite.js'; // [Knowledge Graph V1] KG-7 dev sync (read)
 import { createAgencyService, createRouterComplete, createKnowledgeSearch } from './lib/agency.js';
 import { createAgencyStore } from './lib/agency-store.js';
 import { createAgencyRoute } from './routes/agency.js';
@@ -137,6 +138,11 @@ import { safeFetch, setEgressLogger, setEgressPolicyHook } from './lib/web-egres
 import { initRootPolicy, createRootPolicyMiddleware, webFetchHook, enforce as enforceRootPolicy } from './lib/root-policy/index.js';
 import { startMediaEgress } from './lib/media-egress.js';
 import { createRootPolicyRoute } from './routes/root-policy.js';
+
+// [Knowledge Graph V1] read-only API; the store is opened only through the KG-CERT boot gate
+import { openKnowledgeGraphAtBoot, startKnowledgeGraphDevSync } from './lib/kg-boot.js';
+import * as kgIntegration from './lib/kg-integration.js';
+import { createKnowledgeGraphRoute } from './routes/kg.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -286,6 +292,13 @@ configureRassilonLanServer({
 // Restores only an earlier explicit local LAN enable. Invalid/missing TLS
 // refuses this dedicated listener and never falls back to HTTP.
 await restoreRassilonLanServer();
+
+// [Knowledge Graph V1] Uncertified (KG-CERT pending): a normal boot never creates kg_* tables in the
+// user database. Only DOCTEUR_KG_DEV_DB=<separate absolute path> opens it, for development/certification.
+const { store: kgStore, decision: kgBootDecision } = await openKnowledgeGraphAtBoot({ env: process.env, userDbPath: env.SQLITE_PATH, logger });
+// KG-7: read-only views of the frozen Notebook store and the neuron store (citation reopen, dev-only sync)
+const kgReaders = kgStore ? { notebook: kgIntegration.createNotebookReader(), neuron: kgIntegration.createNeuronReader() } : null;
+startKnowledgeGraphDevSync({ store: kgStore, env: process.env, readers: kgReaders, listNotebooks: listNotebooksForKg, sync: kgIntegration, logger });
 
 const startedAt = Date.now();
 
@@ -1999,6 +2012,10 @@ app.route('/api', createModelRouterRoute({
   client: ollamaClient, getSettings: getRouterSettings, getKeys: getCloudKeys,
   getHardware: () => detectLocalHardwareProfile(), isPairConfigured: () => pairProvider.isConfigured(), logger,
 }));
+
+// [Knowledge Graph V1] read-only API (503 KG_DISABLED while the boot gate keeps the KG closed)
+app.route('/api/kg', createKnowledgeGraphRoute(kgStore, { disabledReason: kgBootDecision.reason, readers: kgReaders }));
+
 app.route('/api', createPromptGeneratorRoute({ services, ollamaClient, logger }));
 app.route('/api', createTeacherRoute({ services, ollamaClient, logger }));
 app.route('/api', createTodoRoute());

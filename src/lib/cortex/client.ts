@@ -2949,6 +2949,76 @@ export function docteurImageIdOf(url: string): string | null {
 }
 // ── [/Media Studio V1] types ──────────────────────────────────────────────────────────────────────────────────────
 
+// ── [Knowledge Graph V1] types ────────────────────────────────────────────────────────────────────────────────────
+export type KgEntityStatus = 'ACTIVE' | 'AMBIGUOUS' | 'MERGED' | 'INVALIDATED';
+export type KgClaimStatus = 'ASSERTED' | 'SUPPORTED' | 'DISPUTED' | 'SUPERSEDED' | 'INVALIDATED' | 'HYPOTHESIS';
+/** Read options shared by every KG view call (KG-5 / KG-7 visibility rules, enforced by the server: includePrivate needs an explicit scope). */
+export interface KgVisibility { includePrivate?: boolean; provider?: 'local' | 'cloud'; scope?: { notebookId: string } | { sourceIds: string[] } | { all: true } | null }
+export interface KgFilters { entityTypes?: string[]; statuses?: KgClaimStatus[]; sourceIds?: string[]; from?: string; to?: string; includeUndated?: boolean }
+export interface KgViewNode { id: string; label: string; type: string; status: KgEntityStatus; ambiguous: boolean; memberCount: number; depth: number; shownEdges: number; hiddenEdges: number; offset?: number }
+export interface KgViewEdge {
+  id: string; kind: 'claim' | 'relationship'; claimId?: string; relationshipId?: string; source: string; target: string; label: string;
+  status: KgClaimStatus | 'RELATION'; extractionMethod?: string | null; validFrom?: string | null; validTo?: string | null; observedAt?: string | null;
+  evidenceCount?: number; confidence?: number;
+  contradiction?: { status: 'OPEN_CONFLICT'; conflictIds: string[]; counterpartClaimIds: string[]; valueCounterparts?: number } | null;
+}
+export interface KgNeighborhood { center: string; nodes: KgViewNode[]; edges: KgViewEdge[]; sources?: { sourceId: string; name: string; type: string; privacy: string; edges: number }[]; limits: { depth: number; maxNodes: number; maxEdges: number; fanout: number; offset?: number }; limitsHit: string[]; visibility: { includePrivate: boolean; provider: string; scoped: boolean } }
+export interface KgClaimSummary {
+  claimId: string; subject: { entityId: string; label: string | null }; predicate: string;
+  object: { kind: 'entity'; entityId: string; label: string } | { kind: 'value'; value: { type: string; value: string | number | boolean; unit?: string } } | { kind: 'statement'; text: string };
+  status: KgClaimStatus; extractionMethod: string | null; validFrom: string | null; validTo: string | null; observedAt: string | null;
+  temporalState: 'PAST' | 'CURRENT' | 'FUTURE'; contradiction: { status: 'OPEN_CONFLICT'; counterpartClaimIds: string[] } | null; supersededBy: string | null;
+}
+export interface KgEntityView {
+  entity: { id: string; label: string; type: string; status: KgEntityStatus; description: string | null; memberIds: string[]; createdAt: string };
+  aliases: { alias: string; sources: string[] }[]; identifiers: { scheme: string; value: string; status: string }[];
+  ambiguity: { status: 'AMBIGUOUS'; candidates: { entityId: string; label: string | null; method: string }[] } | null;
+  resolutions: { resolutionId: string; sourceLabel?: string; targetLabel?: string; decision: string; method: string; actor: string; createdAt: string; decidedAt: string | null; reversedAt: string | null }[];
+  claims: { live: KgClaimSummary[]; history: KgClaimSummary[] };
+  provenance: { sourceId: string; sourceName: string; sourceType: string; privacy: string; egress: string; adapter: string | null; ref: string | null }[];
+}
+export interface KgEvidenceView {
+  evidenceId: string; stance: 'SUPPORTS' | 'CONTRADICTS'; linkStatus: string; status: string; excerptHash: string | null; preview: string; confidence: number;
+  locator: { kind: string; ref: string | null; chunkId: string | null; messageId: string | null; page: number | null; section: string | null; charStart: number | null; charEnd: number | null };
+  source: { sourceId: string; name: string; type: string; privacy: string; status: string; trustLevel: string };
+  sourceRef: { sourceRefId: string; adapter: string; inputPath: string | null; sourceRef: string; observedAt: string | null; status: string } | null;
+}
+/** KG-7: where a citation reopens (verified read-only by the server when it can). */
+export type KgOpenTarget =
+  | { kind: 'notebook_document'; notebookId: string | null; documentId: string; versionId: string | null; origin: string | null; chunkId?: string | null; page?: number | null; charStart?: number | null; charEnd?: number | null; messageId?: string | null; available?: boolean | null; superseded?: boolean }
+  | { kind: 'neuron'; pageId: string; url: string | null; available?: boolean | null }
+  | { kind: 'external'; url: string | null; available?: boolean | null };
+export interface KgCitationView {
+  evidence: { evidenceId: string; status: string; preview: string; excerptHash: string | null; locator: KgEvidenceView['locator'] };
+  source: { id: string; name: string; type: string; status: string; privacy: string };
+  open: KgOpenTarget;
+}
+export interface KgClaimView {
+  claim: { claimId: string; subject: { entityId: string; label: string | null; type: string | null }; predicate: string | null; object: KgClaimSummary['object'] & { label?: string | null };
+    status: KgClaimStatus; extractionMethod: string | null; modelConfidence: number | null; sourceConfidence: number | null; observedAt: string | null; validFrom: string | null; validTo: string | null;
+    temporalState: string; supersededBy: string | null };
+  evidence: KgEvidenceView[]; supportingEvidence: number; contradictingEvidence: number;
+  contradictions: { conflictId: string; status: string; otherClaim: KgClaimView['claim']; otherEvidence: { evidenceId: string; stance: string; sourceName: string; snippet: string; locator: KgEvidenceView['locator'] }[] }[];
+  supersedes: string[];
+}
+export interface KgRelationView {
+  relation: { id: string; type: string; confidence: number; trustLevel: string; verified: boolean; createdAt: string; source: { entityId: string; label?: string }; target: { entityId: string; label?: string } };
+  provenance: { sourceId: string; sourceName: string; sourceType: string; privacy: string; egress: string; status: string; refs: { adapter: string; ref: string; inputPath: string | null; status: string }[] } | null;
+  note: string;
+}
+export interface KgTimeline { entityId: string; items: KgClaimSummary[]; totalDated: number; truncated: boolean; undatedCount: number; buckets: { year: string; count: number; disputed: number }[] | null; range: { min: string | null; max: string | null }; now: string }
+export interface KgSearchHit { resultType: 'entity' | 'claim' | 'source'; id: string; label?: string; entityType?: string; status?: string; score: number; whyMatched: string[]; ambiguity?: { status: string } | null }
+export type KgViewError = Error & { code?: string; status?: number };
+
+/** KG read calls (POST = structured read query; nothing is ever written). Errors keep the server code (KG_DISABLED, KG_NOT_FOUND…). */
+async function kgRead<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchTimeout(`${BASE}/api/kg${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 20_000);
+  const data = await res.json().catch(() => ({})) as { error?: string; reason?: string; message?: string };
+  if (!res.ok) throw Object.assign(new Error(data.message ?? data.reason ?? data.error ?? `HTTP ${res.status}`), { code: data.error, status: res.status }) as KgViewError;
+  return data as T;
+}
+// ── [/Knowledge Graph V1] types ───────────────────────────────────────────────────────────────────────────────────
+
 export const cortexClient = {
   get isAvailable(): boolean { return _available; },
   get lastCheck(): Date | null { return _lastCheck; },
@@ -6741,4 +6811,14 @@ export const cortexClient = {
   mediaStudioAssetUrl(projectId: string, assetId: string): string { return `${BASE}/api/media-studio/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/file`; },
   mediaStudioExportUrl(jobId: string, download = false): string { return `${BASE}/api/media-studio/exports/${encodeURIComponent(jobId)}/file${download ? '?download=1' : ''}`; },
   // ── [/Media Studio V1] ────────────────────────────────────────────────────────────────────────────────────────
+
+  // ── [Knowledge Graph V1] read-only graph view ─────────────────────────────────────────────────────────────────
+  kgSearch(query: string, vis: KgVisibility = {}): Promise<{ results: KgSearchHit[]; semantic: { state: string } }> { return kgRead('/search', { query, mode: 'hybrid', ...vis }); },
+  kgNeighborhood(entityId: string, opts: KgVisibility & { depth?: number; maxNodes?: number; maxEdges?: number; fanout?: number; offset?: number; filters?: KgFilters } = {}): Promise<KgNeighborhood> { return kgRead('/view/neighborhood', { entityId, ...opts }); },
+  kgEntity(entityId: string, vis: KgVisibility = {}): Promise<KgEntityView> { return kgRead('/view/entity', { entityId, ...vis }); },
+  kgClaim(claimId: string, vis: KgVisibility = {}): Promise<KgClaimView> { return kgRead('/view/claim', { claimId, ...vis }); },
+  kgRelation(relationshipId: string, vis: KgVisibility = {}): Promise<KgRelationView> { return kgRead('/view/relation', { relationshipId, ...vis }); },
+  kgTimeline(entityId: string, opts: KgVisibility & { filters?: KgFilters } = {}): Promise<KgTimeline> { return kgRead('/view/timeline', { entityId, ...opts }); },
+  kgCitation(evidenceId: string, vis: KgVisibility = {}): Promise<KgCitationView> { return kgRead('/view/citation', { evidenceId, ...vis }); },
+  // ── [/Knowledge Graph V1] ──────────────────────────────────────────────────────────────────────────────────────
 };
