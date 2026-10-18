@@ -11,6 +11,15 @@ echo    Ne pas utiliser sur reseau public !
 echo ========================================
 echo.
 
+REM [SEC-REMED-1 / SEC-2 + SEC-3] FAIL CLOSED before anything starts: the Vite dev server would expose the project tree
+REM (user DB, backups, logs) and the Docteur API has no LAN authentication yet (future LAN-AUTH-1).
+echo LAN_API_DISABLED_PENDING_AUTHENTICATION
+echo   Le mode reseau local est desactive : l'API Docteur n'a pas encore
+echo   d'authentification reseau (chantier LAN-AUTH-1). Rien n'a ete demarre.
+echo   Utiliser le mode PC local (Docteur-Launcher.bat, option 1).
+pause
+exit /b 1
+
 REM Verification et lancement d'Ollama
 echo [1/3] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe">NUL

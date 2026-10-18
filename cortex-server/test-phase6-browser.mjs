@@ -7,6 +7,7 @@ import './test-setup.mjs';
 import { test, before, after, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { Hono } from 'hono';
 
 import { initSqlite } from './src/lib/sqlite.js';
@@ -17,10 +18,17 @@ import {
 import { createBrowserRoute } from './src/routes/browser.js';
 
 const TEST_DB = './data-test-browser/test.db';
+// [SEC-REMED-2] node.exe is now refused as a custom browser (interpreter); stand-ins are empty .exe files in the test dir,
+// and "system" reads a fake registry that points at a stand-in brave.exe.
+const CUSTOM_EXE = path.resolve('./data-test-browser/Zen Browser/zen.exe');
+const FAKE_BRAVE = path.resolve('./data-test-browser/BraveSoftware/Brave-Browser/Application/brave.exe');
+const readRegistry = (key) => (/\\https?\\UserChoiceLatest\\ProgId$/.test(key) ? 'BraveHTML'
+  : key === 'HKCR\\BraveHTML\\shell\\open\\command' ? `"${FAKE_BRAVE}" --single-argument %1` : null);
 
 before(() => {
   fs.rmSync('./data-test-browser', { recursive: true, force: true });
   initSqlite(TEST_DB);
+  for (const exe of [CUSTOM_EXE, FAKE_BRAVE]) { fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, ''); }
 });
 
 after(() => {
@@ -103,18 +111,26 @@ test('validateCustomBrowserPath: rejects a non-.exe path, a relative path, and a
 });
 
 test('validateCustomBrowserPath: accepts a real, absolute .exe path', () => {
-  // node.exe itself is a stand-in "real .exe that definitely exists" for this test.
-  const realExe = process.execPath;
-  assert.equal(validateCustomBrowserPath(realExe), realExe);
+  assert.equal(validateCustomBrowserPath(CUSTOM_EXE), CUSTOM_EXE);
+});
+
+test('validateCustomBrowserPath: [SEC-REMED-2] refuses launchers / interpreters (explorer.exe, cmd.exe, node.exe…)', () => {
+  const sys = process.env.SystemRoot || 'C:\\Windows';
+  for (const exe of [`${sys}\\explorer.exe`, `${sys}\\System32\\cmd.exe`, process.execPath].filter(p => fs.existsSync(p))) {
+    assert.throws(() => validateCustomBrowserPath(exe), /pas un navigateur/, exe);
+  }
 });
 
 // ── resolveOpenCommand — always {command, args}, never a shell string ──────
 
-test('resolveOpenCommand: "system" selection uses cmd.exe /c start — a real array of args, not a concatenated string', () => {
+// [SEC-REMED-1 / SEC-1] was `cmd.exe /c start "" <url>` — cmd.exe re-parsed & | ^ in the URL (command injection).
+// [SEC-REMED-2 / SEC-11] then `explorer.exe <url>` — explorer.exe honours `,/root,<path>` inside a URL (file launch).
+test('resolveOpenCommand: "system" selection uses the default browser\'s own .exe <url> — never cmd.exe / explorer.exe, the URL is one argv element', () => {
   setBrowserSettings({ selected: 'system', customPath: null });
-  const { command, args } = resolveOpenCommand('https://example.com');
-  assert.ok(command.toLowerCase().endsWith('cmd.exe'));
-  assert.deepEqual(args, ['/c', 'start', '', 'https://example.com']);
+  const { command, args } = resolveOpenCommand('https://example.com', { readRegistry });
+  assert.equal(command, FAKE_BRAVE);
+  assert.ok(!/(cmd|explorer|rundll32)\.exe$/i.test(command));
+  assert.deepEqual(args, ['https://example.com']);
 });
 
 test('resolveOpenCommand: a browser not detected as installed throws a clear error instead of spawning garbage', () => {
@@ -123,10 +139,9 @@ test('resolveOpenCommand: a browser not detected as installed throws a clear err
 });
 
 test('resolveOpenCommand: custom path selection uses the verified path with the URL as its own array element', () => {
-  const realExe = process.execPath;
-  setBrowserSettings({ selected: 'custom', customPath: realExe });
+  setBrowserSettings({ selected: 'custom', customPath: CUSTOM_EXE });
   const { command, args } = resolveOpenCommand('https://example.com/?a=1&b=2');
-  assert.equal(command, realExe);
+  assert.equal(command, CUSTOM_EXE);
   assert.deepEqual(args, ['https://example.com/?a=1&b=2']);
 });
 

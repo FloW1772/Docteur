@@ -13,11 +13,11 @@ echo    [1]  Mode PC (local)
 echo         Usage quotidien sur cet ordinateur
 echo         http://localhost:5173
 echo.
-echo    [2]  Mode reseau (dev)
+echo    [2]  Mode reseau (dev)  -- DESACTIVE (LAN-AUTH-1)
 echo         Acces depuis un autre poste, sans PWA
 echo         http://IP:5173
 echo.
-echo    [3]  Mode mobile (PWA + hors-ligne)
+echo    [3]  Mode mobile (PWA + hors-ligne)  -- DESACTIVE (LAN-AUTH-1)
 echo         Pour le telephone : build + HTTPS + SW
 echo         https://IP:5173
 echo.
@@ -93,6 +93,8 @@ exit /b 0
 
 REM ============================================================
 :MODE_RESEAU
+REM [SEC-REMED-1] refused before anything starts: the Docteur API has no LAN authentication yet (future LAN-AUTH-1)
+goto LAN_REFUSED
 REM  Mode dev reseau -- exactement comme start-local.bat
 REM  Ollama + cortex-server (npm run dev:local) + frontend (npm run dev:local)
 REM  + Chrome --app http://localhost:5173
@@ -144,6 +146,8 @@ exit /b 0
 
 REM ============================================================
 :MODE_MOBILE
+REM [SEC-REMED-1] refused before anything starts: its API step needs the LAN, which has no authentication yet (LAN-AUTH-1)
+goto LAN_REFUSED
 REM  Mode production mobile -- exactement comme start-mobile.bat
 REM  Ollama + gen-cert + npm run build + cortex-server (dev:local)
 REM  + frontend (preview:mobile)
@@ -239,6 +243,22 @@ if exist "C:\dev\Docteur\check-docteur.bat" (
     echo.
     pause
 )
+goto MENU
+
+REM ============================================================
+:LAN_REFUSED
+REM  [SEC-REMED-1 / SEC-2 + SEC-3] fail closed: nothing is started.
+REM ============================================================
+cls
+echo.
+echo  LAN_API_DISABLED_PENDING_AUTHENTICATION
+echo.
+echo  Les modes reseau (2) et mobile (3) sont desactives : l'API Docteur
+echo  n'a pas encore d'authentification reseau (chantier LAN-AUTH-1).
+echo  Sans elle, tout appareil du meme Wi-Fi pourrait lire vos donnees.
+echo  Rien n'a ete demarre. Utilisez le mode PC (1).
+echo.
+pause
 goto MENU
 
 REM ============================================================

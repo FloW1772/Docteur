@@ -178,7 +178,10 @@ test('V2: untrusted origins can NEVER start a process through the new modules; u
 test('BROWSER: every form the current browser launcher produces (system, detected, custom) is ALLOWED — no approval', () => {
   const URLS = ['https://example.com/', 'https://fr.wikipedia.org/wiki/Caf%C3%A9_(boisson)', 'http://localhost:5173/#/notebook'];
   const customDir = path.join(scratch, 'Zen Browser'); const customExe = touch(path.join(customDir, 'zen.exe'));
-  const idFor = (settings) => (settings.selected === 'system' ? 'browser-open-system' : settings.selected === 'custom' ? 'browser-open-custom' : `browser-open-${settings.selected}`);
+  // [SEC-REMED-2] "system" now spawns the default browser's OWN .exe, i.e. the executor of that detected browser
+  const BY_EXE = { 'brave.exe': 'brave', 'chrome.exe': 'chrome', 'msedge.exe': 'edge', 'firefox.exe': 'firefox' };
+  const idFor = (settings, form) => (settings.selected === 'system' ? `browser-open-${BY_EXE[path.basename(form.command).toLowerCase()]}`
+    : settings.selected === 'custom' ? 'browser-open-custom' : `browser-open-${settings.selected}`);
   const forms = [];   // [settings, url, the command+args the launcher really builds FOR THOSE settings]
   const capture = (url) => forms.push([browser.getBrowserSettings(), url, browser.resolveOpenCommand(browser.assertOpenableUrl(url))]);
   for (const installed of browser.detectInstalledBrowsers()) { browser.setBrowserSettings({ selected: installed.id, customPath: null }); for (const url of URLS) capture(url); }
@@ -186,11 +189,11 @@ test('BROWSER: every form the current browser launcher produces (system, detecte
   assert.ok(forms.length >= URLS.length * 2, 'at least system + custom were exercised');
   const seen = new Set();
   for (const [settings, url, form] of forms) {
-    const request = processRequest('browser', idFor(settings), form);
+    const request = processRequest('browser', idFor(settings, form), form);
     if (settings.selected === 'system') {
-      // the legacy dispatch is cmd.exe /c start "" <url>: the policy accepts it for a URL cmd.exe cannot reinterpret (all URLs above)
-      assert.equal(path.basename(form.command).toLowerCase(), 'cmd.exe');
-      assert.deepEqual(form.args.slice(0, 3), ['/c', 'start', '']);
+      // [SEC-REMED-2 / SEC-11] the system dispatch is the default browser's own .exe <url> — never cmd.exe, never explorer.exe
+      assert.ok(BY_EXE[path.basename(form.command).toLowerCase()], form.command);
+      assert.deepEqual(form.args, [url]);
     }
     assert.equal(verdict(e2, request), ALLOW, `${settings.selected} ${url} → ${form.command}`);
     assert.equal(e2.decide(request).decision, 'ALLOW', 'no approval prompt');
@@ -200,13 +203,16 @@ test('BROWSER: every form the current browser launcher produces (system, detecte
   browser.setBrowserSettings({ selected: 'system', customPath: null });
 });
 
-test('BROWSER: the safe system dispatch (explorer.exe <url>) is ALLOWED for every URL — including the ones cmd.exe would mis-parse (what RPC-2D wires)', () => {
+test('BROWSER: the direct browser dispatch (browser.exe <url>) is ALLOWED for every URL — including the ones cmd.exe and explorer.exe would mis-parse', () => {
   const sysRoot = process.env.SystemRoot || 'C:\\Windows';
-  for (const url of ['https://www.youtube.com/watch?v=abc&t=10s', 'https://example.com/?a=1&b=2', 'https://example.com/a%20b?x=%26', 'https://example.com/']) {
-    const explorer = { command: path.join(sysRoot, 'explorer.exe'), args: [new URL(url).href] };
-    assert.equal(verdict(e2, processRequest('browser', 'browser-open-system', explorer)), ALLOW, url);
+  const SEC11 = String.raw`https://127.0.0.1:9/?a,/root,C:\TEMP\marker.cmd`;
+  for (const url of ['https://www.youtube.com/watch?v=abc&t=10s', 'https://example.com/?a=1&b=2', 'https://example.com/a%20b?x=%26', 'https://example.com/', SEC11]) {
     assert.equal(verdict(e2, processRequest('browser', 'browser-open-edge', { command: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', args: [new URL(url).href] })), ALLOW, `direct browser ${url}`);
   }
+  // FINDING SEC-11 (documented, Root Policy NOT modified — ROOT_POLICY_RULE_BROAD_BUT_SAFE_IMPLEMENTATION_ENFORCES_DATA_ONLY): the candidate's
+  // shell-open-url template still ALLOWS explorer.exe + a URL holding `,/root,<path>`, which explorer.exe turns into a file launch. Docteur no longer
+  // produces that form (test-sec11-browser-open static check); RPC-2D must not wire browser-open-system as explorer.exe.
+  assert.equal(verdict(e2, processRequest('browser', 'browser-open-system', { command: path.join(sysRoot, 'explorer.exe'), args: [new URL(SEC11).href] })), ALLOW, 'candidate rule broader than the implementation');
   // FINDING (documented, not executed): today's default dispatch is cmd.exe /c start "" <url> with the URL as one unquoted argument. cmd.exe re-parses its
   // command line, so a URL containing & | < > ^ " or %…% is cut / reinterpreted. The candidate refuses exactly those URLs for cmd.exe and offers explorer.exe.
   for (const url of ['https://example.com/?a=1&b=2', 'https://example.com/?x=1|y', 'https://example.com/?x=<z>', 'https://example.com/?x=^y', 'https://example.com/%PATH%']) {

@@ -6,7 +6,8 @@ import {
   validateCustomBrowserPath, openUrlInSelectedBrowser,
 } from '../lib/browser.js';
 
-export function createBrowserRoute({ logger } = {}) {
+// `spawnImpl` is a test seam only (SEC-REMED-2 chain test); server.js never passes it.
+export function createBrowserRoute({ logger, spawnImpl } = {}) {
   const app = new Hono();
 
   app.get('/browser/installed', (c) => c.json({ browsers: detectInstalledBrowsers() }));
@@ -42,12 +43,12 @@ export function createBrowserRoute({ logger } = {}) {
   app.post('/browser/open', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     try {
-      const result = openUrlInSelectedBrowser(body?.url);
+      const result = openUrlInSelectedBrowser(body?.url, spawnImpl ? { spawnImpl } : undefined);
       logger?.info({ url: result.url }, 'BROWSER_OPEN_OK');
       return c.json(result);
     } catch (error) {
       logger?.warn({ error: error.message }, 'BROWSER_OPEN_FAILED');
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, 400);
     }
   });
 

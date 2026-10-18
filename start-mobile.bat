@@ -20,6 +20,15 @@ echo   DOCTEUR - Mode Mobile (production + PWA)
 echo ================================================
 echo.
 
+REM [SEC-REMED-1 / SEC-3] FAIL CLOSED before anything starts: step [3/4] needs the Docteur API on the LAN, which has no
+REM authentication yet (future LAN-AUTH-1). The frontend step (vite preview, dist/ only) is safe and stays as-is below.
+echo LAN_API_DISABLED_PENDING_AUTHENTICATION
+echo   Le mode mobile est desactive : l'API Docteur n'a pas encore
+echo   d'authentification reseau (chantier LAN-AUTH-1). Rien n'a ete demarre.
+echo   Utiliser le mode PC local (Docteur-Launcher.bat, option 1).
+pause
+exit /b 1
+
 REM [1/4] Verification Ollama
 echo [1/4] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe" >NUL

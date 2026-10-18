@@ -80,6 +80,7 @@ import { createNotebookMemoryRoute } from './routes/notebook-memory.js';
 import { getChatMemory } from './lib/notebook-documents-runtime.js';
 import { insertChatMemoryMessages, chatMemoryResponse } from './lib/chat-memory.js';
 import { applyLocalApiSecurity } from './lib/local-api-policy.js';
+import { resolveApiBindHost } from './lib/lan-exposure-policy.js';
 import { createNotebookLmRoute }   from './routes/notebooklm.js';
 import { createBrowserRoute }      from './routes/browser.js';
 import { createSherlockRoute }     from './routes/sherlock.js';
@@ -144,6 +145,9 @@ dotenv.config({ path: path.join(rootDir, '.env') });
 // Set LOCAL_NETWORK=true in .env to expose on the LAN (Wi-Fi / mobile access).
 // NEVER set this on a machine directly reachable from the internet.
 const LOCAL_NETWORK = process.env.LOCAL_NETWORK === 'true';
+// [SEC-REMED-1 / SEC-3] fail closed BEFORE the logger, the stores or the listener: the API has no LAN authentication,
+// so LOCAL_NETWORK=true or a non-loopback HOST refuses to start (LAN_API_DISABLED_PENDING_AUTHENTICATION, future LAN-AUTH-1).
+const API_BIND_HOST = resolveApiBindHost({ localNetwork: LOCAL_NETWORK, host: process.env.HOST });
 
 // Detect the machine's LAN IP (first non-loopback IPv4 address)
 function getLocalIp() {
@@ -179,7 +183,7 @@ if (USE_HTTPS) {
 
 const env = {
   PORT: Number(process.env.PORT ?? 3001),
-  HOST: LOCAL_NETWORK ? '0.0.0.0' : (process.env.HOST ?? '127.0.0.1'),
+  HOST: API_BIND_HOST, // [SEC-REMED-1] loopback only (was '0.0.0.0' under LOCAL_NETWORK)
   OLLAMA_URL: process.env.OLLAMA_URL ?? 'http://localhost:11434',
   EMBEDDING_MODEL: process.env.EMBEDDING_MODEL ?? 'nomic-embed-text',
   ANSWER_MODEL: process.env.ANSWER_MODEL ?? 'llama3.2:3b',

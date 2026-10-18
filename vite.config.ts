@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, type ViteDevServer, type PreviewServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -12,9 +12,12 @@ const localNetwork = process.env.LOCAL_NETWORK === 'true';
 // origin (http://localhost:5173) matches and existing neurons are visible.
 // Run `node scripts/gen-cert.mjs` to regenerate if the cert is missing.
 const certsDir = resolve('./certs');
-const httpsOptions = existsSync(`${certsDir}/key.pem`)
+const httpsOptions = localNetwork && existsSync(`${certsDir}/key.pem`) && existsSync(`${certsDir}/cert.pem`)
   ? { key: readFileSync(`${certsDir}/key.pem`), cert: readFileSync(`${certsDir}/cert.pem`) }
   : undefined;
+if (localNetwork && !httpsOptions) {
+  throw new Error('LOCAL_NETWORK=true requires TLS certificates in certs/key.pem and certs/cert.pem; refusing cleartext LAN startup');
+}
 
 // Binding a single Node socket to '127.0.0.1' only accepts IPv4 — on this
 // machine (and many Windows setups) the browser resolves "localhost" to the
@@ -27,19 +30,29 @@ const httpsOptions = existsSync(`${certsDir}/key.pem`)
 // LOCAL_NETWORK mode, which deliberately keeps its existing LAN-exposing
 // host:true behavior for mobile testing.
 function loopbackOnlyPlugin() {
+  const protect = (server: ViteDevServer | PreviewServer) => {
+    server.httpServer?.on('connection', (socket) => {
+      const addr = socket.remoteAddress;
+      const isLoopback = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+      if (!isLoopback) socket.destroy();
+    });
+  };
   return {
     name: 'loopback-only',
-    configureServer(server) {
-      server.httpServer?.on('connection', (socket) => {
-        const addr = socket.remoteAddress;
-        const isLoopback = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
-        if (!isLoopback) socket.destroy();
-      });
-    },
+    configureServer: protect,
+    configurePreviewServer: protect,
   };
 }
 
-export default defineConfig({
+// [SEC-REMED-1 / SEC-2] The Vite DEV server serves the whole project tree (user DB, backups, logs, reports, source),
+// so it must never face the LAN: LOCAL_NETWORK=true is accepted only by `vite preview`, which serves dist/ alone.
+export const LAN_DEV_SERVER_DISABLED = 'LAN_DEV_SERVER_DISABLED';
+
+export default defineConfig(({ command, isPreview }) => {
+  if (localNetwork && command === 'serve' && !isPreview) {
+    throw new Error(`${LAN_DEV_SERVER_DISABLED}: LOCAL_NETWORK=true is refused for the Vite dev server (it would expose the project tree on the LAN). Use \`npm run build\` + \`vite preview\` (dist/ only).`);
+  }
+  return {
   plugins: [
     react(),
     ...(localNetwork ? [] : [loopbackOnlyPlugin()]),
@@ -143,13 +156,16 @@ export default defineConfig({
       // without this they'd add pure watcher churn for zero benefit.
       ignored: ['**/external/**'],
     },
-    // No HTTPS here — dev stays on http://localhost:5173 to preserve IDB origin.
-  },
-
-  // Production preview: always bind to 0.0.0.0 for LAN access.
-  preview: {
-    port: 5173,
-    host: true,
+    // Normal dev keeps its HTTP origin; explicit LAN mode matches backend TLS.
     https: httpsOptions,
   },
+
+  // Preview uses the same explicit LAN opt-in and loopback guard as dev.
+  preview: {
+    port: 5173,
+    strictPort: true,
+    host: localNetwork ? true : '::',
+    https: httpsOptions,
+  },
+  };
 });
