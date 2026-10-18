@@ -386,7 +386,8 @@ test('disabled KG: every route answers 503 KG_DISABLED, nothing is opened', asyn
 test('boot gate: off by default, never on the user database or its data directory, only an explicit separate path', async () => {
   const userDbPath = path.join(TMP, 'userdata', 'cortex.sqlite');
   fs.mkdirSync(path.dirname(userDbPath), { recursive: true });
-  assert.deepEqual(resolveKnowledgeGraphBoot({ env: {}, userDbPath }), { enabled: false, reason: 'KG_UNCERTIFIED_DISABLED' });
+  // [KG-ACT-MECH-1] certified ≠ active: without the dev variable the pure gate defers to the production activation state.
+  assert.deepEqual(resolveKnowledgeGraphBoot({ env: {}, userDbPath }), { enabled: false, reason: 'KG_NOT_REQUESTED' });
   assert.equal(resolveKnowledgeGraphBoot({ env: { [KG_DEV_DB_ENV]: userDbPath }, userDbPath }).reason, 'KG_DEV_DB_IS_USER_DB');
   assert.equal(resolveKnowledgeGraphBoot({ env: { [KG_DEV_DB_ENV]: userDbPath.toUpperCase() }, userDbPath }).enabled, false);
   assert.equal(resolveKnowledgeGraphBoot({ env: { [KG_DEV_DB_ENV]: path.join(path.dirname(userDbPath), 'kg.db') }, userDbPath }).reason, 'KG_DEV_DB_IN_USER_DATA_DIR');
