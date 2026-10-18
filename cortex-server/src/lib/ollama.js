@@ -55,6 +55,54 @@ export async function chatCompletion(client, modelName, messages, extra = {}) {
   return response?.message?.content ?? response?.response ?? '';
 }
 
+// [Companion COMP-4 / D2] Additive. Same request as chatCompletion (same body, same defaults), plus:
+//   • `extra.signal` (optional AbortSignal) really aborts the HTTP request. ollama-js 0.5.x only aborts STREAMED requests
+//     (client.abort()); a non-streamed request is bound to the signal through a request-scoped client that shares the
+//     host / headers / fetch of the given one and carries the signal on its fetch. Injected test doubles may expose
+//     `withSignal(signal)`. When neither is possible, `abortPropagated` is false (the caller still reports CANCELLED).
+//   • the response metadata the runtime returns: the model that actually answered and token counts (null when absent).
+// chatCompletion itself is unchanged; callers that do not use this function see no difference.
+export function bindRequestSignal(client, signal) {
+  if (!signal) return { target: client, abortPropagated: null };
+  if (typeof client?.withSignal === 'function') return { target: client.withSignal(signal), abortPropagated: true };
+  if (client instanceof Ollama) {
+    const base = client.fetch ?? fetch;
+    const scoped = new Ollama({
+      host: client.config.host, headers: client.config.headers,
+      fetch: (url, init = {}) => base(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, signal]) : signal }),
+    });
+    return { target: scoped, abortPropagated: true };
+  }
+  return { target: client, abortPropagated: false };
+}
+
+const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+export async function chatCompletionDetailed(client, modelName, messages, extra = {}) {
+  const { target, abortPropagated } = bindRequestSignal(client, extra.signal ?? null);
+  const response = await target.chat({
+    model:      modelName,
+    messages,
+    stream:     false,
+    keep_alive: '15m',
+    options: {
+      temperature: 0.2,
+      ...(extra.options ?? {}),
+    },
+    ...(extra.format ? { format: extra.format } : {}),
+  });
+  const inputTokens = count(response?.prompt_eval_count);
+  const outputTokens = count(response?.eval_count);
+  // a non-text content (malformed payload) is an empty answer → INVALID_RESPONSE upstream, never "[object Object]"
+  const content = typeof response?.message?.content === 'string' ? response.message.content : (typeof response?.response === 'string' ? response.response : '');
+  return {
+    text: content,
+    model: typeof response?.model === 'string' && response.model ? response.model : null,
+    doneReason: typeof response?.done_reason === 'string' ? response.done_reason : null,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null },
+    abortPropagated,
+  };
+}
+
 // Unload a model from VRAM. Used before loading 14b to free VRAM on 8 GB cards.
 export async function unloadModel(client, modelName) {
   try {

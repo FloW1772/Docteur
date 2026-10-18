@@ -3,7 +3,8 @@
 // failures. Built on what exists:
 //   • router.js       — cloud provider configuration (cloudCandidates), the
 //                        provider capability table (TASK_CAPABILITIES), Strict Local;
-//   • ollama.js        — the local runtime (chatCompletion);
+//   • ollama.js        — the local runtime (chatCompletionDetailed: same request as chatCompletion, plus optional
+//                        AbortSignal and the runtime's own model / token metadata — COMP-4, additive);
 //   • local-ai-catalog — official facts for catalogued models;
 //   • local-model-fit  — deterministic hardware fit for catalogued distributions;
 //   • local-hardware-profile — detected GPU/RAM.
@@ -13,7 +14,7 @@
 // AUTO never sends to the cloud because a local call failed: the route is
 // decided up front and executed once; a failure is reported, not re-routed.
 import { TASK_CAPABILITIES, CLOUD_PROVIDER_IDS, cloudCandidates } from './router.js';
-import { chatCompletion } from './ollama.js';
+import { chatCompletionDetailed } from './ollama.js';
 import { MODEL_CATALOG, MODEL_DISTRIBUTIONS } from './local-ai-catalog.js';
 import { evaluateModelFit } from './local-model-fit.js';
 import { getTotalVramBytes } from './local-hardware-profile.js';
@@ -384,31 +385,63 @@ function withTimeout(promise, ms) {
 }
 
 /**
+ * [COMP-4 / D2, additive] Runs `start(signal)` under an external AbortSignal AND the timeout, both of which abort the
+ * signal handed to the provider. The first settlement wins: a provider result arriving after an abort / timeout is
+ * ignored (never turned into a success), and an abort arriving after the result does not turn it into a failure.
+ */
+function runCancellable(start, { signal, timeoutMs }) {
+  const ctrl = new AbortController();
+  let reason = null;
+  let timer;
+  const onAbort = () => { if (!reason) { reason = 'CANCELLED'; ctrl.abort(); } };
+  return new Promise((resolve, reject) => {
+    ctrl.signal.addEventListener('abort', () => reject(reason === 'TIMEOUT'
+      ? Object.assign(new Error(`timeout after ${timeoutMs} ms`), { name: 'TimeoutError' })
+      : new ModelRouteError('CANCELLED', 'Requête annulée.', { status: 499 })), { once: true });
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => { if (!reason) { reason = 'TIMEOUT'; ctrl.abort(); } }, timeoutMs);
+    Promise.resolve().then(() => start(ctrl.signal)).then(resolve, reject); // ignored by the promise once already settled
+  }).finally(() => { clearTimeout(timer); signal.removeEventListener('abort', onAbort); });
+}
+
+/**
  * Runs the decided route ONCE. No other provider is ever tried on failure.
  * @param {object} route  selectRoute(...) result (ok:true)
- * @param {object} req    { messages, responseFormat: 'text'|'json', runtimeOptions, timeoutMs }
+ * @param {object} req    { messages, responseFormat: 'text'|'json', runtimeOptions, timeoutMs, signal? }
+ *                        signal (COMP-4, optional): AbortSignal propagated to the local runtime request; timeout then
+ *                        aborts the request too. Without it, the previous behaviour is unchanged.
  * @param {object} deps   { client (ollama), cloudCall(providerId, messages) → {text, model} }
+ * Result (additive fields after durationMs): requestedModel, effectiveProvider, effectiveModel (null when the runtime
+ * did not say which model answered — never filled with the requested one), usage { inputTokens, outputTokens,
+ * totalTokens } (null when unknown), abortPropagated (null without a signal).
  */
-export async function executeRoute(route, { messages, responseFormat = 'text', runtimeOptions, timeoutMs = LIMITS.defaultTimeoutMs, registry = null } = {}, { client, cloudCall } = {}) {
+export async function executeRoute(route, { messages, responseFormat = 'text', runtimeOptions, timeoutMs = LIMITS.defaultTimeoutMs, registry = null, signal = null } = {}, { client, cloudCall } = {}) {
   if (!route?.ok) throw new ModelRouteError(route?.error?.code ?? 'NO_ROUTE', route?.error?.message ?? 'Aucune route.', { hint: route?.error?.hint ?? null });
   const { decision } = route;
   const timeout = Math.min(Math.max(Number(timeoutMs) || LIMITS.defaultTimeoutMs, LIMITS.timeoutMinMs), LIMITS.timeoutMaxMs);
+  if (signal !== null && typeof signal?.aborted !== 'boolean') throw new ModelRouteError('INVALID_REQUEST', 'signal doit être un AbortSignal.', { status: 400 });
+  if (signal?.aborted) throw new ModelRouteError('CANCELLED', 'Requête annulée avant l’appel.', { status: 499, detail: { provider: decision.provider, model: decision.model, stage: 'BEFORE_REQUEST' } });
+  const run = (start) => (signal ? runCancellable(start, { signal, timeoutMs: timeout }) : withTimeout(start(null), timeout));
   const started = Date.now();
   let text;
+  let meta = { model: null, usage: null, abortPropagated: null };
   try {
     if (decision.provider === 'ollama') {
       const entry = registry?.models.find(m => m.id === decision.modelId) ?? null;
       const options = validateRuntimeOptions(runtimeOptions, { contextLength: entry?.contextLength?.value ?? null });
-      text = await withTimeout(chatCompletion(client, decision.model, messages, { options, format: responseFormat === 'json' ? 'json' : undefined }), timeout);
+      const r = await run((s) => chatCompletionDetailed(client, decision.model, messages, { options, format: responseFormat === 'json' ? 'json' : undefined, signal: s }));
+      text = r.text; meta = r;
     } else {
       if (runtimeOptions && Object.keys(runtimeOptions).length) throw new ModelRouteError('INVALID_RUNTIME_OPTIONS', 'Les options num_ctx / num_gpu ne concernent que le runtime local.', { status: 400 });
       if (typeof cloudCall !== 'function') throw new ModelRouteError('PROVIDER_UNAVAILABLE', 'Provider cloud non disponible.');
-      const result = await withTimeout(cloudCall(decision.provider, messages), timeout);
+      const result = await run(() => cloudCall(decision.provider, messages));
       text = typeof result === 'string' ? result : result?.text;
+      meta = { model: typeof result?.model === 'string' ? result.model : null, usage: null, abortPropagated: signal ? false : null };
     }
   } catch (error) {
     const classified = classifyModelError(error, { model: decision.model });
-    throw new ModelRouteError(classified.code, classified.message, { hint: classified.hint, status: classified.code === 'INVALID_RUNTIME_OPTIONS' ? 400 : 502, detail: { provider: decision.provider, model: decision.model } });
+    throw new ModelRouteError(classified.code, classified.message, { hint: classified.hint, status: classified.code === 'INVALID_RUNTIME_OPTIONS' ? 400 : classified.code === 'CANCELLED' ? 499 : 502, detail: { provider: decision.provider, model: decision.model, durationMs: Date.now() - started } });
   }
   const output = String(text ?? '').trim();
   if (!output) throw new ModelRouteError('INVALID_RESPONSE', `« ${decision.model} » a renvoyé une réponse vide.`, { hint: 'Réessayez, ou choisissez un autre modèle.', status: 502 });
@@ -416,7 +449,11 @@ export async function executeRoute(route, { messages, responseFormat = 'text', r
   if (responseFormat === 'json') {
     try { json = JSON.parse(output); } catch { throw new ModelRouteError('INVALID_RESPONSE', `« ${decision.model} » n’a pas renvoyé un JSON valide.`, { hint: 'Réessayez, ou choisissez un modèle qui déclare STRUCTURED_OUTPUT.', status: 502 }); }
   }
-  return { text: output, json, provider: decision.provider, model: decision.model, location: decision.location, durationMs: Date.now() - started };
+  return {
+    text: output, json, provider: decision.provider, model: decision.model, location: decision.location, durationMs: Date.now() - started,
+    requestedModel: decision.model, effectiveProvider: decision.provider, effectiveModel: meta.model ?? null,
+    usage: meta.usage ?? { inputTokens: null, outputTokens: null, totalTokens: null }, abortPropagated: meta.abortPropagated ?? null,
+  };
 }
 
 // ── Runtime inventory (I/O, injected client) ─────────────────────────────────
