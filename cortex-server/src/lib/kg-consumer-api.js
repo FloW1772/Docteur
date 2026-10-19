@@ -96,8 +96,11 @@ export const KG_CONSUMER_PROFILES = deepFreeze({
     caps: { maxResults: 50, maxDepth: 2, maxNodes: 150, maxEdges: 300, maxClaims: 100, maxEvidence: 100, maxChars: 40000, timeoutMs: 5000 },
   },
   companion: {
-    label: 'Companion (futur)', status: 'FUTURE_CONTRACT', domain: 'knowledge',
-    operations: ['searchKnowledge', 'retrieveKnowledge', 'getEntity', 'getClaims', 'getTimeline'],
+    label: 'Companion', status: 'ACTIVE_CONTRACT', domain: 'knowledge',
+    // COMP-7 uses retrieveKnowledge first. The already-certified neighbourhood
+    // read is permitted only so its fixed adapter can expose MEMBER_OF edges;
+    // no new operation or write surface is introduced.
+    operations: ['searchKnowledge', 'retrieveKnowledge', 'getEntity', 'getClaims', 'getNeighborhood', 'getTimeline'],
     privacy: { allowPrivate: true, providers: ['local'], scopes: ['public', 'notebook', 'sources'] },
     caps: { maxResults: 10, maxDepth: 1, maxNodes: 40, maxEdges: 80, maxClaims: 20, maxEvidence: 20, maxChars: 8000, timeoutMs: 1500 },
   },
