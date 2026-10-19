@@ -108,7 +108,8 @@ test('double-start is idempotent: second call returns alreadyRunning without spa
 });
 
 test('stopKiwixServe on an already-stopped instance is a harmless no-op (wasRunning:false)', async () => {
-  const result = stopKiwixServe();
+  // [KWX-1] stop is asynchronous: it resolves only once the owned process has really exited
+  const result = await stopKiwixServe();
   assert.equal(result.ok, true);
   assert.equal(result.wasRunning, false);
 });

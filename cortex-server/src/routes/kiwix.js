@@ -160,7 +160,18 @@ export function createKiwixRoute({
     return c.json({ ...status, running: up, externallyManaged: up });
   });
 
+  // [KWX-1] start / stop take NO parameters: executable, arguments, working directory, port and PID are never request
+  // input (the lifecycle reads its own validated settings). Any body other than empty / {} is refused.
+  const emptyBody = async (c) => {
+    const text = await c.req.text().catch(() => null);
+    if (typeof text !== 'string' || text.length > 64) return false;
+    if (!text.trim()) return true;
+    try { const v = JSON.parse(text); return Boolean(v) && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0; } catch { return false; }
+  };
+  const requestInvalid = (c) => c.json({ ok: false, error: 'request_invalid', code: 'KIWIX_REQUEST_INVALID', message: 'Cette opération ne prend aucun paramètre.' }, 400);
+
   route.post('/kiwix/start', async (c) => {
+    if (!(await emptyBody(c))) return requestInvalid(c);
     const result = await startKiwixServe({ logger });
     if (result.ok) {
       insertActivityLog({ opType: 'kiwix_start', item: `${result.archives?.length ?? 0} archive(s)`, result: 'success' });
@@ -174,9 +185,14 @@ export function createKiwixRoute({
       // they stay — only spawn/process failures below get fully normalized).
       const codeMap = {
         binary_not_found: KIWIX_ERROR_CODES.NOT_CONFIGURED,
+        binary_invalid: KIWIX_ERROR_CODES.NOT_CONFIGURED, // [KWX-1]
+        invalid_port: KIWIX_ERROR_CODES.NOT_CONFIGURED, // [KWX-1]
         no_archives: KIWIX_ERROR_CODES.LIBRARY_INVALID,
+        archive_invalid: KIWIX_ERROR_CODES.LIBRARY_INVALID, // [KWX-1]
         port_in_use: KIWIX_ERROR_CODES.BACKEND_UNAVAILABLE,
+        operation_in_progress: KIWIX_ERROR_CODES.BACKEND_UNAVAILABLE, // [KWX-1]
         binding_not_loopback: KIWIX_ERROR_CODES.PROCESS_FAILED,
+        identity_mismatch: KIWIX_ERROR_CODES.PROCESS_FAILED, // [KWX-1]
         spawn_failed: KIWIX_ERROR_CODES.PROCESS_FAILED,
       };
       const code = codeMap[result.error] ?? KIWIX_ERROR_CODES.PROCESS_FAILED;
@@ -185,8 +201,12 @@ export function createKiwixRoute({
     return c.json(result, 200);
   });
 
-  route.post('/kiwix/stop', (c) => {
-    const result = stopKiwixServe();
+  // [KWX-1] waits for the REAL exit of the instance Docteur launched; a process that does not exit is never reported
+  // stopped (409 stop_timeout); an unknown process on the port is never touched.
+  route.post('/kiwix/stop', async (c) => {
+    if (!(await emptyBody(c))) return requestInvalid(c);
+    const result = await stopKiwixServe({ logger });
+    if (!result.ok) return c.json({ ...result, code: KIWIX_ERROR_CODES.PROCESS_FAILED }, 409);
     return c.json(result);
   });
 
