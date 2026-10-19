@@ -38,7 +38,10 @@ const NEIGHBORHOOD_BOUNDS = Object.freeze({
   maxEdges: COMPANION_KG_LIMITS.maxNeighborhoodEdges,
   maxClaims: 1,
   maxEvidence: COMPANION_KG_LIMITS.maxProvenanceItems,
-  maxChars: 2_400,
+  // [COMP-7 PRODUCT WIRING] input budget of the KG API call only (was 2,400): at 2,400 the three endpoint entities
+  // exhausted it and a video in both a collection and a playlist lost its second MEMBER_OF. Same as RETRIEVE_BOUNDS,
+  // half the companion profile cap (8,000). Every bound on what reaches the model is unchanged (COMPANION_KG_LIMITS).
+  maxChars: 4_000,
   timeoutMs: COMPANION_KG_LIMITS.timeoutMs,
 });
 

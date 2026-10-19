@@ -379,6 +379,10 @@ export function createCompanionContextEngine({ companion, memoryPort, notebookPo
             for (const raw of found.items.slice(0, limit('maxKgResults'))) {
               const sourceRef = typeof raw?.id === 'string' ? raw.id : null;
               if (!sourceRef || typeof raw?.text !== 'string') { exclusions.push({ source: 'KNOWLEDGE_GRAPH', reason: 'INVALID_RESULT' }); continue; }
+              // [COMP-7 PRODUCT WIRING] same gate as Notebook rows: a secret-shaped graph text is excluded here, item by item
+              // (the local model refuses a whole assembly that holds one, so one odd title would otherwise block every answer)
+              const secret = detectSecretMemory(raw.text);
+              if (secret.refused) { exclusions.push({ source: 'KNOWLEDGE_GRAPH', itemId: sourceRef.slice(0, 160), reason: 'SECRET', kinds: secret.kinds }); continue; }
               const evidenceRefs = safeArray(raw.provenance).slice(0, 8).map(p => ({ kind: typeof p?.kind === 'string' ? p.kind.slice(0, 40) : 'KG_SOURCE', ref: typeof p?.ref === 'string' ? p.ref.slice(0, 200) : '' })).filter(p => p.ref);
               const item = textItem({
                 id: stableId('kg', sourceRef), kind: 'KG_RESULT', source: 'KNOWLEDGE_GRAPH', text: raw.text, privacyScope: 'NEVER_CLOUD',

@@ -22,10 +22,19 @@ const HTTP = Object.freeze({
   PREVIEW_STALE: 409,
   ACTION_TIMEOUT: 504,
   LOCAL_MODEL_UNAVAILABLE: 503,
+  // [COMP-7 PRODUCT WIRING] local answer outcomes (COMP-4 taxonomy)
+  MODEL_TIMEOUT: 504,
+  MODEL_PROVIDER_ERROR: 502,
+  MODEL_INVALID_RESPONSE: 502,
+  MODEL_CLOUD_FORBIDDEN: 403,
+  ROOT_POLICY_DENIED: 403,
+  COMP_CONVERSATION_FAILED: 500,
 });
 
 /** [COMP-REMED-2] PROVISIONAL: the service's 16 KiB envelope, JSON-escaped inside { rawOutput }, with headroom. */
 const MODEL_BODY_BYTES = 64 * 1024;
+/** [COMP-7 PRODUCT WIRING] { text } of at most 16 000 characters, JSON-escaped, with headroom. */
+const ANSWER_BODY_BYTES = 128 * 1024;
 
 const disabledStatus = Object.freeze({
   activation: COMPANION_ACTIVATION,
@@ -34,7 +43,7 @@ const disabledStatus = Object.freeze({
   model: Object.freeze({ status: 'NOT_RUN', code: null, at: null, source: 'COMPANION_MODEL_AUDIT' }),
 });
 
-export function createCompanionUiRoute({ service = null, disabledReason = 'COMPANION_UNCERTIFIED_DISABLED', logger = null } = {}) {
+export function createCompanionUiRoute({ service = null, conversation = null, disabledReason = 'COMPANION_UNCERTIFIED_DISABLED', logger = null } = {}) {
   const app = new Hono();
   const body = async (c) => {
     const value = await c.req.json().catch(() => null);
@@ -55,6 +64,16 @@ export function createCompanionUiRoute({ service = null, disabledReason = 'COMPA
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CompanionError('INVALID_ACTION_PAYLOAD', 'JSON object required');
     return value;
+  };
+  // [COMP-7 PRODUCT WIRING] the answer body is read as bounded text and parsed strictly (duplicate keys refused)
+  const answerBody = async (c) => {
+    const text = await c.req.text().catch(() => null);
+    if (typeof text !== 'string') throw new CompanionError('COMP_CONVERSATION_INVALID', 'JSON object required', { reason: 'NOT_AN_OBJECT' });
+    if (Buffer.byteLength(text) > ANSWER_BODY_BYTES) throw new CompanionError('COMP_CONVERSATION_INVALID', 'request too large', { reason: 'BODY_TOO_LARGE' });
+    try { return parseStrictJson(text); } catch (e) {
+      const reason = e?.details?.reason ?? 'NOT_JSON';
+      throw new CompanionError('COMP_CONVERSATION_INVALID', 'JSON object required', { reason: reason === 'NOT_JSON' ? 'NOT_AN_OBJECT' : `BODY_${reason}` });
+    }
   };
   const requireService = () => {
     if (!service) throw new CompanionError('COMPANION_DISABLED', 'Companion non activé.', { reason: disabledReason });
@@ -85,6 +104,13 @@ export function createCompanionUiRoute({ service = null, disabledReason = 'COMPA
   app.post('/companion/executions', wrap(async (c) => ok(c, await requireService().execute(await body(c)))));
   app.post('/companion/executions/:executionId/abort', wrap(async (c) => ok(c, await requireService().abortExecution(c.req.param('executionId')))));
   app.post('/companion/proposals/:proposalId/reject', wrap(async (c) => ok(c, await requireService().reject(c.req.param('proposalId')))));
+  // [COMP-7 PRODUCT WIRING] one bounded local answer (Companion context + local model). Graph data, when wired, is
+  // untrusted context with authority NONE; the answer registers no action. Diagnostics carry no content.
+  app.post('/companion/answers', wrap(async (c) => {
+    requireService();
+    if (!conversation) throw new CompanionError('COMPANION_DISABLED', 'Companion non activé.', { reason: 'COMPANION_CONVERSATION_UNAVAILABLE' });
+    return ok(c, await conversation.answer(await answerBody(c), { signal: c.req.raw?.signal ?? null }));
+  }));
   app.post('/companion/proposals/:proposalId/cancel', wrap(async (c) => ok(c, await requireService().cancel(c.req.param('proposalId')))));
 
   return app;

@@ -136,6 +136,7 @@ import { CompanionMemory } from './lib/companion-memory.js';
 import { createCompanionActions } from './lib/companion-actions.js';
 import { createCompanionUiService } from './lib/companion-ui-service.js';
 import { createCompanionUiRoute } from './routes/companion.js';
+import { wireCompanionConversation } from './lib/wire-companion-conversation.js';
 import { validateImageId, getImagePath } from './lib/image.js';
 import { detectLocalHardwareProfile } from './lib/local-hardware-profile.js';
 import { pairProvider } from './lib/providers/pair.js';
@@ -1962,23 +1963,39 @@ app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
 // Normal boot mounts only the typed disabled UI surface: no store, NB-5 service, model, context or worker is started.
 let { store: companionStore, decision: companionBootDecision } = openCompanionAtBoot({ env: process.env, logger });
 let companionUiService = null;
+let companionConversation = null;
 if (companionStore) {
   try {
+    const companionNb5 = getNotebookMemoryService({ ollamaClient, env, logger });
     const companionMemory = new CompanionMemory({
       store: companionStore,
-      nb5: getNotebookMemoryService({ ollamaClient, env, logger }),
+      nb5: companionNb5,
       getSettings: getRouterSettings,
     });
     const companionActions = createCompanionActions({ store: companionStore, companion: companionMemory }); // UI_GESTURE only
     companionUiService = createCompanionUiService({ actions: companionActions, companion: companionMemory, store: companionStore, activation: companionBootDecision.activation?.state ?? COMPANION_ACTIVATION });
+    // [COMP-7 PRODUCT WIRING] local answer path: context (+ read-only KG via the certified COMP-7 port when the KG is
+    // open) → Companion local model. A KG or wiring failure only removes the answer path / KG context, never the UI.
+    try {
+      const wired = wireCompanionConversation({
+        companion: companionMemory, memoryPort: companionNb5, kgStore, env: process.env,
+        client: ollamaClient, store: companionStore, getSettings: getRouterSettings, getHardware: () => detectLocalHardwareProfile(), logger,
+      });
+      companionConversation = wired.conversation;
+      logger.info({ kgContext: wired.kgGate.reason }, 'Companion answer path ready');
+    } catch (error) {
+      companionConversation = null;
+      logger.error({ code: error?.code ?? 'COMPANION_CONVERSATION_WIRING_FAILED', error: error?.message ?? String(error) }, 'Companion answer path disabled');
+    }
   } catch (error) {
     try { companionStore.close(); } catch { /* best-effort cleanup after failed gated wiring */ }
     companionStore = null;
+    companionConversation = null;
     companionBootDecision = { enabled: false, reason: 'COMPANION_UI_WIRING_FAILED' };
     logger.error({ code: error?.code ?? 'COMPANION_UI_WIRING_FAILED', error: error?.message ?? String(error) }, 'Companion UI disabled');
   }
 }
-app.route('/api', createCompanionUiRoute({ service: companionUiService, disabledReason: companionBootDecision.reason, logger }));
+app.route('/api', createCompanionUiRoute({ service: companionUiService, conversation: companionConversation, disabledReason: companionBootDecision.reason, logger }));
 const shutdownCompanion = async () => { companionStore?.close(); };
 
 // [Native Recorder REC-WIRE-1] The Recorder owns a separate catalogue below the canonical

@@ -129,7 +129,7 @@ test('future or malformed production store → boot fails closed and status neve
   }
 });
 
-test('projection falls back to the safe constant when no boot activation state is resolved; COMP-7 / KG absent from the wiring', () => {
+test('projection falls back to the safe constant when no boot activation state is resolved; KG / model only through the COMP-7 wiring', () => {
   assert.equal(project({}, COMPANION_ACTIVATION), COMPANION_ACTIVATION);
   assert.equal(project({ enabled: false, reason: 'COMPANION_UI_WIRING_FAILED' }, COMPANION_ACTIVATION), COMPANION_ACTIVATION);
   assert.equal(project({ activation: null }, COMPANION_ACTIVATION), COMPANION_ACTIVATION);
@@ -137,5 +137,9 @@ test('projection falls back to the safe constant when no boot activation state i
   assert.equal(project({ activation: { state: COMPANION_ACTIVE } }, COMPANION_ACTIVATION), COMPANION_ACTIVE);
   const block = SERVER_SRC.slice(SERVER_SRC.indexOf('[Companion V1 COMP-6B]'), SERVER_SRC.indexOf('const shutdownCompanion')).replace(/\/\/.*$/gm, '');
   assert.ok(block.length > 0);
-  assert.equal(/\bkg|KnowledgeGraph|COMP-7|createCompanionModel|worker/i.test(block), false, 'Companion wiring starts no KG, model, worker or COMP-7');
+  // [COMP-7 PRODUCT WIRING] (was: no KG / model / COMP-7 at all) — the block reaches the KG and the local model only
+  // through one wireCompanionConversation call; it never creates a model, a KG API / store, or a worker itself.
+  assert.equal(/KnowledgeGraph|createCompanionModel|createCompanionKgReadPort|worker/i.test(block), false, 'no direct KG API / model / worker in the Companion block');
+  assert.equal(block.split('wireCompanionConversation(').length - 1, 1, 'one COMP-7 wiring call');
+  assert.deepEqual([...new Set(block.match(/\w*kg\w*/gi) ?? [])].sort(), ['kgContext', 'kgGate', 'kgStore'], 'KG identifiers limited to the wiring hand-off');
 });

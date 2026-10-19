@@ -374,7 +374,15 @@ test('input validation, module isolation (Model Router only), gated UI wiring ne
   assert.equal(/\bfetch\s*\(|child_process|node:(http|https|net|dns|tls)|providers\/|from '\.\/ollama\.js'|\bdmem_|investigator|secret-store|sqlite\.js|\.pull\(|(?<!\.)\b(spawn|exec|execFile)\(/i.test(code2), false);
   const server = fs.readFileSync(path.join(HERE, 'src', 'server.js'), 'utf8');
   assert.ok(server.includes('openCompanionAtBoot') && server.includes('createCompanionUiRoute'), 'UI route is behind the existing boot gate');
-  assert.equal(server.includes('createCompanionModel'), false, 'product wiring never creates the model');
+  // [COMP-7 PRODUCT WIRING] the product now has a local answer path. The model is still never created by server.js
+  // itself: only wire-companion-conversation.js creates it, called once, inside the Companion boot gate (store open).
+  assert.equal(server.includes('createCompanionModel'), false, 'server.js never creates the model directly');
+  const companionBlock = server.slice(server.indexOf('[Companion V1 COMP-6B]'), server.indexOf('const shutdownCompanion'));
+  assert.equal(server.split('wireCompanionConversation(').length - 1, 1, 'one answer-path wiring call');
+  assert.match(companionBlock, /if \(companionStore\) \{[\s\S]*wireCompanionConversation\(/, 'the answer path is wired only behind the Companion boot gate');
+  const wiringSrc = fs.readFileSync(path.join(HERE, 'src', 'lib', 'wire-companion-conversation.js'), 'utf8');
+  assert.deepEqual([...wiringSrc.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]).sort(),
+    ['./companion-context.js', './companion-conversation.js', './companion-model.js', './kg-companion-context.js'], 'the wiring imports only the certified ports');
   assert.ok(fs.existsSync(path.join(HERE, 'src', 'routes', 'companion.js')));
   const boot = await import('./src/lib/companion-boot.js');
   assert.deepEqual([boot.COMPANION_CERTIFIED, boot.COMPANION_ACTIVATION], [true, 'DISABLED_PENDING_HUMAN_ACTIVATION']);

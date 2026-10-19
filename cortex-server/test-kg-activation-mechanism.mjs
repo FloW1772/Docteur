@@ -372,7 +372,7 @@ test('13: DOCTEUR_KG_DEV_DB stays a dev/test selector — never the production f
   assert.deepEqual(kgObjects(inactive.dbPath), []);
 });
 
-test('15 + 16: COMP-7 stays off and Companion is unaffected — no Companion↔KG coupling, real Companion store and real DB untouched', () => {
+test('15 + 16: Companion↔KG coupling only through the certified COMP-7 port — real Companion store and real DB untouched', () => {
   const lib = path.join(HERE, 'src', 'lib');
   for (const f of fs.readdirSync(lib).filter(x => x.startsWith('companion'))) {
     assert.doesNotMatch(fs.readFileSync(path.join(lib, f), 'utf8'), /from '\.\/kg-|knowledge-graph|createKnowledgeGraphApi/, f);
@@ -381,7 +381,14 @@ test('15 + 16: COMP-7 stays off and Companion is unaffected — no Companion↔K
   for (const f of fs.readdirSync(lib).filter(x => x.startsWith('kg-'))) assert.doesNotMatch(fs.readFileSync(path.join(lib, f), 'utf8'), /from '\.\/companion-/, f);
   const server = fs.readFileSync(path.join(HERE, 'src', 'server.js'), 'utf8');
   const companionBlock = server.slice(server.indexOf('[Companion V1 COMP-6B]'), server.indexOf('const shutdownCompanion')).replace(/\/\/.*$/gm, '');
-  assert.doesNotMatch(companionBlock, /kg|KnowledgeGraph/i, 'Companion wiring receives no KG');
+  // [COMP-7 PRODUCT WIRING] COMP-7 is now wired (was: "Companion wiring receives no KG"). The Companion block hands the
+  // boot KG store to wireCompanionConversation only; no KG API / store / table is used in the block itself, and the
+  // wiring module reaches the KG solely through createCompanionKgReadPort (fixed 'companion' consumer, read only).
+  assert.deepEqual([...new Set(companionBlock.match(/\w*(?:kg|KnowledgeGraph)\w*/gi) ?? [])].sort(), ['kgContext', 'kgGate', 'kgStore'], 'KG identifiers in the Companion block');
+  assert.match(companionBlock, /wireCompanionConversation\(\{[^}]*\bkgStore\b/, 'the KG store goes to the COMP-7 wiring only');
+  const wiring = fs.readFileSync(path.join(lib, 'wire-companion-conversation.js'), 'utf8');
+  assert.deepEqual([...wiring.matchAll(/from '(\.\/kg-[^']+)'/g)].map(m => m[1]), ['./kg-companion-context.js'], 'only the certified COMP-7 port');
+  assert.doesNotMatch(wiring, /createKnowledgeGraphApi|KnowledgeGraphStore|kg-store|kg-consumer-api|kg-population|\bkg_[a-z]/, 'no direct KG API / store / table access');
   assert.equal(fs.readdirSync(lib).some(f => /comp-?7/i.test(f)), false, 'no COMP-7 module');
   assert.deepEqual(REAL.map(fileHash), realBefore, 'real cortex.sqlite (+wal/shm) and real Companion store untouched');
 });
