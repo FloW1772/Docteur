@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
+     xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Search: Pikachu</title>
+    <link>/search?books.name=pokepedia_fr_all_nopic_2026-04&amp;pattern=Pikachu&amp;format=xml</link>
+    <description>Search result for Pikachu</description>
+    <opensearch:totalResults>6</opensearch:totalResults>
+    <opensearch:startIndex>1</opensearch:startIndex>
+    <opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+    <atom:link rel="search" type="application/opensearchdescription+xml" href="/search/searchdescription.xml"/>
+    <opensearch:Query role="request"
+      searchTerms="Pikachu"
+      startIndex="1"
+      count="25"
+    />
+    <item>
+      <title>Pikachu</title>
+      <link>/content/pokepedia_fr_all_nopic_2026-04/Pikachu</link>
+      <description><b>Pikachu</b> est un Pokémon de type Électrik. <b>Pikachu</b> évolue en Raichu &amp; vient de Pichu...</description>
+      <book>
+        <title>Poképédia</title>
+      </book>
+      <wordCount>4211</wordCount>
+    </item>
+    <item>
+      <title>Pokémon électrique</title>
+      <link>/content/pokepedia_fr_all_nopic_2026-04/Pok%C3%A9mon_%C3%A9lectrique</link>
+      <description>Liste incluant <b>Pikachu</b>, ses PV &lt; 50 au niveau 5...</description>
+      <book>
+        <title>Poképédia</title>
+      </book>
+      <wordCount>1873</wordCount>
+    </item>
+    <item>
+      <title>Pikachu &amp; Raichu (anime)</title>
+      <link>/content/pokepedia_fr_all_nopic_2026-04/Pikachu_%26_Raichu_(anime)</link>
+      <description>Duo de <b>Pikachu</b> &amp; Raichu dans l'anime...</description>
+      <book>
+        <title>Poképédia</title>
+      </book>
+      <wordCount>642</wordCount>
+    </item>
+    <item>
+      <title>Pikachu de Sacha</title>
+      <link>/content/pokepedia_fr_all_nopic_2026-04/Pikachu%20de%20Sacha</link>
+      <description>Le <b>Pikachu</b> de Sacha refuse la Poké Ball...</description>
+      <book>
+        <title>Poképédia</title>
+      </book>
+      <wordCount>9120</wordCount>
+    </item>
+    <item>
+      <title>Qui est ce Pokémon ?</title>
+      <link>/content/pokepedia_fr_all_nopic_2026-04/Qui_est_ce_Pok%C3%A9mon_%3F</link>
+      <description>Réponse : <b>Pikachu</b>...</description>
+      <book>
+        <title>Poképédia</title>
+      </book>
+      <wordCount>210</wordCount>
+    </item>
+    <item>
+      <title>Pikachu (carte)</title>
+      <link>/content/pokepedia_fr_all_maxi_2026-04/Cartes/Pikachu_(carte)</link>
+      <description>Carte <b>Pikachu</b> de l'extension de base...</description>
+      <book>
+        <title>Poképédia (maxi)</title>
+      </book>
+      <wordCount>388</wordCount>
+    </item>
+  </channel>
+</rss>
