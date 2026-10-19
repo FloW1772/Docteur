@@ -1,0 +1,61 @@
+/* EETF V1 — EETF-7 styles (scoped .eetf-*; globals.css is untouched). Colours follow ImageGeneratorModal. */
+.eetf-root { display: flex; flex-direction: column; gap: 12px; min-width: 0; color: #e2e8f0; font-size: 13px; }
+.eetf-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; min-width: 0; }
+.eetf-card h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: #cbd5e1; letter-spacing: 0.02em; }
+.eetf-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.eetf-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.eetf-label { font-size: 11px; color: #94a3b8; font-family: monospace; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+.eetf-input { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; color: #e2e8f0; padding: 7px 9px; font-size: 13px; font-family: inherit; min-width: 0; max-width: 100%; }
+.eetf-input:focus-visible, .eetf-btn:focus-visible, .eetf-tab:focus-visible, .eetf-canvas:focus-visible, .eetf-asset:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+.eetf-btn { background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.35); border-radius: 6px; color: #c4b5fd; padding: 7px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.eetf-btn[disabled], .eetf-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.eetf-btn.ghost { background: none; border-color: rgba(255,255,255,0.14); color: #94a3b8; }
+.eetf-muted { color: #94a3b8; font-size: 12px; }
+.eetf-reason { color: #fbbf24; font-size: 12px; }
+.eetf-error { color: #fca5a5; font-size: 12px; overflow-wrap: anywhere; }
+.eetf-badge { display: inline-block; font-family: monospace; font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #cbd5e1; overflow-wrap: anywhere; }
+.eetf-badge.ok { border-color: rgba(74,222,128,0.4); color: #86efac; }
+.eetf-badge.warn { border-color: rgba(251,191,36,0.4); color: #fcd34d; }
+.eetf-badge.off { border-color: rgba(148,163,184,0.35); color: #94a3b8; }
+.eetf-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.eetf-table th, .eetf-table td { text-align: left; padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; overflow-wrap: anywhere; }
+.eetf-table th { color: #94a3b8; font-weight: 500; }
+.eetf-assets { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; max-width: 100%; }
+.eetf-asset { flex: 0 0 auto; width: 92px; background: none; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 4px; color: #cbd5e1; cursor: pointer; font-size: 10px; text-align: left; }
+.eetf-asset[aria-pressed="true"] { border-color: #a78bfa; background: rgba(167,139,250,0.1); }
+.eetf-asset img, .eetf-thumb { width: 100%; height: 56px; object-fit: cover; border-radius: 4px; display: block; background: #1e293b; }
+.eetf-asset span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+.eetf-preview-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.eetf-preview-pair figure { margin: 0; min-width: 0; }
+.eetf-preview-pair img, .eetf-view img { width: 100%; height: auto; border-radius: 6px; display: block; background: #1e293b; }
+.eetf-preview-pair figcaption, .eetf-view figcaption { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+.eetf-progress { position: relative; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.eetf-progress > span { position: absolute; inset: 0 auto 0 0; background: #a78bfa; }
+.eetf-progress.indeterminate > span { width: 30%; animation: eetf-indet 1.2s linear infinite; }
+@keyframes eetf-indet { from { left: -30%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .eetf-progress.indeterminate > span { animation: none; width: 100%; opacity: 0.4; } }
+.eetf-jobs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.eetf-jobs li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; }
+.eetf-canvas { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: #0b1220; touch-action: none; position: relative; }
+.eetf-canvas canvas { width: 100% !important; height: 100% !important; display: block; }
+.eetf-sliders { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.eetf-sliders input[type="range"] { width: 100%; }
+.eetf-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.eetf-tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid rgba(255,255,255,0.08); overflow-x: auto; }
+.eetf-tab { background: none; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: #94a3b8; padding: 7px 12px; font-size: 12px; cursor: pointer; font-family: inherit; white-space: nowrap; }
+.eetf-tab[aria-selected="true"] { color: #e2e8f0; border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); }
+@media (max-width: 720px) {
+  .eetf-grid2, .eetf-preview-pair, .eetf-sliders { grid-template-columns: minmax(0, 1fr); }
+}
+/* EETF-8 — Media Reader / Media Studio / Neurone integration pieces */
+.eetf-reader { display: flex; flex-direction: column; gap: 10px; padding: 12px; overflow-y: auto; max-height: 78vh; min-width: 0; color: #e2e8f0; font-size: 13px; }
+.eetf-reader-image { position: relative; max-height: 62vh; background: rgba(0,0,0,0.35); border-radius: 6px; }
+.eetf-reader-zoom { position: absolute; right: 8px; bottom: 8px; }
+.eetf-meta { display: grid; grid-template-columns: minmax(90px, max-content) minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 12px; }
+.eetf-meta dt { color: #94a3b8; font-family: monospace; font-size: 11px; }
+.eetf-meta dd { margin: 0; overflow-wrap: anywhere; }
+.eetf-mono { font-family: monospace; }
+.eetf-links { margin: 0; padding-left: 16px; }
+.eetf-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); color: #e2e8f0; font-size: 12px; min-width: 0; }
+.eetf-integrations select { max-width: 100%; }
+@media (max-width: 480px) { .eetf-meta { grid-template-columns: minmax(0, 1fr); } }

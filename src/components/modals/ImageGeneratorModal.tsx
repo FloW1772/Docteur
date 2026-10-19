@@ -4,6 +4,15 @@ import { cortexClient, getImageUrl } from '../../lib/cortex/client';
 import type { ImageGenProvidersStatus, ImageGenerationRow, ImageGenCapabilities } from '../../lib/cortex/client';
 import { useLongOperation } from '../../hooks/useLongOperation'; // [Global Loading V1]
 import OperationProgress from '../loading/OperationProgress';
+import { useDialogFocus } from '../../hooks/useDialogFocus'; // [EETF V1] dialog semantics (same as SettingsModal)
+import EetfWorkspace from '../eetf/EetfWorkspace'; // [EETF V1] Textures / Environments tabs (additive)
+
+type ModalTab = 'image' | 'texture' | 'environment';
+const TABS: { id: ModalTab; label: string }[] = [
+  { id: 'image', label: 'Image' },
+  { id: 'texture', label: 'Textures & matériaux' },
+  { id: 'environment', label: 'Environnements' },
+];
 
 interface Props {
   onClose: () => void;
@@ -100,6 +109,22 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
 
   useEffect(() => { void reload(); }, [reload]);
 
+  // [EETF V1] tabs + dialog semantics (focus trap / restoration, Escape closes like SettingsModal)
+  const [tab, setTab] = useState<ModalTab>('image');
+  const dialogRef = useDialogFocus();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const onTabKey = (e: React.KeyboardEvent, index: number) => {
+    const next = e.key === 'ArrowRight' ? (index + 1) % TABS.length : e.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    setTab(TABS[next].id);
+    document.getElementById(`imggen-tab-${TABS[next].id}`)?.focus();
+  };
+
   const capabilities = capabilitiesFor(provider, providersStatus);
   const notice = localityNotice(provider, strictLocalMode);
   const comfyuiUnavailable = provider === 'comfyui' && providersStatus?.providers.comfyui.available === false;
@@ -134,23 +159,40 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
 
   return (
     <div style={modalStyle} onClick={onClose}>
-      <div style={panelStyle} onClick={e => e.stopPropagation()}>
+      <div style={{ ...panelStyle, width: tab === 'image' ? 720 : 980 }} onClick={e => e.stopPropagation()}
+        ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="imggen-title" tabIndex={-1}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <ImageIcon size={18} color="#a78bfa" />
-            <span style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 600 }}>Générateur d'images</span>
+            <span id="imggen-title" style={{ fontSize: 14, color: '#e2e8f0', fontWeight: 600 }}>Générateur d'images</span>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             {onOpenSettings && (
-              <button type="button" style={btnGhostStyle} onClick={onOpenSettings} title="Paramètres images">
+              <button type="button" style={btnGhostStyle} onClick={onOpenSettings} title="Paramètres images" aria-label="Paramètres images">
                 <SettingsIcon size={14} />
               </button>
             )}
-            <button type="button" style={{ ...btnGhostStyle, padding: 6 }} onClick={onClose}><X size={16} /></button>
+            <button type="button" style={{ ...btnGhostStyle, padding: 6 }} onClick={onClose} aria-label="Fermer"><X size={16} /></button>
           </div>
         </div>
 
-        <div style={{ padding: 16, overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="eetf-tabs" role="tablist" aria-label="Surfaces du générateur">
+          {TABS.map((t, i) => (
+            <button key={t.id} id={`imggen-tab-${t.id}`} type="button" role="tab" className="eetf-tab" aria-selected={tab === t.id}
+              aria-controls={`imggen-panel-${t.id}`} tabIndex={tab === t.id ? 0 : -1} onClick={() => setTab(t.id)} onKeyDown={e => onTabKey(e, i)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab !== 'image' && (
+          <div id={`imggen-panel-${tab}`} role="tabpanel" aria-labelledby={`imggen-tab-${tab}`} style={{ padding: 16, overflowY: 'auto', overflowX: 'hidden', flex: 1 }}>
+            <EetfWorkspace surface={tab} />
+          </div>
+        )}
+
+        {tab === 'image' && (
+        <div id="imggen-panel-image" role="tabpanel" aria-labelledby="imggen-tab-image" style={{ padding: 16, overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <label style={labelStyle}>Prompt</label>
             <textarea
@@ -297,6 +339,7 @@ export default function ImageGeneratorModal({ onClose, strictLocalMode, onOpenSe
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

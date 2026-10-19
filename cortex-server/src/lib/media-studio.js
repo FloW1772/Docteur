@@ -274,12 +274,29 @@ export function buildExportArgs(project, { assetPath, outputPath }) {
 /** Provenance shown to the user only (never fetched by the server): a file chosen by the user, or a link opened in
  *  the Media Reader (http(s) only, no credentials, bounded). */
 export function uploadSource(origin) {
+  if (origin?.type === 'eetf') return eetfUploadSource(origin); // [EETF-8]
   if (origin?.type !== 'media-reader') return { type: 'upload' };
   try {
     const u = new URL(String(origin.url ?? ''));
     if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.href.length > 2048) return { type: 'media-reader' };
     return { type: 'media-reader', url: u.href };
   } catch { return { type: 'media-reader' }; }
+}
+
+// [EETF-8] provenance of an EETF asset sent to the studio: ids / hash / enums only (never a path or a URL). The bytes
+// are re-hashed at completion and must equal `sha256`. A malformed EETF origin is refused (no silent loss of provenance).
+const EETF_ROLES = new Set(['SOURCE', 'GENERATED', 'DERIVED']);
+const EETF_FORMATS = new Set(['PNG', 'JPEG', 'WEBP']);
+export function eetfUploadSource(o) {
+  const bad = () => { throw new StudioError('INVALID_ORIGIN', 'Provenance EETF invalide.'); };
+  if (!isId(o.assetId) || typeof o.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(o.sha256)) bad();
+  if (!EETF_ROLES.has(o.role) || !EETF_FORMATS.has(o.format)) bad();
+  if (o.jobId != null && !isId(o.jobId)) bad();
+  if (o.operation != null && !(typeof o.operation === 'string' && /^[A-Z_]{1,24}$/.test(o.operation))) bad();
+  if (typeof o.createdAt !== 'string' || o.createdAt.length > 40 || Number.isNaN(Date.parse(o.createdAt))) bad();
+  const derivedFrom = o.derivedFrom ?? [];
+  if (!Array.isArray(derivedFrom) || derivedFrom.length > 8 || !derivedFrom.every(isId)) bad();
+  return { type: 'eetf', assetId: o.assetId, sha256: o.sha256, role: o.role, format: o.format, jobId: o.jobId ?? null, operation: o.operation ?? null, createdAt: o.createdAt, derivedFrom: [...derivedFrom] };
 }
 
 export function sha256File(file) {
@@ -354,11 +371,16 @@ export function createMediaStudioService({ rootDir, store, enforce, resolveDocte
     fs.closeSync(fd);
     const sniffed = sniffMedia(head);
     if (!sniffed) throw new StudioError('UNSUPPORTED_MEDIA', 'Type non pris en charge (vidéo MP4/MOV/WebM, audio MP3/WAV/OGG/M4A/FLAC, image PNG/JPEG/WebP/GIF) — vérifié sur le contenu.', 415);
+    const sha256 = await sha256File(tmpFile);
+    if (source?.type === 'eetf') { // [EETF-8] the EETF asset is content-addressed: same bytes, same identity
+      if (sha256 !== source.sha256) throw new StudioError('EETF_SOURCE_MISMATCH', 'Le fichier reçu ne correspond pas à l’asset EETF (empreinte SHA-256 différente).', 422);
+      const same = project.assets.find(a => a.sha256 === sha256);
+      if (same) return { asset: same, existed: true, ...view(project) }; // already in this project: no second copy
+    }
     const meta = await probe(tmpFile, sniffed);
     const id = crypto.randomUUID();
     const file = `${id}.${sniffed.ext}`;
     ensure(path.join(dirOf(project.id), 'assets'));
-    const sha256 = await sha256File(tmpFile);
     fs.renameSync(tmpFile, path.join(dirOf(project.id), 'assets', file));
     const asset = { id, name: safeDisplayName(name), file, kind: meta.kind, size: fs.statSync(path.join(dirOf(project.id), 'assets', file)).size, durationMs: meta.durationMs, hasVideo: meta.hasVideo, hasAudio: meta.hasAudio, width: meta.width, height: meta.height, sha256, source, addedAt: nowIso() };
     const next = { ...project, assets: [...project.assets, asset], updatedAt: nowIso() };

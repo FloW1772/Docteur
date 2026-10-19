@@ -34,6 +34,8 @@ export interface MediaDescriptor {
   markdown: boolean;
   youtube: { videoId: string | null; playlistId: string | null; isShort: boolean; embedUrl: string } | null;
   blocked: { reason: MediaBlockReason; message: string } | null;
+  /** [EETF-8] an EETF asset file served by Docteur (its format / provenance are read from EETF, never guessed) */
+  eetfAssetId: string | null;
 }
 
 export const KIND_LABEL: Record<MediaKind, string> = {
@@ -60,6 +62,8 @@ const EXT_KIND: Record<string, MediaKind> = {
   html: 'web', htm: 'web', php: 'web', asp: 'web', aspx: 'web',
 };
 const UNCERTAIN_EXT = new Set(['mov', 'mkv']);
+/** [EETF-8] the only EETF route the reader recognises: an asset file by strict (v4) UUID */
+const EETF_ASSET_PATH = /^\/api\/image-generation\/eetf\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/file$/;
 const MARKDOWN_EXT = new Set(['md', 'markdown']);
 
 export function kindFromMime(mime: string | null | undefined): MediaKind | null {
@@ -130,7 +134,7 @@ export function classifyMediaResource(input: MediaResourceInput, { apiOrigin = n
     id: `${kind}|${url ? url.href : raw}`, url: url ? url.href : raw, kind,
     title: (input?.title ?? '').trim() || (url ? `${hostLabel(url)}${url.pathname === '/' ? '' : url.pathname}` : raw),
     host: hostLabel(url), mimeType: input?.mimeType ? String(input.mimeType).toLowerCase() : null, extension: null,
-    docteurLocal: false, nativeSupport: 'yes', markdown: false, youtube: null, blocked: null, ...extra,
+    docteurLocal: false, nativeSupport: 'yes', markdown: false, youtube: null, blocked: null, eetfAssetId: null, ...extra,
   });
   const block = (reason: MediaBlockReason, url: URL | null = null) => base('unknown', url, { blocked: { reason, message: BLOCK_MESSAGE[reason] } });
 
@@ -151,12 +155,15 @@ export function classifyMediaResource(input: MediaResourceInput, { apiOrigin = n
   const mimeKind = kindFromMime(input?.mimeType);
   let kind: MediaKind | null = mimeKind;                        // 1. a reliable MIME wins over the extension
   if (!kind && docteurLocal && /^\/api\/image\/[^/]+$/.test(url.pathname)) kind = 'image';
+  // [EETF-8] an EETF asset route always serves an image; which one the browser can show is decided from EETF metadata
+  const eetfAssetId = docteurLocal && !url.search && !url.hash ? (EETF_ASSET_PATH.exec(url.pathname)?.[1] ?? null) : null;
+  if (eetfAssetId && (!kind || kind === 'image')) kind = 'image';
   if (!kind && ext) kind = EXT_KIND[ext] ?? null;               // 2. extension
   if (!kind) kind = docteurLocal ? 'unknown' : 'web';           // 3. any other remote http(s) URL is a page
 
   const markdown = kind === 'text' && ((ext !== null && MARKDOWN_EXT.has(ext)) || /markdown/.test(input?.mimeType ?? ''));
   const nativeSupport = (kind === 'video' || kind === 'audio') && ext !== null && UNCERTAIN_EXT.has(ext) && !mimeKind ? 'uncertain' : 'yes';
-  return base(kind, url, { extension: ext, docteurLocal, markdown, nativeSupport });
+  return base(kind, url, { extension: ext, docteurLocal, markdown, nativeSupport, eetfAssetId: kind === 'image' ? eetfAssetId : null });
 }
 
 /** Kind for the inline "open in Docteur" button (icon / label only; the reader re-classifies with the full policy). */

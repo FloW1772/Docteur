@@ -75,7 +75,7 @@ const REGISTRY = {
   'lib/connectors/onedrive-connector.js': { cls: 'FIXED_PROVIDER', counts: { fetch: 3 }, note: 'OAuth token ×2 (POST, constant) + Graph API GET with constant base; the issued download URL goes through safeFetch' },
 
   // ── TRUSTED_LOCAL: explicitly typed local services (user-configured or fixed loopback) ──
-  'lib/providers/comfyui.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 2 }, note: 'ComfyUI endpoint configured in settings (local service)' },
+  'lib/providers/comfyui.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 1 }, note: 'ComfyUI endpoint configured in settings (local service); EETF-4: one bounded request() helper (no redirect, capped body) — EETF client is loopback-only + Root Policy AI_LOCAL_REQUEST' },
   'lib/providers/freellmapi.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 1 }, note: 'FreeLLMAPI base URL configured in settings (local service)' },
   'lib/providers/pair.js': { cls: 'TRUSTED_LOCAL', counts: { nodeFetch: 1, fetch: 5 }, note: 'NVIDIA PAIR endpoint configured in settings (local service)' },
   'routes/ollama.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 3 }, note: 'Ollama (local service)' },

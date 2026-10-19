@@ -15,6 +15,10 @@ import { cortexClient, docteurImageIdOf } from '../../lib/cortex/client';
 import type { MediaAsset, MediaClip, MediaEdit, MediaExportJob, MediaProjectSummary, MediaProjectView, MediaResolution } from '../../lib/cortex/client';
 import { bridgeFileName, fetchMediaBlob } from '../../lib/media-studio/import';
 import { formatTimecode } from '../../lib/media-studio/preview';
+// [EETF-8] exchanges with EETF (textures / environments): same studio files, provenance kept on both sides
+import { eetfAssetIdOf, eetfClient } from '../../lib/eetf/client';
+import { sendEetfAssetToMediaStudio, sendStudioAssetToEetf, toIntegrationError } from '../../lib/eetf/bridges';
+import { studioAssetToEetfCompatibility } from '../../lib/eetf/integration-model';
 
 export interface MediaStudioImportRequest {
   /** increments on every send from the Media Reader */
@@ -31,6 +35,10 @@ interface Props {
 
 const RESOLUTION_LABEL: Record<MediaResolution, string> = { '640x360': '640×360 (16:9)', '1280x720': '1280×720 HD', '1920x1080': '1920×1080 Full HD', '1080x1920': '1080×1920 vertical' };
 const SOURCE_LABEL = { upload: 'fichier', 'media-reader': 'Media Reader', 'docteur-image': 'image Docteur' } as const;
+/** [EETF-8] the studio server may record an EETF origin (client.ts, shared with the staged KG work, types only the three above). */
+type EetfOrigin = { type: 'eetf'; assetId: string; role: string; operation: string | null; jobId: string | null; createdAt: string };
+const eetfOriginOf = (a: MediaAsset): EetfOrigin | null => ((a.source as { type: string }).type === 'eetf' ? a.source as unknown as EetfOrigin : null);
+const sourceLabel = (a: MediaAsset) => { const e = eetfOriginOf(a); return e ? `EETF ${e.role}` : SOURCE_LABEL[a.source.type] ?? 'fichier'; };
 const FINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 const STATUS_LABEL: Record<MediaExportJob['status'], string> = { QUEUED: 'en file', RUNNING: 'en cours', COMPLETED: 'terminé', FAILED: 'échec', CANCELLED: 'annulé' };
 const size = (n: number) => (n >= 1_048_576 ? `${(n / 1_048_576).toFixed(1)} Mo` : `${Math.max(1, Math.round(n / 1024))} Ko`);
@@ -67,6 +75,14 @@ export default function MediaStudioModal({ onClose, pendingImport = null }: Prop
   const clipPreviewRef = useRef<HTMLVideoElement & HTMLAudioElement>(null);
   const handledImport = useRef<number | null>(null);
   const importOp = useLongOperation('mediaStudioImport');
+  // [EETF-8] EETF stays disabled until certified: the action says why instead of failing later
+  const [eetfEnabled, setEetfEnabled] = useState<boolean | null>(null);
+  const [eetfBusy, setEetfBusy] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    eetfClient.status().then(s => { if (alive) setEetfEnabled(Boolean(s.enabled)); }).catch(() => { if (alive) setEetfEnabled(false); });
+    return () => { alive = false; };
+  }, []);
   const lastImport = useRef<(() => Promise<void>) | null>(null);
 
   const project = view?.project ?? null;
@@ -171,6 +187,13 @@ export default function MediaStudioModal({ onClose, pendingImport = null }: Prop
         const pid = await ensureProject(req.title);
         const imageId = docteurImageIdOf(req.url);
         if (imageId) { setStep('Copie de l’image Docteur…'); return cortexClient.mediaStudioImportImage(pid, imageId); }
+        const eetfId = eetfAssetIdOf(req.url); // [EETF-8] an EETF asset keeps its EETF provenance (never a plain Media Reader link)
+        if (eetfId) {
+          try {
+            const sent = await sendEetfAssetToMediaStudio(eetfId, { projectId: pid, signal, onStep: setStep });
+            return { ...(await cortexClient.mediaStudioGetProject(pid)), asset: sent.mediaAsset };
+          } catch (err) { throw new Error(toIntegrationError(err).message); }
+        }
         setStep('Récupération du média…');
         const blob = await fetchMediaBlob(req.url, { signal, onProgress: (r, t) => setProgress(t ? { current: Math.round((r / t) * 50), total: 100, unit: '%' } : null) });
         setStep('Envoi au Media Studio…');
@@ -223,6 +246,14 @@ export default function MediaStudioModal({ onClose, pendingImport = null }: Prop
     try { setJob((await cortexClient.mediaStudioCancelExport(job.id)).job); }
     catch (err) { setNotice({ text: (err as Error).message, alert: true }); }
   }
+  async function sendToEetf(a: MediaAsset) { // [EETF-8] Media Studio image → EETF source (the studio file is only read)
+    if (!project) return;
+    setEetfBusy(a.id); setNotice(null);
+    try {
+      const r = await sendStudioAssetToEetf(project.id, a);
+      setNotice({ text: `« ${a.name} » ${r.existed ? 'est déjà dans' : 'a été ajouté à'} EETF comme source (asset ${r.asset.id.slice(0, 8)}…). Ouvrez le générateur d’images → Textures ou Environnements pour l’utiliser.` });
+    } catch (err) { setNotice({ text: toIntegrationError(err).message, alert: true }); } finally { setEetfBusy(null); }
+  }
   async function removeAsset(a: MediaAsset) {
     if (!project) return;
     try { applyView(await cortexClient.mediaStudioRemoveAsset(project.id, a.id)); void refreshList(); }
@@ -269,16 +300,30 @@ export default function MediaStudioModal({ onClose, pendingImport = null }: Prop
           </div>
           <OperationStatusLine operation={importOp} onRetry={() => { void lastImport.current?.(); }} />
           {importOp.running && importOp.policy.cancellable && <button type="button" className="tb-btn" onClick={importOp.cancel}>Annuler l’import</button>}
+          {eetfEnabled === false && <p id="ms-eetf-disabled" className="tb-hint" data-testid="ms-eetf-disabled">EETF désactivé (certification en cours) : l’envoi d’images vers Textures / Environnements est indisponible.</p>}
           <ul className="ms-assets" aria-label="Médias du projet">
             {project?.assets.map(a => (
               <li key={a.id} className="ms-asset" data-asset={a.name} data-kind={a.kind}>
                 <span className="ms-asset-name">{kindIcon(a.kind)} {a.name}</span>
                 <span className="ms-asset-meta">
-                  {a.kind}{a.durationMs ? ` · ${formatTimecode(a.durationMs)}` : ''}{a.width ? ` · ${a.width}×${a.height}` : ''} · {size(a.size)}{a.kind === 'video' && !a.hasAudio ? ' · sans son' : ''} · {SOURCE_LABEL[a.source.type]}
+                  {a.kind}{a.durationMs ? ` · ${formatTimecode(a.durationMs)}` : ''}{a.width ? ` · ${a.width}×${a.height}` : ''} · {size(a.size)}{a.kind === 'video' && !a.hasAudio ? ' · sans son' : ''} · <span data-testid="ms-asset-source" title={eetfOriginOf(a) ? `Asset EETF ${eetfOriginOf(a)?.assetId} · ${eetfOriginOf(a)?.operation ?? 'import'} · ${eetfOriginOf(a)?.createdAt}` : undefined}>{sourceLabel(a)}</span>
                 </span>
                 <span className="ms-asset-actions">
                   {a.kind !== 'audio' && <button type="button" className="tb-btn" disabled={busy} onClick={() => { void edit({ op: 'add', assetId: a.id }); }} aria-label={`Ajouter ${a.name} à la piste vidéo`}><Film size={11} aria-hidden="true" /> Vidéo</button>}
                   {a.hasAudio && <button type="button" className="tb-btn" disabled={busy} onClick={() => { void edit({ op: 'add', assetId: a.id, trackId: 'A1' }); }} aria-label={`Ajouter ${a.name} à la piste audio`}><Music size={11} aria-hidden="true" /> Audio</button>}
+                  {a.kind === 'image' && (() => { // [EETF-8]
+                    const compat = studioAssetToEetfCompatibility(a);
+                    const reason = eetfEnabled === false ? 'ms-eetf-disabled' : !compat.ok ? `ms-eetf-reason-${a.id}` : undefined;
+                    return (
+                      <>
+                        <button type="button" className="tb-btn" data-testid="ms-send-eetf" disabled={busy || eetfEnabled !== true || !compat.ok || eetfBusy !== null}
+                          onClick={() => { void sendToEetf(a); }} aria-label={`Envoyer ${a.name} vers EETF (textures, environnements)`} aria-describedby={reason}>
+                          {eetfBusy === a.id ? 'EETF…' : 'EETF'}
+                        </button>
+                        {!compat.ok && <span id={`ms-eetf-reason-${a.id}`} className="tb-hint">{compat.reason}</span>}
+                      </>
+                    );
+                  })()}
                   <button type="button" className="tb-icon" disabled={busy} onClick={() => { void removeAsset(a); }} aria-label={`Retirer ${a.name} du projet`}><Trash2 size={12} aria-hidden="true" /></button>
                 </span>
               </li>

@@ -16,6 +16,7 @@ import {
   cancelInstall, waitForComfyUiReady,
 } from '../lib/comfyui-install-manager.js';
 import { getModelCatalog, startModelDownload, deleteModel, cancelModelDownload } from '../lib/comfyui-model-manager.js';
+import { createEetfRouteFromBoot } from './eetf.js'; // [EETF V1] additive sub-route; legacy endpoints untouched
 import { publicErrorBody, safeErrorLogFields } from '../lib/safe-error-contract.js'; // [SEC-REMED-4B]
 
 // [SEC-REMED-4B] Error text from a runtime / provider / subprocess / store is untrusted: the client gets a stable
@@ -313,6 +314,10 @@ export function createImageGenerationRoute({ logger } = {}) {
       return c.json(publicErrorBody(err, IMAGE_GEN_FAILED), 400);
     }
   });
+
+  // [EETF V1] /api/image-generation/eetf/* — boot-gated (503 EETF_DISABLED until certified); the EETF client is
+  // loopback-only and will report a non-loopback legacy endpoint as REFUSED without changing the legacy path.
+  route.route('/image-generation/eetf', createEetfRouteFromBoot({ providerEndpoint: () => getImageGenSettings().comfyui_endpoint, logger }));
 
   return route;
 }

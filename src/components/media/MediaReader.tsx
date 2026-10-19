@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
+import { Component, Suspense, lazy, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, Clapperboard, ExternalLink, Download, FileText, Inbox, Maximize2, Minimize2, RotateCcw, X } from 'lucide-react';
 import { MarkdownContent } from '../../lib/renderMd';
 // [Browser Media Bridge V1] one loading system (F2), reuse/import bridges, failure isolation
@@ -8,10 +8,16 @@ import LoadingSpinner from '../loading/LoadingSpinner';
 import { useLongOperation, useOperationClock } from '../../hooks/useLongOperation';
 import { IDLE_OPERATION, OPERATION_POLICIES, isSlow, type OperationState } from '../../lib/loading/operation';
 import { docteurApiOrigin } from '../../lib/media/docteur-origin';
+import { docteurImageIdOf } from '../../lib/cortex/client';
+import type { EetfReaderInfo } from '../eetf/EetfReaderPanel';
 import {
   KIND_LABEL, LOAD_TIMEOUT_MS, SLOW_AFTER_MS, UNSUPPORTED_MESSAGE, classifyMediaResource, fetchPdfBytes, fetchTextResource,
   initialReaderState, mediaErrorEvent, readerReducer, type MediaDescriptor, type ReaderEvent,
 } from '../../lib/media/media-resource';
+
+// [EETF-8] EETF pieces are loaded only when an EETF asset / a Docteur image is shown (the reader keeps no EETF code path otherwise)
+const EetfAssetViewer = lazy(() => import('../eetf/EetfReaderPanel').then(m => ({ default: m.EetfAssetViewer })));
+const EetfNeuronImageStrip = lazy(() => import('../eetf/EetfReaderPanel').then(m => ({ default: m.EetfNeuronImageStrip })));
 
 // Media Reader V1 — the single "open in Docteur" viewer. The link next to the button still opens the original source;
 // this reader decides the viewer from classifyMediaResource() and always shows a real state: loading → ready | error |
@@ -99,7 +105,12 @@ export default function MediaReader({ request, apiOrigin = docteurApiOrigin(), o
   const canCapture = Boolean(onCaptureUrl) && !descriptor.blocked && (descriptor.kind === 'youtube' || descriptor.kind === 'web');
   // [Media Studio V1] only once the media really loaded in the reader (the studio re-checks the bytes server-side)
   const studioKind = descriptor.kind === 'video' || descriptor.kind === 'audio' || descriptor.kind === 'image' ? descriptor.kind : null;
-  const canSendToStudio = Boolean(onSendToMediaStudio) && !descriptor.blocked && studioKind !== null && state.phase === 'READY';
+  // [EETF-8] an EETF asset the browser cannot show natively (TIFF / EXR / HDR) is not offered to the studio (it would refuse it)
+  const [eetfInfo, setEetfInfo] = useState<EetfReaderInfo | null>(null);
+  const canSendToStudio = Boolean(onSendToMediaStudio) && !descriptor.blocked && studioKind !== null && state.phase === 'READY'
+    && (!descriptor.eetfAssetId || eetfInfo?.native === true);
+  // [EETF-8] an image of the Docteur image store (Neurone images): EETF provenance + "use as EETF source"
+  const docteurImageId = descriptor.kind === 'image' && descriptor.docteurLocal ? docteurImageIdOf(descriptor.url) : null;
 
   return (
     <div
@@ -147,8 +158,14 @@ export default function MediaReader({ request, apiOrigin = docteurApiOrigin(), o
             <div style={{ visibility: state.phase === 'READY' ? 'visible' : 'hidden', flex: '1 1 auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <ViewerBoundary key={viewerKey} descriptor={descriptor} onRetry={retry} onOpenInBrowser={onOpenInBrowser}>
                 <Viewer descriptor={descriptor} dispatch={dispatch} signal={signal}
-                  resolveCapturedPage={resolveCapturedPage} onNavigateToPage={onNavigateToPage} onOpenInBrowser={onOpenInBrowser} onOpenPdfInToolbox={onOpenPdfInToolbox} />
+                  resolveCapturedPage={resolveCapturedPage} onNavigateToPage={onNavigateToPage} onOpenInBrowser={onOpenInBrowser} onOpenPdfInToolbox={onOpenPdfInToolbox}
+                  onEetfInfo={setEetfInfo} />
               </ViewerBoundary>
+              {docteurImageId && state.phase === 'READY' && (
+                <ViewerBoundary key={`eetf-strip#${viewerKey}`} descriptor={descriptor} onRetry={retry}>
+                  <Suspense fallback={null}><EetfNeuronImageStrip imageId={docteurImageId} /></Suspense>
+                </ViewerBoundary>
+              )}
             </div>
           )}
 
@@ -188,6 +205,8 @@ interface ViewerProps {
   onNavigateToPage?: Props['onNavigateToPage'];
   onOpenInBrowser?: Props['onOpenInBrowser'];
   onOpenPdfInToolbox?: Props['onOpenPdfInToolbox'];
+  /** [EETF-8] what the EETF viewer learnt about the asset (native format or not) */
+  onEetfInfo?: (info: EetfReaderInfo) => void;
 }
 
 /**
@@ -228,7 +247,9 @@ function Viewer(props: ViewerProps) {
     case 'youtube': return <YouTubeViewer {...props} />;
     case 'video': return <NativeMediaViewer {...props} element="video" />;
     case 'audio': return <NativeMediaViewer {...props} element="audio" />;
-    case 'image': return <ImageViewer {...props} />;
+    case 'image': return props.descriptor.eetfAssetId // [EETF-8] format / preview / provenance come from EETF, never guessed
+      ? <Suspense fallback={null}><EetfAssetViewer assetId={props.descriptor.eetfAssetId} title={props.descriptor.title} dispatch={props.dispatch} onInfo={props.onEetfInfo} /></Suspense>
+      : <ImageViewer {...props} />;
     case 'pdf': return <PdfViewer {...props} />;
     case 'text': return <TextViewer {...props} />;
     case 'web': return <WebViewer {...props} />;

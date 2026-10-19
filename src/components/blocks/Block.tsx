@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState, memo } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState, memo } from 'react';
 import type { Block, BlockType } from '../../lib/types';
 import { BLOCK_PLACEHOLDERS } from '../../lib/types';
 import { MarkdownContent } from '../../lib/renderMd';
 import { getImageUrl } from '../../lib/cortex/client';
 import MediaOpenButton from '../media/MediaOpenButton';
+// [EETF-8] « Depuis EETF » in an empty image block (loaded only when opened; uses the block's own onUploadImage)
+const EetfNeuronPicker = lazy(() => import('../eetf/EetfNeuronPicker'));
 
 // ── Secure link renderer ──────────────────────────────────────────────────────
 // Only http/https URLs are made clickable. Trailing punctuation is stripped.
@@ -235,6 +237,7 @@ function ImageBlock({
   onDownloadImageUrl,
   onDeleteImage,
   onAnalyzeImage,
+  onOpenMedia,
   transferImages = false,
 }: {
   block:                Block;
@@ -244,10 +247,14 @@ function ImageBlock({
   onDownloadImageUrl?:  (url: string) => Promise<string>;
   onDeleteImage?:       (imageId: string) => void;
   onAnalyzeImage?:      (imageId: string) => void;
+  /** [EETF-8] open the image in the Docteur reader (provenance, « Utiliser comme source EETF ») */
+  onOpenMedia?:         (url: string) => void;
   transferImages?:      boolean;
 }) {
   const [urlInput,   setUrlInput]   = useState('');
   const [showUrl,    setShowUrl]    = useState(false);
+  const [showEetf,   setShowEetf]   = useState(false); // [EETF-8]
+  const eetfToggleRef = useRef<HTMLButtonElement>(null);
   const [uploading,  setUploading]  = useState(false);
   const [error,      setError]      = useState('');
   const [lightbox,   setLightbox]   = useState(false);
@@ -377,6 +384,34 @@ function ImageBlock({
               👁
             </button>
           )}
+          {onOpenMedia && (
+            <button
+              type="button"
+              title="Ouvrir dans le lecteur Docteur"
+              aria-label="Ouvrir l’image dans le lecteur Docteur"
+              data-testid="image-block-open-reader"
+              onClick={e => { e.stopPropagation(); onOpenMedia(getImageUrl(block.content)); }}
+              style={{
+                position:   'absolute',
+                top:        4,
+                right:      onAnalyzeImage ? 56 : 30,
+                width:      22,
+                height:     22,
+                borderRadius: '50%',
+                border:     'none',
+                background: 'rgba(20,10,40,0.85)',
+                color:      '#c4b5fd',
+                fontSize:   11,
+                lineHeight: 1,
+                cursor:     'pointer',
+                display:    'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              ▣
+            </button>
+          )}
           <button
             type="button"
             title="Supprimer l'image"
@@ -474,6 +509,27 @@ function ImageBlock({
         >
           🔗 Depuis une URL
         </button>
+        {onUploadImage && (
+          <button
+            type="button"
+            ref={eetfToggleRef}
+            aria-expanded={showEetf}
+            data-testid="image-block-from-eetf"
+            onClick={() => setShowEetf(v => !v)}
+            title="Insérer une image EETF (textures / environnements)"
+            style={{
+              fontSize:     11,
+              padding:      '4px 10px',
+              borderRadius: 6,
+              border:       '1px solid #4d3d6a',
+              background:   'transparent',
+              color:        '#c4b5fd',
+              cursor:       'pointer',
+            }}
+          >
+            ◇ Depuis EETF
+          </button>
+        )}
         <button
           type="button"
           onClick={onDelete}
@@ -526,6 +582,11 @@ function ImageBlock({
             OK
           </button>
         </div>
+      )}
+      {showEetf && onUploadImage && (
+        <Suspense fallback={<span style={{ fontSize: 11, color: '#8b7ab0' }}>Chargement…</span>}>
+          <EetfNeuronPicker onUploadImage={onUploadImage} onInserted={id => { setShowEetf(false); onChange({ content: id }); }} onClose={() => { setShowEetf(false); eetfToggleRef.current?.focus(); }} />
+        </Suspense>
       )}
       {error && <span style={{ fontSize: 11, color: '#ff4d58' }}>{error}</span>}
       <span style={{ fontSize: 10, color: '#5a4a7a' }}>Glissez-déposez une image ici · PNG, JPG, WebP, GIF · max 5 Mo</span>
@@ -666,6 +727,7 @@ function BlockComp({ block, focused, onFocus, onChange, onEnter, onDelete, onPla
             onDownloadImageUrl={onDownloadImageUrl}
             onDeleteImage={onDeleteImage}
             onAnalyzeImage={onAnalyzeImage}
+            onOpenMedia={onOpenMedia}
             transferImages={transferImages}
           />
         ) : block.type === 'todo' ? (
