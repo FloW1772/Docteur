@@ -3,7 +3,7 @@
 > Assistant IA personnel local et hybride pour organiser tes connaissances, interroger plusieurs modèles et automatiser tes tâches depuis une seule interface.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js >= 20">
+  <img src="https://img.shields.io/badge/Node.js-22.13%2B-339933?logo=node.js&logoColor=white" alt="Node.js 22.13+ recommandé">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React 18">
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5">
   <img src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white" alt="Vite 8">
@@ -276,7 +276,7 @@ Ce mode dépend des modèles réellement installés en local : si Ollama n'a pas
 ### Prérequis obligatoires
 
 - Windows (plateforme principale visée par les scripts fournis)
-- [Node.js](https://nodejs.org/) ≥ 20
+- [Node.js](https://nodejs.org/) 22.13+ recommandé pour développer et exécuter les tests. Les dépendances acceptent aussi Node 20.19.x ou Node 24+ (voir `engines` des deux manifests).
 - npm
 
 ### Prérequis optionnels (selon les fonctionnalités souhaitées)
@@ -442,6 +442,31 @@ Un Notebook regroupe des sources déjà existantes dans Docteur (neurones) sans 
 - **Non encore implémenté** (annoncé honnêtement dans l'interface plutôt que simulé) : points clés, FAQ, fiche d'étude, flashcards, chronologie, glossaire, comparaison de sources, résumés par thème.
 
 ## ✅ Tests et qualité
+
+Audit du 11 octobre 2026 : build validé, contrôles de persistance/confidentialité ajoutés, dépendances transitives corrigées sans migration majeure. Le détail des résultats, limites et commandes reproductibles est dans le rapport d'audit 360°. Les chiffres du tableau suivant correspondent à la vérification historique, pas à l'ensemble des suites actuelles.
+
+```powershell
+npm run test:audit
+npm run test:review
+npm run typecheck
+npm run build
+node scripts/test-final-review-production.mjs
+cd cortex-server
+npm run test:audit
+npm run test:review
+node --test test-rpc2a-secret-store-roundtrip.mjs test-batch-a-robustness.mjs
+node audit-backup-benchmark.mjs
+```
+
+Les suites `test:audit` utilisent des données synthétiques et des bases isolées ; elles ne remplacent pas toutes les autres suites. Les tests DPAPI réels doivent être lancés sous une session Windows où le chiffrement du compte fonctionne. Le développement du backend utilise désormais le watcher natif de Node sur `src/`, sans surveiller les données.
+
+Le contre-audit final vérifie les écritures concurrentes, les entrées de restauration invalides, les suppressions pendant une édition/lecture, le cycle de vie WebGL et le démarrage PWA hors ligne. `test:review` à la racine utilise les ports 3002 et 5175 pour ses services de test isolés ; le contrôle de production utilise 5176 et nécessite un build préalable. En mode LAN explicite (`LOCAL_NETWORK=true`), frontend et backend exigent les certificats et utilisent HTTPS ; le développement local normal garde HTTP.
+
+Les sauvegardes manuelles et quotidiennes utilisent le même format JSON 1.2 : pages SQLite (y compris non indexées), neurones présents seulement dans l'index, blocs, liens, attributs privés, conversations, préférences, tâches, manifests de fichiers et prompts. L'import conserve les pages même si l'indexation locale échoue et indique les indexations en attente ; une nouvelle importation ou la réindexation peut les reconstruire une fois Ollama disponible. Les conversations et préférences existantes sont conservées sans duplication.
+
+Ce JSON contient des données personnelles en clair et n'est **pas une sauvegarde complète de l'installation** : fichiers binaires/images, bases des Notebooks et autres Studios, index vectoriels et secrets DPAPI ne sont pas embarqués. Pour une restauration complète, conserver aussi une copie des données locales avec le serveur arrêté ; les secrets DPAPI restent liés au compte Windows et à la machine.
+
+`npm run preview` reste accessible uniquement en loopback. L'accès mobile est explicite via `npm run preview:mobile` (certificats dans `certs/`).
 
 État constaté à la dernière vérification (suites isolées, sans appel réseau ni donnée réelle) :
 

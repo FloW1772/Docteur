@@ -4,7 +4,7 @@ Serveur cognitif autonome de Docteur pour l'indexation vectorielle, la recherche
 
 ## Prerequis
 
-- Node.js 20 ou plus
+- Node.js 22.13+ recommandé pour les tests ; Node 20.19.x ou Node 24+ également acceptés par les dépendances (voir `engines`).
 - Ollama installe et en marche sur Windows
 - Les modeles suivants disponibles dans Ollama :
   - `nomic-embed-text`
@@ -32,6 +32,21 @@ copy .env.example .env
 ```bash
 npm run dev
 ```
+
+Le watcher natif de Node surveille seulement `src/` ; les écritures dans `data/` ne redémarrent pas le serveur. Nodemon n'est plus nécessaire.
+
+### Validation isolée
+
+```powershell
+npm run test:audit
+npm run test:review
+node --test test-rpc2a-secret-store-roundtrip.mjs test-batch-a-robustness.mjs
+node audit-backup-benchmark.mjs
+```
+
+Les tests DPAPI réels nécessitent le compte Windows courant, avec chiffrement fonctionnel. Aucun secret réel n'est utilisé par ces commandes. Résultats et limites : audit du 11 octobre 2026.
+
+Le contre-audit final ajoute des preuves avec le SDK LanceDB réel : création concurrente, dimensions incompatibles, dépassement float32 et restauration invalide. Les bases utilisées par `test:review` sont en mémoire ou temporaires.
 
 ### Mode production
 
