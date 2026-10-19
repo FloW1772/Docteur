@@ -14,6 +14,7 @@ import { OpenMontageSettingsTab } from '../settings/OpenMontageSettingsTab';
 import { RassilonSettingsTab } from '../settings/RassilonSettingsTab';
 import { DeviceFabricSettingsTab } from '../settings/DeviceFabricSettingsTab';
 import { OmegaOutboundViewTab } from '../settings/OmegaOutboundViewTab';
+import { RuntimeServicesSettingsTab } from '../settings/RuntimeServicesSettingsTab'; // [Runtime Supervisor V1]
 import { cortexClient } from '../../lib/cortex/client';
 import type { RouterModelStatus, RouterSettings, RouterStat, CloudKeysMasked, CloudMonthStat, PrivacyViolation, PrivacyTestResult, VoiceSettings, InboxSettings, InboxCheckResult, PersonaSettings, PreferenceFact, OllamaModelsResult, FilesIndexResult, FileDetailResult, FileResultSummary, FileOriginalSummary, FileCompetenceInfo, WhisperStats, IndexFragmentStats, AudioPlayerSettings, ProvidersOverviewResult, ProviderHealthState } from '../../lib/cortex/client';
 import VoiceSettingsSection, { type VoiceRuntime } from '../settings/VoiceSettingsSection';
@@ -51,7 +52,7 @@ function formatCooldown(ms: number): string {
 }
 import { OLLAMA_RECOMMENDED_MODELS, formatBytes, formatGiB, isStrictOllamaModelName, fitsVramBudget, VRAM_BUDGET_GIB } from '../../lib/ollamaModels';
 
-export type Tab = 'models' | 'stats' | 'privacy' | 'rassilon' | 'devices' | 'omega' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections' | 'video';
+export type Tab = 'models' | 'stats' | 'privacy' | 'rassilon' | 'devices' | 'omega' | 'vocal' | 'inbox' | 'files' | 'audio' | 'external' | 'images' | 'memory' | 'connections' | 'video' | 'runtime';
 
 // ── Cloud provider definitions ─────────────────────────────────────────────
 
@@ -787,7 +788,7 @@ export default function SettingsModal({
 
         {/* Tabs */}
         <div className="flex overflow-x-auto" style={{ borderBottom: '1px solid rgba(61,255,170,0.08)', padding: '0 20px' }}>
-          {(['models', 'images', 'video', 'connections', 'stats', 'privacy', 'rassilon', 'devices', 'omega', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external'] as const).map(t => (
+          {(['models', 'images', 'video', 'connections', 'stats', 'privacy', 'rassilon', 'devices', 'omega', 'memory', 'vocal', 'inbox', 'files', 'audio', 'external', 'runtime'] as const).map(t => (
             <button
               key={t}
               type="button"
@@ -799,7 +800,7 @@ export default function SettingsModal({
                 letterSpacing: '0.1em',
               }}
             >
-              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'rassilon' ? 'RASSILON' : t === 'devices' ? 'APPAREILS' : t === 'omega' ? 'OMEGA VIEW' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOIX & MICRO' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : 'AUDIO'}
+              {t === 'external' ? 'AGENTS EXTERNES' : t === 'models' ? 'MODÈLES' : t === 'stats' ? 'STATISTIQUES' : t === 'privacy' ? 'CONFIDENTIALITÉ' : t === 'rassilon' ? 'RASSILON' : t === 'devices' ? 'APPAREILS' : t === 'omega' ? 'OMEGA VIEW' : t === 'memory' ? 'MÉMOIRE' : t === 'vocal' ? 'VOIX & MICRO' : t === 'inbox' ? 'INBOX' : t === 'files' ? 'FICHIERS' : t === 'images' ? 'IMAGES' : t === 'connections' ? 'CONNEXIONS' : t === 'video' ? 'STUDIO VIDÉO' : t === 'runtime' ? 'RUNTIME / SERVICES' : 'AUDIO'}
             </button>
           ))}
         </div>
@@ -814,13 +815,14 @@ export default function SettingsModal({
           {tab === 'rassilon' && <RassilonSettingsTab />}
           {tab === 'devices' && <DeviceFabricSettingsTab />}
           {tab === 'omega' && <OmegaOutboundViewTab />}
-          {tab !== 'rassilon' && tab !== 'devices' && tab !== 'omega' && loading && (
+          {tab === 'runtime' && <RuntimeServicesSettingsTab />}
+          {tab !== 'rassilon' && tab !== 'devices' && tab !== 'omega' && tab !== 'runtime' && loading && (
             <div className="flex items-center justify-center py-12">
               <RefreshCw size={16} className="animate-spin" style={{ color: '#3d3060' }} />
             </div>
           )}
 
-          {tab !== 'rassilon' && tab !== 'devices' && tab !== 'omega' && !loading && error && (
+          {tab !== 'rassilon' && tab !== 'devices' && tab !== 'omega' && tab !== 'runtime' && !loading && error && (
             <div className="flex flex-col items-center gap-3 py-10">
               <AlertTriangle size={18} style={{ color: '#ff4d58' }} />
               <p className="font-mono text-xs" style={{ color: '#ff4d58' }}>{error}</p>

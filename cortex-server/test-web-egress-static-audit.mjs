@@ -82,6 +82,7 @@ const REGISTRY = {
   'routes/local-ai.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 1 }, note: 'Ollama /api/tags (local service)' },
   'lib/kiwix-client.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 2 }, note: 'kiwix-serve on 127.0.0.1:<configured port>' },
   'lib/kiwix.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 1 }, note: 'kiwix-serve readiness probe on 127.0.0.1' },
+  'lib/runtime-supervisor-probe.js': { cls: 'TRUSTED_LOCAL', counts: { httpRequest: 1 }, note: 'Runtime Supervisor V1 health probe: fixed loopback literal (127.0.0.1 / ::1, localhost mapped without lookup), no redirect, capped body, hard timeout' },
   'lib/maitre-host-isolation.js': { cls: 'TRUSTED_LOCAL', counts: { fetch: 1 }, note: 'MAÎTRE (FROZEN): Docteur health endpoint on 127.0.0.1 — untouched' },
 
   // ── DEVICE_PROTOCOL: certified, never routed through the Web guard ──

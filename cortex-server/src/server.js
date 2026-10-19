@@ -137,6 +137,9 @@ import { createCompanionActions } from './lib/companion-actions.js';
 import { createCompanionUiService } from './lib/companion-ui-service.js';
 import { createCompanionUiRoute } from './routes/companion.js';
 import { wireCompanionConversation } from './lib/wire-companion-conversation.js';
+import { createRuntimeSupervisor, createRuntimeAuditLog } from './lib/runtime-supervisor.js';
+import { createProductRuntimeServices } from './lib/runtime-supervisor-services.js';
+import { createRuntimeSupervisorRoute } from './routes/runtime-supervisor.js';
 import { validateImageId, getImagePath } from './lib/image.js';
 import { detectLocalHardwareProfile } from './lib/local-hardware-profile.js';
 import { pairProvider } from './lib/providers/pair.js';
@@ -2022,8 +2025,18 @@ if (recorderService) {
   app.all('/api/recorder/*', (c) => c.json({ ok: false, error: { code: 'RECORDER_UNAVAILABLE', message: 'Recorder indisponible.' } }, 503));
 }
 
+// [Runtime Supervisor V1] closed registry of known services, read-only observers. The product injects NO launcher and
+// NO killer: no service is restartable in V1, and SERVICE_RESTART still requires a Root Policy approval that no product
+// path can issue (ROOT_POLICY_CAPABILITY_REQUIRED). Audit: ids / codes only, in a dedicated JSONL beside the data dir.
+const runtimeSupervisor = createRuntimeSupervisor({
+  services: createProductRuntimeServices({ ollamaUrl: env.OLLAMA_URL }),
+  audit: createRuntimeAuditLog({ file: path.join(path.dirname(env.SQLITE_PATH), 'runtime-supervisor', 'audit.jsonl') }),
+});
+app.route('/api', createRuntimeSupervisorRoute({ supervisor: runtimeSupervisor, logger }));
+
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void Promise.allSettled([
+    runtimeSupervisor.shutdown(), // [Runtime Supervisor V1] stops only instances it launched itself (none in V1)
     externalAgents.shutdown(), shutdownSherlock(), stopRassilonLanServer({ persist: false, audit: false }),
     shutdownDefaultChannelQueue(), // YouTube multi-channel queue: tree-kills running yt-dlp, no orphan on server stop
     mediaStudioService.shutdown(), // [Media Studio V1] tree-kills a running FFmpeg export, no orphan on server stop
