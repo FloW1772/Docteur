@@ -57,6 +57,8 @@ const MetaGptStudioModal = lazy(() => import('./components/modals/MetaGptStudioM
 const AgencyStudioModal = lazy(() => import('./components/modals/AgencyStudioModal')); // [Agency V1]
 const DocumentToolboxModal = lazy(() => import('./components/modals/DocumentToolboxModal')); // [Document Toolbox PDF V1]
 const MediaStudioModal = lazy(() => import('./components/modals/MediaStudioModal')); // [Media Studio V1]
+const RecorderPanel = lazy(() => import('./components/recorder/RecorderPanel')); // [Native Recorder REC-WIRE-1]
+const CompanionPanel = lazy(() => import('./components/companion/CompanionPanel')); // [Companion V1 COMP-6B]
 const KnowledgeGraphModal = lazy(() => import('./components/modals/KnowledgeGraphModal')); // [Knowledge Graph V1]
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 const SalesStudioModal = lazy(() => import('./components/modals/SalesStudioModal'));
@@ -88,6 +90,9 @@ import type { CanonicalArticleDuplicate } from './lib/cortex/client'; // [Articl
 // [Media Reader V1] one "open in Docteur" reader for every kind of link (YouTube player included)
 import MediaReader, { MediaReaderBoundary, type CapturedPageView, type MediaReaderRequest } from './components/media/MediaReader';
 import type { MediaStudioImportRequest } from './components/modals/MediaStudioModal'; // [Media Studio V1] type only: the modal stays lazy
+import StudioShell from './components/studio/StudioShell';
+import { createHttpRecorderPort } from './lib/recorder/http-port';
+import { createHttpCompanionUiPort } from './lib/companion/http-port';
 import { detectYouTubeDiscoveryInput } from './lib/youtube/discovery-input';
 import { applyDiscoveryEvent, createDiscoveryView, failureView, MODE_LABEL, type DiscoveryView } from './lib/youtube/discovery-view';
 import YouTubeDiscoveryPanel from './components/panels/YouTubeDiscoveryPanel';
@@ -2379,11 +2384,25 @@ export default function App() {
   const [toolboxInitialDoc, setToolboxInitialDoc] = useState<string | null>(null); // [Browser Media Bridge V1]
   useModalOpenTracking(toolboxOpen);
   const [mediaStudioOpen, setMediaStudioOpen] = useState(false); // [Media Studio V1]
+  const [recorderOpen, setRecorderOpen] = useState(false); // [Native Recorder REC-WIRE-1]
+  const [companionOpen, setCompanionOpen] = useState(false); // [Companion V1 COMP-6B]
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false); // [Knowledge Graph V1]
   const [mediaStudioImport, setMediaStudioImport] = useState<MediaStudioImportRequest | null>(null);
   const mediaStudioImportSeq = useRef(0);
   useModalOpenTracking(mediaStudioOpen);
+  useModalOpenTracking(recorderOpen);
+  useModalOpenTracking(companionOpen);
   useModalOpenTracking(imageGeneratorOpen);
+  const recorderPort = useMemo(() => createHttpRecorderPort({
+    baseUrl: import.meta.env.VITE_RECORDER_SAME_ORIGIN === 'true'
+      ? window.location.origin // test harness: local Vite proxy; never an arbitrary/external origin
+      : `${window.location.protocol}//${window.location.hostname}:3001`,
+  }), []);
+  const companionPort = useMemo(() => createHttpCompanionUiPort({
+    baseUrl: import.meta.env.VITE_COMPANION_SAME_ORIGIN === 'true'
+      ? window.location.origin // isolated product harness: local Vite proxy only
+      : `${window.location.protocol}//${window.location.hostname}:3001`,
+  }), []);
   // Activity panel is a lightweight, non-blocking overlay (role="dialog"
   // aria-modal="false") — deliberately NOT registered with
   // useModalOpenTracking, since it must not count as "a modal is open" for
@@ -2451,6 +2470,8 @@ export default function App() {
       case 'agency':          setAgencyOpen(true); break;
       case 'document-toolbox': setToolboxOpen(true); break;
       case 'media-studio':    setMediaStudioOpen(true); break;
+      case 'recorder':        setRecorderOpen(true); break;
+      case 'companion':       setCompanionOpen(true); break;
       case 'knowledge-graph': setKnowledgeGraphOpen(true); break; // [Knowledge Graph V1]
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sales':           setSalesStudioOpen(true); break;
@@ -5497,6 +5518,16 @@ export default function App() {
       {metaGptStudioOpen && <Suspense fallback={null}><MetaGptStudioModal onClose={() => setMetaGptStudioOpen(false)} /></Suspense>}
       {agencyOpen && <Suspense fallback={null}><AgencyStudioModal onClose={() => setAgencyOpen(false)} onOutputsSaved={importPendingAgentOutputs} /></Suspense>}
       {mediaStudioOpen && <Suspense fallback={null}><MediaStudioModal pendingImport={mediaStudioImport} onClose={() => { setMediaStudioOpen(false); setMediaStudioImport(null); }} /></Suspense>}
+      {recorderOpen && (
+        <StudioShell icon={<ListVideo size={18} />} title="Recorder" onClose={() => setRecorderOpen(false)} subtitle="Enregistrement local de l’écran ou de la caméra · aucun envoi cloud">
+          <Suspense fallback={<LazyModalFallback />}><RecorderPanel port={recorderPort} /></Suspense>
+        </StudioShell>
+      )}
+      {companionOpen && (
+        <StudioShell icon={<BookOpen size={18} />} title="Companion" onClose={() => setCompanionOpen(false)} subtitle="Assistant local · désactivé en attente de certification">
+          <Suspense fallback={<LazyModalFallback />}><CompanionPanel port={companionPort} /></Suspense>
+        </StudioShell>
+      )}
       {knowledgeGraphOpen && <Suspense fallback={null}><KnowledgeGraphModal onClose={() => setKnowledgeGraphOpen(false)} onOpenNeuron={(pageId) => setSelectedId(pageId)} onOpenUrl={(url, title) => openInDocteurReader({ url, title })} /></Suspense>}
       {toolboxOpen && <Suspense fallback={null}><DocumentToolboxModal initialDocId={toolboxInitialDoc} onClose={() => { setToolboxOpen(false); setToolboxInitialDoc(null); }} /></Suspense>}
       {investmentStudioOpen && <Suspense fallback={null}><InvestmentStudioModal onClose={() => setInvestmentStudioOpen(false)} /></Suspense>}

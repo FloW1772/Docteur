@@ -1,0 +1,38 @@
+/* Native Recorder — RECORDER-1 styles (scoped .rec-*; globals.css is untouched). Palette follows the HUD / EETF cards. */
+.rec-root { display: flex; flex-direction: column; gap: 12px; color: #e2e8f0; font-size: 13px; min-width: 0; }
+.rec-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; min-width: 0; }
+.rec-card h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #cbd5e1; }
+.rec-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rec-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.rec-fieldset legend { color: #94a3b8; font-size: 12px; margin-bottom: 4px; padding: 0; }
+.rec-choice { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.rec-input { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; color: #e2e8f0; padding: 6px 8px; font: inherit; min-width: 0; width: 100%; max-width: 360px; }
+.rec-btn { background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.35); border-radius: 6px; color: #c4b5fd; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.rec-btn.start { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.5); color: #fca5a5; }
+.rec-btn.ghost { background: none; border-color: rgba(255,255,255,0.14); color: #94a3b8; }
+.rec-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.rec-btn:focus-visible, .rec-input:focus-visible, .rec-choice input:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+.rec-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; border: 2px solid rgba(248,113,113,0.7); background: rgba(248,113,113,0.1); color: #fecaca; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+.rec-live.paused { border-color: rgba(251,191,36,0.7); background: rgba(251,191,36,0.08); color: #fde68a; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; flex: none; }
+.rec-live.paused .rec-dot { background: #f59e0b; }
+@media (prefers-reduced-motion: no-preference) { .rec-live:not(.paused) .rec-dot { animation: rec-blink 1.2s steps(2, start) infinite; } }
+@keyframes rec-blink { to { visibility: hidden; } }
+.rec-time { font-family: monospace; font-variant-numeric: tabular-nums; }
+.rec-muted { color: #94a3b8; font-size: 12px; }
+.rec-alert { border-radius: 6px; padding: 8px 10px; font-size: 12px; border: 1px solid; overflow-wrap: anywhere; }
+.rec-alert.ok { border-color: rgba(74,222,128,0.45); background: rgba(74,222,128,0.07); color: #bbf7d0; }
+.rec-alert.danger { border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.08); color: #fecaca; }
+.rec-alert.muted { border-color: rgba(148,163,184,0.35); background: rgba(148,163,184,0.06); color: #cbd5e1; }
+.rec-preview { width: 100%; max-width: 360px; aspect-ratio: 16 / 9; background: #020617; border-radius: 6px; display: block; }
+.rec-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; font-size: 12px; margin: 0; }
+.rec-dl dt { color: #94a3b8; }
+.rec-dl dd { margin: 0; overflow-wrap: anywhere; }
+/* [REC-DL-1] recent recordings list */
+.rec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rec-item { justify-content: space-between; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 6px; }
+.rec-item-title { min-width: 0; overflow-wrap: anywhere; flex: 1 1 160px; }
+
+/* [MASTER WS2] Delete-with-confirmation controls in the recent list. */
+.rec-btn.danger { background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.5); color: #fca5a5; }
+.rec-confirm { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }

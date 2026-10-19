@@ -77,7 +77,7 @@ import { createNotebookRoute }     from './routes/notebook.js';
 import { createNotebookDocumentsRoute } from './routes/notebook-documents.js';
 import { createNotebookAiHistoryRoute } from './routes/notebook-ai-history.js';
 import { createNotebookMemoryRoute } from './routes/notebook-memory.js';
-import { getChatMemory } from './lib/notebook-documents-runtime.js';
+import { getChatMemory, getMemoryService as getNotebookMemoryService } from './lib/notebook-documents-runtime.js';
 import { insertChatMemoryMessages, chatMemoryResponse } from './lib/chat-memory.js';
 import { applyLocalApiSecurity } from './lib/local-api-policy.js';
 import { resolveApiBindHost } from './lib/lan-exposure-policy.js';
@@ -128,6 +128,14 @@ import { createDocumentToolboxRoute } from './routes/document-toolbox.js'; // [D
 import { createMediaStudioService } from './lib/media-studio.js'; // [Media Studio V1]
 import { createMediaStudioStore } from './lib/media-studio-store.js';
 import { createMediaStudioRoute } from './routes/media-studio.js';
+import { RecorderStore } from './lib/recorder-store.js';
+import { createRecorderService } from './lib/recorder-service.js';
+import { createRecorderRoute } from './routes/recorder.js';
+import { openCompanionAtBoot, COMPANION_ACTIVATION } from './lib/companion-boot.js';
+import { CompanionMemory } from './lib/companion-memory.js';
+import { createCompanionActions } from './lib/companion-actions.js';
+import { createCompanionUiService } from './lib/companion-ui-service.js';
+import { createCompanionUiRoute } from './routes/companion.js';
 import { validateImageId, getImagePath } from './lib/image.js';
 import { detectLocalHardwareProfile } from './lib/local-hardware-profile.js';
 import { pairProvider } from './lib/providers/pair.js';
@@ -1837,7 +1845,7 @@ app.use('*', cors({
     return null;
   },
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // PATCH: Docteur Memory edits (a browser preflight would otherwise refuse them)
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Docteur-Recorder-Session'],
   credentials: true,
   maxAge: 86400,
 }));
@@ -1949,11 +1957,61 @@ const externalAgents = new ExternalAgents({
   strictLocal: () => getRouterSettings()?.strict_local_mode === true,
 });
 app.route('/api', createExternalAgentsRoute({ service: externalAgents }));
+
+// [Companion V1 COMP-6B] Product wiring stays behind the existing certification boot gate.
+// Normal boot mounts only the typed disabled UI surface: no store, NB-5 service, model, context or worker is started.
+let { store: companionStore, decision: companionBootDecision } = openCompanionAtBoot({ env: process.env, logger });
+let companionUiService = null;
+if (companionStore) {
+  try {
+    const companionMemory = new CompanionMemory({
+      store: companionStore,
+      nb5: getNotebookMemoryService({ ollamaClient, env, logger }),
+      getSettings: getRouterSettings,
+    });
+    const companionActions = createCompanionActions({ store: companionStore, companion: companionMemory }); // UI_GESTURE only
+    companionUiService = createCompanionUiService({ actions: companionActions, companion: companionMemory, store: companionStore, activation: companionBootDecision.activation?.state ?? COMPANION_ACTIVATION });
+  } catch (error) {
+    try { companionStore.close(); } catch { /* best-effort cleanup after failed gated wiring */ }
+    companionStore = null;
+    companionBootDecision = { enabled: false, reason: 'COMPANION_UI_WIRING_FAILED' };
+    logger.error({ code: error?.code ?? 'COMPANION_UI_WIRING_FAILED', error: error?.message ?? String(error) }, 'Companion UI disabled');
+  }
+}
+app.route('/api', createCompanionUiRoute({ service: companionUiService, disabledReason: companionBootDecision.reason, logger }));
+const shutdownCompanion = async () => { companionStore?.close(); };
+
+// [Native Recorder REC-WIRE-1] The Recorder owns a separate catalogue below the canonical
+// Docteur data directory. Boot recovery runs before the route is exposed; it never starts capture.
+let recorderStore = null;
+let recorderService = null;
+try {
+  recorderStore = RecorderStore.open({ root: path.join(path.dirname(env.SQLITE_PATH), 'recordings') });
+  recorderService = createRecorderService({ store: recorderStore });
+  const recovered = await recorderService.recoverAfterRestart();
+  logger.info(recovered, 'recorder ready');
+} catch (error) {
+  try { recorderStore?.close(); } catch { /* best-effort cleanup after a failed boot */ }
+  recorderStore = null;
+  recorderService = null;
+  logger.error({ code: error?.code ?? 'RECORDER_BOOT_FAILED', error: error?.message ?? String(error) }, 'RECORDER_UNAVAILABLE');
+}
+const shutdownRecorder = async () => {
+  try { recorderService?.shutdown(); } finally { recorderStore?.close(); }
+};
+if (recorderService) {
+  app.route('/api', createRecorderRoute({ service: recorderService, logger }));
+} else {
+  app.all('/api/recorder/*', (c) => c.json({ ok: false, error: { code: 'RECORDER_UNAVAILABLE', message: 'Recorder indisponible.' } }, 503));
+}
+
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void Promise.allSettled([
     externalAgents.shutdown(), shutdownSherlock(), stopRassilonLanServer({ persist: false, audit: false }),
     shutdownDefaultChannelQueue(), // YouTube multi-channel queue: tree-kills running yt-dlp, no orphan on server stop
     mediaStudioService.shutdown(), // [Media Studio V1] tree-kills a running FFmpeg export, no orphan on server stop
+    shutdownCompanion(), // [Companion V1] closes only the separately gated Companion store
+    shutdownRecorder(), // [Native Recorder] closes active sessions, file handles and its catalogue
   ]).finally(() => process.exit(0));
 });
 app.route('/api', createVideoSummaryRoute({ services, ollamaClient, logger }));
