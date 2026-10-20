@@ -20,7 +20,7 @@ import { CompanionMemory } from '../cortex-server/src/lib/companion-memory.js';
 import { createCompanionActions } from '../cortex-server/src/lib/companion-actions.js';
 import { createCompanionUiService } from '../cortex-server/src/lib/companion-ui-service.js';
 import { createCompanionUiRoute } from '../cortex-server/src/routes/companion.js';
-import { openCompanionAtBoot } from '../cortex-server/src/lib/companion-boot.js';
+import { openCompanionAtBoot, resolveCompanionBoot } from '../cortex-server/src/lib/companion-boot.js';
 
 const { serve } = await import(pathToFileURL(createRequire(path.resolve('cortex-server', 'package.json')).resolve('@hono/node-server')).href);
 let assertions = 0;
@@ -34,13 +34,21 @@ const vectorStore = () => { const rows = new Map(); return { rows, upsert: async
 const embed = async (text) => { const v = new Array(32).fill(0); for (const word of String(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) { let h = 0; for (const ch of word) h = (h * 31 + ch.charCodeAt(0)) >>> 0; v[h % v.length] += 1; } const n = Math.hypot(...v) || 1; return v.map(x => x / n); };
 const randomWords = () => crypto.randomBytes(18).toString('hex').match(/.{1,6}/g).join(' ');
 
-// Normal boot remains closed and creates nothing.
-const normalBoot = openCompanionAtBoot({ env: {} });
-eq(normalBoot.store, null, 'normal boot opens no Companion store');
-eq(normalBoot.decision.reason, 'COMPANION_UNCERTIFIED_DISABLED');
-const disabledRoute = createCompanionUiRoute({ disabledReason: normalBoot.decision.reason });
+// The Companion stays closed until a human activates it. Since certification (COMPANION-BOOT-PROD-REMED-1) a normal
+// boot defers to the official production store, which lives in the REAL product data directory — so this test never
+// opens it (its state is machine-dependent and it is real user data). The pure decision opens nothing; the activation
+// gate itself is exercised on a throwaway store selected the way the product selects its development store.
+const normalDecision = resolveCompanionBoot({ env: {} });
+eq(normalDecision.enabled, false); eq(normalDecision.reason, 'COMPANION_NOT_REQUESTED', 'normal boot defers to the production store gate');
+const gatedBoot = openCompanionAtBoot({ env: { DOCTEUR_COMPANION_DEV_DB: path.join(tmp, 'boot-gate', 'companion.sqlite') } });
+eq(gatedBoot.store, null, 'no Companion store is opened without human activation');
+eq(gatedBoot.decision.reason, 'COMPANION_HUMAN_ACTIVATION_REQUIRED');
+eq(gatedBoot.decision.activation.state, 'DISABLED_PENDING_HUMAN_ACTIVATION');
+const disabledRoute = createCompanionUiRoute({ disabledReason: gatedBoot.decision.reason });
 let response = await disabledRoute.request('http://localhost/companion/status');
-eq(response.status, 200); eq((await response.json()).value.activation, 'DISABLED_PENDING_CERTIFICATION');
+eq(response.status, 200);
+const disabledStatus = (await response.json()).value;
+eq(disabledStatus.activation, 'DISABLED_PENDING_HUMAN_ACTIVATION'); eq(disabledStatus.disabledReason, 'COMPANION_HUMAN_ACTIVATION_REQUIRED');
 response = await disabledRoute.request('http://localhost/companion/sessions', { method: 'POST' });
 eq(response.status, 503); eq((await response.json()).error.code, 'COMPANION_DISABLED');
 
@@ -109,7 +117,7 @@ try {
   ok((await row.innerText()).includes('désactivé en attente de certification'), 'Help state is honest');
   await row.getByRole('button', { name: 'Ouvrir' }).click();
   await page.getByTestId('cmp-panel').waitFor(); await page.getByTestId('cmp-status').waitFor();
-  ok((await page.getByTestId('cmp-status').innerText()).includes('DISABLED_PENDING_CERTIFICATION'), 'certification state visible');
+  ok((await page.getByTestId('cmp-status').innerText()).includes('DISABLED_PENDING_HUMAN_ACTIVATION'), 'activation state visible');
   eq(actions.audit.list().filter(e => e.event === 'ACTION_PROPOSED').length, 0, 'no automatic action proposal');
   eq(store.listModelAudit().length, 0, 'no automatic model call');
   await card(normal.memoryId).waitFor(); eq(await page.locator('article[data-memory-id]').count(), 3, 'temporary memories visible');
@@ -218,7 +226,7 @@ try {
   ok(apiEvents.some(x => x === 'GET /api/companion/status') && apiEvents.some(x => x === 'POST /api/companion/proposals'), 'typed route exercised');
   ok(!apiEvents.some(x => /rpc/i.test(x)), 'no generic RPC route');
   eq(actions.approvalChannel, 'UI_GESTURE');
-  eq(store.schemaVersion(), 3); eq(store.listModelAudit().length, 0, 'model stayed NOT_RUN');
+  eq(store.schemaVersion(), 4, 'schema 4 (additive activation-state migration)'); eq(store.listModelAudit().length, 0, 'model stayed NOT_RUN');
   eq(external.length, 0, `external requests: ${external.join(', ')}`); eq(pageErrors.length, 0, `page errors: ${pageErrors.join(' | ')}`);
   assert.deepEqual(realDb.map(sha), realBefore); assertions += 1;
   console.log(`PASS COMP-6B product browser: ${assertions} assertions, typed route + real App + UI_GESTURE approvals`);
