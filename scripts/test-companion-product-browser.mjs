@@ -18,6 +18,7 @@ import { createMemoryService } from '../cortex-server/src/lib/notebook-memory.js
 import { CompanionStore } from '../cortex-server/src/lib/companion-store.js';
 import { CompanionMemory } from '../cortex-server/src/lib/companion-memory.js';
 import { createCompanionActions } from '../cortex-server/src/lib/companion-actions.js';
+import { ACTION_LIMITS } from '../cortex-server/src/lib/companion-action-registry.js';
 import { createCompanionUiService } from '../cortex-server/src/lib/companion-ui-service.js';
 import { createCompanionUiRoute } from '../cortex-server/src/routes/companion.js';
 import { openCompanionAtBoot, resolveCompanionBoot } from '../cortex-server/src/lib/companion-boot.js';
@@ -59,7 +60,11 @@ const vectors = vectorStore();
 const nb5 = createMemoryService({ embedText: embed, embeddingModel: 'test', embedFormat: {}, vectorStore: vectors, localComplete: async () => { throw new Error('model must not run'); } });
 const store = CompanionStore.open({ dbPath: path.join(tmp, 'companion.sqlite') });
 const memory = new CompanionMemory({ store, nb5, vectorProbe: async (id) => vectors.rows.has(id), vectorPurge: async (id) => { vectors.rows.delete(id); } });
-const actions = createCompanionActions({ store, companion: memory, approvalTtlMs: 5_000 });
+// Product approval lifetime (ACTION_LIMITS.approvalTtlMs, 120 s): a granted approval never races the real App's
+// rendering in headless Chromium. Expiry is proven deterministically by advancing this server-side clock past the
+// lifetime (no wall-clock wait); the UI-side countdown expiry is covered by test-companion-ui-browser.mjs (§8).
+let serverClockOffsetMs = 0;
+const actions = createCompanionActions({ store, companion: memory, now: () => Date.now() + serverClockOffsetMs });
 const service = createCompanionUiService({ actions, companion: memory, store });
 const route = createCompanionUiRoute({ service });
 const normal = await memory.rememberExplicit({ category: 'USER_PREFERENCE', value: `Préférence produit ${randomWords()}.`, provenance: { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT' } });
@@ -101,7 +106,8 @@ await context.route('**/__comp6b_product', r => r.fulfill({ contentType: 'text/h
 const page = await context.newPage(); page.on('pageerror', e => pageErrors.push(e.message));
 const card = (id) => page.locator(`article[data-memory-id="${id}"]`);
 const state = () => page.getByTestId('cmp-review').getAttribute('data-ui-state');
-const waitState = async (wanted, timeout = 10_000) => { const start = Date.now(); while (Date.now() - start < timeout) { if (await state().catch(() => null) === wanted) return true; await page.waitForTimeout(50); } return false; };
+// waits for the review to actually reach a state (DOM condition, not a polling budget a page stall can exhaust)
+const waitState = (wanted, timeout = 60_000) => page.locator(`[data-testid="cmp-review"][data-ui-state="${wanted}"]`).waitFor({ timeout }).then(() => true, () => false);
 const closeReview = async () => { await page.getByTestId('cmp-btn-close').click(); await page.getByTestId('cmp-review').waitFor({ state: 'detached' }); };
 const approveExecute = async () => { await page.getByTestId('cmp-btn-confirm').click(); ok(await waitState('APPROVED'), 'approved'); await page.getByTestId('cmp-btn-execute').click(); ok(await waitState('EXECUTED'), 'executed'); };
 
@@ -211,10 +217,21 @@ try {
   for (const id of [mu.proposalId, ro.proposalId]) await page.locator(`[data-proposal-id="${id}"]`).waitFor({ state: 'detached', timeout: 5_000 }); // the panel reload is async
   eq(await page.locator(`[data-proposal-id="${mu.proposalId}"], [data-proposal-id="${ro.proposalId}"]`).count(), 0, 'executed proposals leave the list');
 
-  // Approval expiry is visible, execution disabled, and Escape restores focus to the opener.
+  // Approval expiry is enforced by the server: once the approval lifetime has passed, Execute is refused
+  // (APPROVAL_EXPIRED), nothing changes, the review shows EXPIRED with execution disabled, and Escape restores focus.
   const expiryOpener = page.locator('button[data-pref="proposalEnabled"]'); await expiryOpener.focus(); await page.keyboard.press('Enter');
   await page.getByTestId('cmp-digest').waitFor(); await page.getByTestId('cmp-btn-confirm').focus(); await page.keyboard.press('Enter'); ok(await waitState('APPROVED'), 'keyboard approval');
-  ok(await waitState('EXPIRED', 9_000), 'approval expires'); ok(await page.getByTestId('cmp-btn-execute').isDisabled(), 'expired approval cannot execute');
+  const expiringApproval = approvals.at(-1); const proposalEnabledBefore = store.getPreferences().proposalEnabled;
+  const executedBefore = actions.audit.list().filter(e => e.event === 'ACTION_EXECUTED').length;
+  serverClockOffsetMs += ACTION_LIMITS.approvalTtlMs.value + 1_000; // the approval is now past its lifetime for the server
+  await page.getByTestId('cmp-btn-execute').click();
+  await page.locator('[role=alert][data-error-code="APPROVAL_EXPIRED"]').waitFor();
+  ok(await waitState('EXPIRED'), 'approval expired'); ok(await page.getByTestId('cmp-btn-execute').isDisabled(), 'expired approval cannot execute');
+  eq(store.getPreferences().proposalEnabled, proposalEnabledBefore, 'an expired approval changes nothing');
+  eq(actions.audit.list().filter(e => e.event === 'ACTION_EXECUTED').length, executedBefore, 'nothing executed after expiry');
+  eq(actions.audit.list().filter(e => e.event === 'ACTION_EXPIRED' && e.proposalId === expiringApproval.proposalId).length, 1, 'expiry audited');
+  serverClockOffsetMs = 0; // back in step with the browser, which stamps the next approval intents with the real clock
+  eq(actions.user.getProposal(expiringApproval.proposalId).status, 'EXPIRED', 'the expired proposal stays unusable');
   await page.keyboard.press('Escape'); await page.getByTestId('cmp-review').waitFor({ state: 'detached' }); ok(await expiryOpener.evaluate(el => el === document.activeElement), 'focus restored after Escape');
 
   // Memory OFF remains an approved action; forget stays available.
