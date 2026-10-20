@@ -15,6 +15,8 @@ export interface CompanionPreferences { memoryEnabled: boolean; sessionMemoryEna
 export interface CompanionStatusDto {
   activation: string; schemaVersion: number; preferences: CompanionPreferences;
   model: { status: string; code: string | null; at: string | null; source: string };
+  /** Boot reason, sent by the route when no Companion store is open (e.g. COMPANION_HUMAN_ACTIVATION_REQUIRED). */
+  disabledReason?: string | null;
 }
 export interface Freshness { confirmedAt?: string | null; lastPresentedAt?: string | null; validFrom?: string | null; validTo?: string | null; expiresAt?: string | null; reviewAfter?: string | null }
 export interface MemoryRowDto {
@@ -130,6 +132,22 @@ export const originLabel = (o: unknown): string => (typeof o === 'string' && ORI
 export const userConfirmed = (o: unknown): boolean => o === 'USER_EXPLICIT' || o === 'USER_CONFIRMED';
 const CATEGORY: Record<string, string> = { USER_PREFERENCE: 'Préférence', USER_FACT: 'Fait personnel' };
 export const categoryLabel = (c: unknown): string => (typeof c === 'string' && CATEGORY[c]) || 'Catégorie inconnue';
+
+/**
+ * What the not-active notice says, from the typed status only. Certification and human activation are distinct: the
+ * Companion is certified (companion-boot.js COMPANION_CERTIFIED) and stays off until a person activates it; a store
+ * that failed to open is NOT "waiting for activation"; an unknown state claims nothing.
+ */
+export function activationNotice(status: Pick<CompanionStatusDto, 'activation' | 'disabledReason'> | null | undefined): { kind: 'ACTIVE' | 'AWAITING_ACTIVATION' | 'UNAVAILABLE' | 'UNKNOWN'; text: string | null } {
+  if (status?.activation === 'ACTIVE') return { kind: 'ACTIVE', text: null };
+  const reason = typeof status?.disabledReason === 'string' && status.disabledReason ? status.disabledReason : null;
+  const quiet = 'Il ne lit, ne mémorise et n’agit pas de lui-même tant qu’il reste désactivé.';
+  if (status?.activation === 'DISABLED_PENDING_HUMAN_ACTIVATION' && (reason === null || reason === 'COMPANION_HUMAN_ACTIVATION_REQUIRED')) {
+    return { kind: 'AWAITING_ACTIVATION', text: `Le Companion est certifié mais pas encore activé : il ne démarre qu’après une activation explicite de votre part. ${quiet}` };
+  }
+  if (reason !== null) return { kind: 'UNAVAILABLE', text: `Le Companion est désactivé : il n’a pas pu être ouvert (${reason.slice(0, 60)}). ${quiet}` };
+  return { kind: 'UNKNOWN', text: `Le Companion n’est pas activé (${String(status?.activation ?? 'état inconnu').slice(0, 60)}). ${quiet}` };
+}
 
 /** Global memory OFF: what is off, what stays available. */
 export function memoryOffContract(p: CompanionPreferences | null | undefined) {

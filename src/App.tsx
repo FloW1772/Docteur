@@ -5524,7 +5524,7 @@ export default function App() {
         </StudioShell>
       )}
       {companionOpen && (
-        <StudioShell icon={<BookOpen size={18} />} title="Companion" onClose={() => setCompanionOpen(false)} subtitle="Assistant local · désactivé en attente de certification">
+        <StudioShell icon={<BookOpen size={18} />} title="Companion" onClose={() => setCompanionOpen(false)} subtitle="Assistant local certifié · activation manuelle">
           <Suspense fallback={<LazyModalFallback />}><CompanionPanel port={companionPort} /></Suspense>
         </StudioShell>
       )}

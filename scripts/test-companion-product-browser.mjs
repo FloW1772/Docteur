@@ -114,7 +114,7 @@ try {
   await page.keyboard.press('F1');
   const search = page.getByLabel('Rechercher une fonctionnalité'); await search.waitFor(); await search.fill('Companion');
   const row = page.locator('div').filter({ has: page.getByText('Companion', { exact: true }) }).filter({ has: page.getByRole('button', { name: 'Ouvrir' }) }).last();
-  ok((await row.innerText()).includes('désactivé en attente de certification'), 'Help state is honest');
+  ok((await row.innerText()).includes('Certifié ; il reste désactivé tant que vous ne l’avez pas activé explicitement'), 'Help state is honest');
   await row.getByRole('button', { name: 'Ouvrir' }).click();
   await page.getByTestId('cmp-panel').waitFor(); await page.getByTestId('cmp-status').waitFor();
   ok((await page.getByTestId('cmp-status').innerText()).includes('DISABLED_PENDING_HUMAN_ACTIVATION'), 'activation state visible');

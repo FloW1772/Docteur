@@ -1,6 +1,6 @@
 // Companion V1 — COMP-6A status panel: activation, memory switch contract, model status (metadata only), preferences.
 // A preference button never changes anything by itself: it asks for a proposal, which the person reviews and confirms.
-import { memoryOffContract, modelStatusLabel, type CompanionPreferences, type CompanionStatusDto } from '../../lib/companion/ui-contracts';
+import { activationNotice, memoryOffContract, modelStatusLabel, type CompanionPreferences, type CompanionStatusDto } from '../../lib/companion/ui-contracts';
 import { ToneBadge } from './CompanionCommon';
 import './companion.css';
 
@@ -14,6 +14,7 @@ export function CompanionStatusPanel({ status, onRequestPreferences }: { status:
   const model = modelStatusLabel(status.model?.status);
   const p = status.preferences;
   const active = status.activation === 'ACTIVE'; // [MASTER WS4] gates the explanatory note and the preference buttons
+  const notice = activationNotice(status); // [COMP-COPY-1] certified ≠ activated; a failed open is not "waiting"
   return (
     <section className="cmp-card" aria-labelledby="cmp-status-title" data-testid="cmp-status">
       <h2 id="cmp-status-title">État du Companion</h2>
@@ -24,9 +25,8 @@ export function CompanionStatusPanel({ status, onRequestPreferences }: { status:
         {status.model?.code && <span className="cmp-muted">({status.model.code})</span>}
       </div>
       {!active && (
-        <div className="cmp-alert warn" role="note" data-testid="cmp-not-active">
-          Le Companion n’est pas encore activé ({status.activation}) : il ne lit, ne mémorise et n’agit pas de lui-même
-          tant qu’il reste désactivé, en attente de validation. Vous pouvez tout de même réduire ses réglages de mémoire
+        <div className="cmp-alert warn" role="note" data-testid="cmp-not-active" data-notice={notice.kind}>
+          {notice.text} Vous pouvez tout de même réduire ses réglages de mémoire
           ci-dessous (chaque changement passe par une proposition que vous confirmez).
         </div>
       )}
