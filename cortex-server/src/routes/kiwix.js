@@ -269,7 +269,8 @@ export function createKiwixRoute({
       const cleaned = sanitizeZimHtml(html, book);
       return c.json({ ...cleaned, book, path: fullPath });
     } catch (err) {
-      if (err instanceof KiwixError) return c.json({ error: err.code }, 400);
+      // [KWX-3] an over-budget article is refused whole: a typed code only, no partial content
+      if (err instanceof KiwixError) return c.json({ error: err.code }, err.code === KIWIX_ERROR_CODES.ARTICLE_TOO_LARGE ? 413 : 400);
       const classified = classifyKiwixError(err, { context: 'article' });
       logger?.warn?.({ ...safeErrorLogFields(err, { operation: 'route.kiwix' }) }, 'kiwix content fetch failed');
       return c.json(kiwixErrorBody(classified), classified.status);

@@ -1,7 +1,32 @@
 import { getKiwixSettings } from './sqlite.js';
-import { assertSafeZimSegment, MAX_SEARCH_PAGE_LENGTH } from './kiwix-policy.js';
+import { assertSafeZimSegment, KiwixError, KIWIX_ERROR_CODES, MAX_SEARCH_PAGE_LENGTH } from './kiwix-policy.js';
 
 const TIMEOUT_MS = 10_000;
+
+// [KWX-3] One decoded-size budget for every article consumer (article view, cortex import, chat context), enforced BEFORE the
+// HTML is parsed. Largest legitimate article measured in the installed archives (10 905 articles sampled): 2 663 508 bytes;
+// ×3 headroom for other archives. Measured sanitizeZimHtml cost ≈ 0.6 s of synchronous parsing and ≈ 105 MB of transient heap
+// per MB of input, so at this budget one article stays ≈ 5 s / ≈ 0.85 GB — instead of an unbounded entry exhausting the
+// backend heap (≈ 4 GB default, i.e. ≈ 39 MB of input). Over budget ⇒ refused whole (never truncated, never partial).
+export const KIWIX_ARTICLE_MAX_BYTES = 3 * 2_663_508;
+
+/** Reads a response body as UTF-8 (same decoding as Response.text()), refusing — and cancelling the read — past `maxBytes`. */
+async function readBoundedText(res, maxBytes) {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks = []; let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new KiwixError(KIWIX_ERROR_CODES.ARTICLE_TOO_LARGE);
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder('utf-8').decode(Buffer.concat(chunks));
+}
 
 function baseUrl() {
   const port = getKiwixSettings().port || 8090;
@@ -199,7 +224,14 @@ function extractAttr(block, tag, attr) {
 export async function getContent(bookName, articlePath) {
   const cleanPath = articlePath.replace(/^\/+/, '');
   const res = await kiwixFetch(`/content/${encodeURIComponent(bookName)}/${cleanPath}`);
-  const html = await res.text();
+  // Content-Length is the size ON THE WIRE (kiwix-serve compresses): it alone decides only for an uncompressed body; the decoded
+  // bytes are always counted while reading.
+  const declared = Number(res.headers.get('content-length'));
+  if (!res.headers.get('content-encoding') && Number.isFinite(declared) && declared > KIWIX_ARTICLE_MAX_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw new KiwixError(KIWIX_ERROR_CODES.ARTICLE_TOO_LARGE);
+  }
+  const html = await readBoundedText(res, KIWIX_ARTICLE_MAX_BYTES);
   return { html, contentType: res.headers.get('content-type') ?? 'text/html' };
 }
 

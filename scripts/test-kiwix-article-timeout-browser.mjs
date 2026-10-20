@@ -6,6 +6,8 @@
 //   E  an article held past 30 s ends with the clear French timeout message — nothing else is claimed
 //   F  a slow earlier article never replaces a newer one, nor lands on a new search
 //   G  the page only ever talks to the loopback API (every other request is aborted and counted)
+//   H  [KWX-3] an article refused by the backend size budget (413 KIWIX_ARTICLE_TOO_LARGE) shows the typed French oversize
+//      message — no partial article, not the timeout message — and I. the next article still opens normally
 // /api/kiwix/* is answered in-process by stubs; no real Docteur, kiwix-serve or Internet is involved. No real 20 s wait.
 // Usage: node scripts/test-kiwix-article-timeout-browser.mjs
 import assert from 'node:assert/strict';
@@ -22,6 +24,7 @@ const ORIGIN = `http://127.0.0.1:${PORT}`;
 const API = 'http://127.0.0.1:3001';
 const BOOK = 'book_a';
 const TIMEOUT_TEXT = 'Le chargement de cet article a dépassé le délai prévu.';
+const TOO_LARGE_TEXT = 'Cet article est trop volumineux pour être affiché en toute sécurité.';
 
 // ── source contract (D): only the article budget changed ──
 const client = fs.readFileSync('src/lib/cortex/client.ts', 'utf8');
@@ -62,11 +65,12 @@ try {
     if (u.pathname === '/api/kiwix/archives') return fulfillJson(route, { folder: 'C:/Z', archives: [{ name: BOOK, fileName: 'a.zim', path: 'C:/Z/a.zim', sizeBytes: 1 }], totalBytes: 1 });
     if (u.pathname === '/api/kiwix/search-scope') return fulfillJson(route, { scope: 'neurones' });
     if (u.pathname === '/api/kiwix/search') {
-      const value = { results: ['Petit', 'Grand', 'Bloque', 'Lent', 'Rapide', 'Orphelin'].map(t => ({ title: t, path: t, snippet: `extrait ${t}`, bookName: BOOK })) };
+      const value = { results: ['Petit', 'Grand', 'Bloque', 'Lent', 'Rapide', 'Orphelin', 'Enorme'].map(t => ({ title: t, path: t, snippet: `extrait ${t}`, bookName: BOOK })) };
       if (searchHeld) { await searchHeld.promise.catch(() => {}); return fulfillJson(route, value).catch(() => {}); }
       return fulfillJson(route, value);
     }
     const m = /^\/api\/kiwix\/content\/book_a\/(.+)$/.exec(u.pathname);
+    if (m?.[1] === 'Enorme') return route.fulfill({ status: 413, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN }, body: JSON.stringify({ error: 'KIWIX_ARTICLE_TOO_LARGE' }) }); // [KWX-3] the backend's exact refusal
     if (m) {
       const h = held.get(m[1]);
       if (h) { h.hits += 1; await h.promise; return fulfillJson(route, article(m[1])).catch(() => {}); } // aborted client side ⇒ fulfill fails: fine
@@ -161,6 +165,26 @@ try {
     await page.waitForFunction(() => !document.querySelector('button[title="Rechercher"]')?.disabled);
     eq(await page.getByRole('button', { name: /^Petit/ }).count(), 0, 'abandoned search shows no results');
     release(); searchHeld = null;
+  });
+
+  await scenario('H. [KWX-3] an over-budget article (413 KIWIX_ARTICLE_TOO_LARGE) shows the typed oversize message, never a partial article', async () => {
+    await search(); // C left the list empty (its search was abandoned)
+    eq(await page.getByRole('button', { name: /^Enorme/ }).count(), 1, 'results from the new search are listed');
+    await openResult('Enorme');
+    await page.getByTestId('kiwix-article-error').waitFor();
+    eq(await page.getByTestId('kiwix-article-error').innerText(), TOO_LARGE_TEXT);
+    ok((await page.getByTestId('kiwix-article-error').innerText()) !== TIMEOUT_TEXT, 'not mistaken for a timeout');
+    eq(await page.locator('.kiwix-article-content').count(), 0, 'no article (partial or otherwise) rendered');
+    eq(await page.getByTestId('kiwix-article-loading').count(), 0, 'loading ended');
+    ok(!(await page.locator('body').innerText()).includes('KIWIX_ARTICLE_TOO_LARGE'), 'the raw code is never shown');
+  });
+
+  await scenario('I. [KWX-3] after an oversize refusal the next article opens normally (UI recovered, error cleared)', async () => {
+    await openResult('Petit');
+    await page.locator('.kiwix-article-content').waitFor();
+    eq(await heading(), 'Petit');
+    eq(await page.getByTestId('kiwix-article-error').count(), 0, 'the oversize message is cleared');
+    await back();
   });
 
   await scenario('G. loopback only: no request left the page for anything but the local API', async () => {

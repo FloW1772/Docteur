@@ -11,6 +11,8 @@ const TIMEOUT_ANSWER = 120_000;  // ms for /api/answer — first call loads mode
 // so 30 s keeps a ~35 % margin without hiding a genuinely stuck request.
 export const KIWIX_ARTICLE_TIMEOUT_MS = 30_000;
 export const KIWIX_ARTICLE_TIMEOUT_MESSAGE = 'Le chargement de cet article a dépassé le délai prévu.';
+// [KWX-3] the server refuses (whole, never truncated) an article above its size budget with this typed code
+export const KIWIX_ARTICLE_TOO_LARGE_MESSAGE = 'Cet article est trop volumineux pour être affiché en toute sécurité.';
 const MAX_RETRY = 2;        // network retries (not HTTP errors)
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -6376,6 +6378,7 @@ export const cortexClient = {
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string };
+      if (err.error === 'KIWIX_ARTICLE_TOO_LARGE') throw Object.assign(new Error(KIWIX_ARTICLE_TOO_LARGE_MESSAGE), { name: 'KiwixArticleTooLarge' });
       throw new Error(err.error ?? `KiwixArticle HTTP ${res.status}`);
     }
     return await res.json() as KiwixArticleContent;
