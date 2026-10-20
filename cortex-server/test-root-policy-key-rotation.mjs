@@ -8,7 +8,8 @@
 //     PHASE 0  anchors = [OLD]          V1(OLD) active
 //     PHASE A  anchors = [OLD, NEW]     V1(OLD) still VALID, V2(NEW) verifiable          (reviewed trust-anchors.js change + Docteur restart)
 //     PHASE B  V2(NEW) signed + active  highestVersionSeen = 2, V1 replay refused         (human `sign` ceremony — done 2026-10-20)
-//     PHASE C  anchors = [NEW]          V2(NEW) VALID, anything signed by OLD UNTRUSTED   (reviewed trust-anchors.js change + Docteur restart)
+//     PHASE C  anchors = [NEW]          V2(NEW) VALID, anything signed by OLD UNTRUSTED   (reviewed trust-anchors.js change + Docteur restart — done 2026-10-20)
+// Production is now in PHASE C: the legacy key is retired from TRUST_ANCHORS; only the isolated historical fixture still knows its public key.
 // The real policy/ directory, the real anti-rollback state and the real signing keys are never written, decrypted or used to sign.
 import './test-setup.mjs';
 import { test, after } from 'node:test';
@@ -50,7 +51,7 @@ const signInto = (dir, policy, key) => signPolicy({ policy, privateKeyPem: key.p
 const verify = (dir, trustAnchors, highestVersionSeen = 0) => loadAndVerify({ policyDir: dir, trustAnchors, highestVersionSeen });
 const pairIn = (policy, key) => { const dir = freshDir(); signInto(dir, policy, key); return dir; };
 
-test('fixture keys are distinct from each other and from the real (retiring) V1 anchor', () => {
+test('fixture keys are distinct from each other and from the real (retired) V1 key', () => {
   const ids = [anchorOf(FIXTURE_OLD).keyId, anchorOf(FIXTURE_NEW).keyId];
   assert.notEqual(ids[0], ids[1]);
   for (const id of ids) assert.ok(!TRUST_ANCHORS.some(a => a.keyId === id), 'a fixture key must never be a real trust anchor');
@@ -147,21 +148,26 @@ test('A. HISTORICAL: the signed V1 fixture verifies with its own historical publ
   assert.deepEqual([r.ok, r.version, r.sha256, r.keyId], [true, 1, HISTORICAL_V1.sha256, REAL_OLD_KEY_ID]);
   assert.equal(keyIdOf(HISTORICAL_V1_ANCHORS[0].publicKeyPem), REAL_OLD_KEY_ID, 'the historical anchor is self-consistent');
   assert.deepEqual(HISTORICAL_V1_ANCHORS.map(a => a.keyId), [REAL_OLD_KEY_ID], 'exactly the legacy public key, nothing else');
+  assert.equal(TRUST_ANCHORS.some(a => a.keyId === REAL_OLD_KEY_ID), false, 'and it passes WITHOUT the production set knowing that key (PHASE C)');
 });
 
-test('A. HISTORICAL: once V2 has been accepted (highestVersionSeen = 2) the historical V1 is a rollback — whatever the anchor set', () => {
+test('A. HISTORICAL: the historical V1 is refused by production as untrusted, and is a rollback in its own isolated context', () => {
+  // Isolated historical context (its own public key): the signature is fine, so the version check decides ⇒ rollback.
   const isolated = loadAndVerify({ policyDir: HISTORICAL_V1_DIR, trustAnchors: HISTORICAL_V1_ANCHORS, highestVersionSeen: 2 });
   assert.deepEqual([isolated.ok, isolated.code], [false, 'ROLLBACK_DETECTED']);
-  // Production: ROLLBACK_DETECTED while the legacy anchor is still listed (PHASE A), TRUST_ANCHOR_UNKNOWN after PHASE C — refused either way.
-  const production = loadAndVerify({ policyDir: HISTORICAL_V1_DIR, trustAnchors: TRUST_ANCHORS, highestVersionSeen: 2 });
-  assert.equal(production.ok, false);
-  assert.ok(['ROLLBACK_DETECTED', 'TRUST_ANCHOR_UNKNOWN'].includes(production.code), production.code);
+  // Production (PHASE C): loadAndVerify looks the signing key up (step 4) BEFORE it compares versions (step 6) ⇒ untrusted first,
+  // whatever highestVersionSeen says — even a machine that never saw V2 refuses the legacy-key V1.
+  for (const highestVersionSeen of [0, 1, 2]) {
+    const production = loadAndVerify({ policyDir: HISTORICAL_V1_DIR, trustAnchors: TRUST_ANCHORS, highestVersionSeen });
+    assert.deepEqual([production.ok, production.code, production.tamper], [false, 'TRUST_ANCHOR_UNKNOWN', true], `highestVersionSeen=${highestVersionSeen}`);
+  }
 });
 
-// ── REAL PHASE A trust set (public material only; the new private key is never read) ───────────────────────────────────
+// ── REAL PHASE C production trust set (public material only; no private key is ever read) ───────────────────────────────────
 
-test('REAL PHASE A: exactly the legacy V1 anchor then the rotation anchor, each static, self-consistent and unique', () => {
-  assert.deepEqual(TRUST_ANCHORS.map(a => a.keyId), [REAL_OLD_KEY_ID, REAL_NEW_KEY_ID]);
+test('REAL PHASE C: exactly ONE production anchor — the rotation key — static, self-consistent and unique; the legacy key is gone', () => {
+  assert.deepEqual(TRUST_ANCHORS.map(a => a.keyId), [REAL_NEW_KEY_ID]);
+  assert.equal(TRUST_ANCHORS.some(a => a.keyId === REAL_OLD_KEY_ID || a.publicKeyPem === HISTORICAL_V1_ANCHORS[0].publicKeyPem), false, 'legacy key retired from production');
   assert.ok(Object.isFrozen(TRUST_ANCHORS));
   assert.equal(new Set(TRUST_ANCHORS.map(a => a.keyId)).size, TRUST_ANCHORS.length, 'no duplicate keyId');
   for (const a of TRUST_ANCHORS) {
@@ -173,10 +179,35 @@ test('REAL PHASE A: exactly the legacy V1 anchor then the rotation anchor, each 
   }
 });
 
-test('REAL PHASE A: anchors are code — no file, env or directory based loading in trust-anchors.js', () => {
+test('REAL PHASE C: anchors are code — no file, env or directory based loading in trust-anchors.js', () => {
   const source = fs.readFileSync(path.join(HERE, 'src', 'lib', 'root-policy', 'trust-anchors.js'), 'utf8');
   assert.doesNotMatch(source, /\bimport\b|\brequire\s*\(|process\.env|readFileSync|readdir|fetch\s*\(/);
   assert.doesNotMatch(source, /PRIVATE KEY|signing-key\.enc\.json|ROOT_POLICY_PASSPHRASE/, 'no private material, key path or passphrase hook in source');
+});
+
+test('REAL PHASE C: production refuses anything claiming the retired key or an unknown key (TRUST_ANCHOR_UNKNOWN), and keeps the shipped V2', () => {
+  // A FUTURE policy claiming the retired keyId: the lookup fails before any signature, schema or version check.
+  const future = pairIn(buildDefaultPolicy({ version: 3, issuedAt: '2026-10-22T00:00:00.000Z' }), FIXTURE_OLD);
+  const sigPath = path.join(future, SIGNATURE_FILE);
+  fs.writeFileSync(sigPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(sigPath, 'utf8')), keyId: REAL_OLD_KEY_ID }));
+  for (const highestVersionSeen of [0, 2]) {
+    assert.deepEqual([verify(future, TRUST_ANCHORS, highestVersionSeen).ok, verify(future, TRUST_ANCHORS, highestVersionSeen).code], [false, 'TRUST_ANCHOR_UNKNOWN'], 'retired-key future policy');
+  }
+  const unknown = verify(pairIn(V2_POLICY(), keyPair()), TRUST_ANCHORS, 2);
+  assert.deepEqual([unknown.ok, unknown.code], [false, 'TRUST_ANCHOR_UNKNOWN'], 'unknown key');
+  const shipped = loadAndVerify({ policyDir: path.join(HERE, 'policy'), trustAnchors: TRUST_ANCHORS, highestVersionSeen: 2 });
+  assert.deepEqual([shipped.ok, shipped.version, shipped.keyId], [true, 2, REAL_NEW_KEY_ID], 'the shipped V2 stays VALID under new-key-only trust');
+});
+
+test('REAL PHASE C: the retired keyId appears in NO production code — only in history (fixture, signing log)', () => {
+  const productionFiles = [path.join(HERE, 'root-policy-tool.mjs'), path.join(HERE, 'root-policy-v2-candidate.mjs')];
+  const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else if (/\.(m?js|json)$/.test(e.name)) productionFiles.push(p); } };
+  walk(path.join(HERE, 'src'));
+  const offenders = productionFiles.filter(f => fs.readFileSync(f, 'utf8').includes(REAL_OLD_KEY_ID)).map(f => path.relative(HERE, f));
+  assert.deepEqual(offenders, [], 'no runtime fallback, acceptance list or default trusting the legacy key');
+  // the remaining references are historical evidence by design
+  assert.ok(fs.readFileSync(path.join(HERE, 'policy', 'signing-log.jsonl'), 'utf8').split('\n')[0].includes(REAL_OLD_KEY_ID), 'the V1 signing-log line stays as audit history');
+  assert.ok(fs.readFileSync(path.join(HISTORICAL_V1_DIR, 'root-policy.sig.json'), 'utf8').includes(REAL_OLD_KEY_ID), 'the historical V1 fixture keeps its signature');
 });
 
 // ── B. PRODUCTION (read-only: the shipped policy in policy/ against the production anchors) ─────────────────────────────
