@@ -363,13 +363,19 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
     HEALTHY: { status: 'HEALTHY', code: 'OK' }, DEGRADED: { status: 'DEGRADED', code: 'HEALTH_FAILED' }, STOPPED: { status: 'NOT_PROBED', code: 'NOT_RUNNING' },
     STARTING: { status: 'NOT_PROBED', code: 'NOT_STARTED' }, STOPPING: { status: 'NOT_PROBED', code: 'NOT_RUNNING' }, CRASHED: { status: 'UNREACHABLE', code: 'PROCESS_EXITED' },
   });
+  // [RS-UI-1] The owner's two stop-outcome codes cross as closed supervisor codes (never the owner's text); every other owner
+  // code stays the generic KIWIX_REPORTED_ERROR. A stop timeout keeps the owner's DEGRADED state: only its detail becomes exact.
+  const DELEGATED_STOP_ERRORS = Object.freeze({ stop_timeout: 'STOP_TIMEOUT', port_not_released: 'PORT_NOT_RELEASED' });
+  const delegatedErrorCode = (code) => (typeof code === 'string' && code ? DELEGATED_STOP_ERRORS[code] ?? 'KIWIX_REPORTED_ERROR' : null);
   function projectDelegated(def) {
     const rec = records.get(def.serviceId);
     const s = delegatedStatus(def);
     const state = s ? s.state : 'DEGRADED';
     if (rec.observed && rec.observed.state !== state) audit.record({ event: 'OBSERVED_CHANGE', serviceId: def.serviceId, from: rec.observed.state, to: state });
     rec.observed = { state };
-    return { s, state, health: s ? { ...DELEGATED_HEALTH[state] } : { status: 'DEGRADED', code: 'OBSERVE_FAILED' } };
+    if (!s) return { s, state, health: { status: 'DEGRADED', code: 'OBSERVE_FAILED' } };
+    const stopTimedOut = state === 'DEGRADED' && s.lastError === 'stop_timeout';
+    return { s, state, health: stopTimedOut ? { status: 'DEGRADED', code: 'STOP_TIMEOUT' } : { ...DELEGATED_HEALTH[state] } };
   }
   function delegatedEligibility(def) {
     const rec = records.get(def.serviceId);
@@ -488,7 +494,7 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
         serviceId: def.serviceId, displayName: def.displayName, ownershipClass: def.ownershipClass, kind: def.kind, optional: def.optional, dependencies: [...def.dependencies], note: def.note,
         state, health, processRunning: s ? running : null, portListening: state === 'HEALTHY' ? true : null, pid: running && Number.isInteger(s.pid) ? s.pid : null,
         uptimeMs: Number.isFinite(started) ? Math.max(0, now() - started) : null, lastExitCode: null,
-        lastError: rec.lastError ?? (s?.lastError ? 'KIWIX_REPORTED_ERROR' : null), lastRestartAt: rec.lastRestartAt, restartCount: rec.restartCount, crashCount: 0, retryAt: null,
+        lastError: rec.lastError ?? delegatedErrorCode(s?.lastError), lastRestartAt: rec.lastRestartAt, restartCount: rec.restartCount, crashCount: 0, retryAt: null,
         operationInProgress: Boolean(rec.op), restart: delegatedEligibility(def), restartEffects: [...def.restartEffects],
       });
     }

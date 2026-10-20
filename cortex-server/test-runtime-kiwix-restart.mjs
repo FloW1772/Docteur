@@ -608,6 +608,46 @@ test('OBS-1 F. non-Kiwix services stay refused (HTTP + policy) and never produce
   assert.equal(w.calls.length, 0, 'nothing launched');
 });
 
+// ═══════════════════════════ RS-UI-1: the supervisor projects the owner's stop outcome exactly ═══════════════════════
+/** The REAL supervisor + authority over a stub Kiwix port that only REPORTS a lifecycle status (nothing runs, nothing is killed). */
+async function viewOfReportedStatus(reported) {
+  const port = {
+    serviceId: 'kiwix-serve',
+    getLifecycleStatus: () => ({ serviceId: 'kiwix-serve', port: 18_000, startedAt: '2026-10-20T10:00:00.000Z', generation: 3, definitionDigest: DIGEST, ...reported }),
+    restartOwnedKiwix: async () => ({ ok: false, error: 'restart_not_authorized' }),
+  };
+  const authority = createRestartAuthority({ services: ['kiwix-serve'], policyDecide: (q) => e2.decide(q), policyView: viewFor(V2) });
+  const services = createProductRuntimeServices({ ollamaUrl: 'http://127.0.0.1:9', kiwixDelegate: port, comfy: { installState: () => ({ kind: 'none', status: 'not_installed' }) } });
+  const sup = createRuntimeSupervisor({ services, restartAuthority: authority, audit: createRuntimeAuditLog(), probe: async () => ({ code: 'REFUSED' }) });
+  return sup.get('kiwix-serve');
+}
+const shape = (v) => ({ state: v.state, health: v.health.code, lastError: v.lastError, processRunning: v.processRunning, restart: `${v.restart.allowed}:${v.restart.code}` });
+
+test('UI-1 A/B/C. stop timeout stays DEGRADED with the exact STOP_TIMEOUT detail (never STOPPED); a genuine stop stays STOPPED with no error', async () => {
+  assert.deepEqual(shape(await viewOfReportedStatus({ state: 'DEGRADED', owned: true, pid: 4242, lastError: 'stop_timeout' })),
+    { state: 'DEGRADED', health: 'STOP_TIMEOUT', lastError: 'STOP_TIMEOUT', processRunning: true, restart: 'true:CHALLENGE_REQUIRED' }, 'restart eligibility unchanged: the ceremony retries a verified stop of the owned child');
+  assert.deepEqual(shape(await viewOfReportedStatus({ state: 'STOPPED', owned: false, pid: null, lastError: null })),
+    { state: 'STOPPED', health: 'NOT_RUNNING', lastError: null, processRunning: false, restart: 'false:NOT_RUNNING' });
+  assert.deepEqual(shape(await viewOfReportedStatus({ state: 'STOPPED', owned: false, pid: null, lastError: 'port_not_released' })),
+    { state: 'STOPPED', health: 'NOT_RUNNING', lastError: 'PORT_NOT_RELEASED', processRunning: false, restart: 'false:NOT_RUNNING' }, 'process exited, port not freed: said explicitly');
+});
+
+test('UI-1 D/F. other states and DEGRADED reasons keep their existing presentation; unknown owner codes are never relayed', async () => {
+  for (const code of ['start_timeout', 'binding_unverified', 'policy_denied']) {
+    assert.deepEqual(shape(await viewOfReportedStatus({ state: 'DEGRADED', owned: true, pid: 4242, lastError: code })),
+      { state: 'DEGRADED', health: 'HEALTH_FAILED', lastError: 'KIWIX_REPORTED_ERROR', processRunning: true, restart: 'true:CHALLENGE_REQUIRED' }, code);
+  }
+  assert.equal((await viewOfReportedStatus({ state: 'DEGRADED', owned: true, pid: 4242, lastError: 'rm -rf / <script>' })).lastError, 'KIWIX_REPORTED_ERROR', 'closed codes only');
+  assert.deepEqual(shape(await viewOfReportedStatus({ state: 'HEALTHY', owned: true, pid: 4242, lastError: null })),
+    { state: 'HEALTHY', health: 'OK', lastError: null, processRunning: true, restart: 'true:CHALLENGE_REQUIRED' });
+  for (const state of ['STARTING', 'STOPPING']) {
+    const v = await viewOfReportedStatus({ state, owned: true, pid: 4242, lastError: null });
+    assert.deepEqual([v.state, v.lastError, v.restart.allowed, v.restart.code], [state, null, false, 'OPERATION_IN_PROGRESS'], state);
+  }
+  // a stop_timeout reported in a NON-degraded state is not dressed up as a stop timeout
+  assert.equal((await viewOfReportedStatus({ state: 'HEALTHY', owned: true, pid: 4242, lastError: 'stop_timeout' })).health.code, 'OK');
+});
+
 // ═══════════════════════════ STATIC: who can mint, who can call, what HTTP can carry ═══════════════════════════════
 const SRC = path.join(HERE, 'src');
 // comments only: block comments that START a line (a '/api/*' string glob must not open a "comment"), line comments

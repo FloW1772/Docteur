@@ -72,9 +72,15 @@ const AUTHORITIES = {
   V1_HISTORICAL: () => createRestartAuthority({ services: ['kiwix-serve'], policyDecide: (q) => historical.decide(q), policyView: () => ({ status: { state: 'VALID', version: 1 }, policy: V1 }) }),
   V2: () => createRestartAuthority({ services: ['kiwix-serve'], policyDecide: (q) => candidate.decide(q), policyView: () => ({ status: { state: 'VALID' }, policy: V2 }) }),
 };
-function supervisorFor(mode) {
+/** [RS-UI-1] a stub Kiwix port that only REPORTS a lifecycle status (nothing is spawned, hung or killed). */
+const reportingPort = (reported) => ({
+  serviceId: 'kiwix-serve',
+  getLifecycleStatus: () => ({ serviceId: 'kiwix-serve', port: 18_000, startedAt: new Date(Date.now() - 60_000).toISOString(), generation: 2, definitionDigest: 'a'.repeat(64), ...reported }),
+  restartOwnedKiwix: async () => ({ ok: false, error: 'restart_not_authorized' }),
+});
+function supervisorFor(mode, kiwixPort = null) {
   const authority = AUTHORITIES[mode]();
-  const port = createKiwixLifecyclePort({ lifecycle: lc, redeemRestartAuthorization: authority.redeem });
+  const port = kiwixPort ?? createKiwixLifecyclePort({ lifecycle: lc, redeemRestartAuthorization: authority.redeem });
   const services = createProductRuntimeServices({ ollamaUrl: 'http://127.0.0.1:9', kiwixDelegate: port, comfy: { installState: () => ({ kind: 'none', status: 'not_installed' }) }, uptime: () => 123_000 });
   const sup = createRuntimeSupervisor({ services, restartAuthority: authority, audit: createRuntimeAuditLog(), probe: async (r) => (r.port === 9 ? { code: 'OK', headers: {} } : { code: 'REFUSED' }) });
   // product-shaped HTTP stack: CORS for the page origin → NB-7 local API guard → the REAL route (default loopback peer check)
@@ -95,6 +101,11 @@ function supervisorFor(mode) {
 }
 const posts = []; const responses = []; const challengeIds = []; let aborted = 0; const pageErrors = [];
 const worlds = { LIVE: await supervisorFor('LIVE'), V1_HISTORICAL: await supervisorFor('V1_HISTORICAL'), V2: await supervisorFor('V2') };
+const uiWorlds = {
+  STOP_TIMEOUT: await supervisorFor('V2', reportingPort({ state: 'DEGRADED', owned: true, pid: 4242, lastError: 'stop_timeout' })),
+  OTHER_DEGRADED: await supervisorFor('V2', reportingPort({ state: 'DEGRADED', owned: true, pid: 4242, lastError: 'start_timeout' })),
+  STOPPED: await supervisorFor('V2', reportingPort({ state: 'STOPPED', owned: false, pid: null, lastError: null })),
+};
 
 // ── browser plumbing ──
 // the harness page is SERVED BY VITE ON LOOPBACK (like the product UI), not fulfilled by Playwright: a fulfilled document has no local
@@ -268,10 +279,46 @@ try {
     await card(p, 'kiwix-serve').getByTestId('rs-ceremony-cancel').click();
     await c.close();
   });
+
+  await scenario('11. [RS-UI-1] stop timeout: DEGRADED + « Arrêt expiré » + explanation + may still run — never « Arrêté »; another DEGRADED reason and a genuine stop keep their own presentation', async () => {
+    const view = async (w) => {
+      const { page: p, context: c } = await openPage(w);
+      const k = card(p, 'kiwix-serve');
+      const textIfPresent = async (id) => ((await k.getByTestId(id).count()) ? (await k.getByTestId(id).innerText()).replace(/\s+/g, ' ') : ''); // absent ⇒ '' without waiting
+      const out = { state: await k.getAttribute('data-state'), badge: await k.getByTestId('rs-state').innerText(), notice: await k.getByTestId('rs-stop-timeout').count(),
+        noticeText: await textIfPresent('rs-stop-timeout'), error: await textIfPresent('rs-error'),
+        all: (await k.innerText()).replace(/\s+/g, ' '), restartDisabled: await k.getByTestId('rs-restart').isDisabled() };
+      await c.close();
+      return out;
+    };
+    const postsBefore = posts.length;
+    const t = await view(uiWorlds.STOP_TIMEOUT);
+    eq(t.state, 'DEGRADED'); eq(t.badge, 'Dégradé', 'badge stays DEGRADED');
+    eq(t.notice, 1, 'stop-timeout notice shown');
+    ok(t.noticeText.includes('Arrêt expiré'), t.noticeText);
+    ok(t.noticeText.includes('Docteur n’a pas pu confirmer l’arrêt du service dans le délai prévu.'), 'explanation');
+    ok(t.noticeText.includes('Le service peut encore être actif.'), 'owned process still reported running');
+    ok(!/\bArrêté\b/.test(t.all), 'never presented as stopped');
+    ok(t.all.includes('arrêt non confirmé dans le délai prévu'), 'health detail is the stop timeout, not a health-check failure');
+    ok(!t.noticeText.includes('forcé') && !t.all.includes('port libéré'), 'no claim of a forced kill or a released port');
+    eq(t.restartDisabled, false, 'restart offered exactly as the backend rules say (ceremony retries a verified stop of the owned child)');
+
+    const o = await view(uiWorlds.OTHER_DEGRADED);
+    eq(o.state, 'DEGRADED'); eq(o.badge, 'Dégradé');
+    eq(o.notice, 0, 'another DEGRADED reason is not labelled a stop timeout');
+    ok(!o.all.includes('Arrêt expiré'));
+    ok(o.error.includes('Le module Kiwix signale une erreur.'), 'existing generic detail kept');
+
+    const s = await view(uiWorlds.STOPPED);
+    eq(s.state, 'STOPPED'); eq(s.badge, 'Arrêté', 'a genuine stop is shown as stopped');
+    eq(s.notice, 0); eq(s.error, '', 'no error on a clean stop');
+    eq(s.restartDisabled, true, 'nothing to restart');
+    eq(posts.length, postsBefore, 'presentation only: nothing was posted');
+  });
 } finally {
   await browser.close();
   await server.close();
-  for (const w of Object.values(worlds)) await new Promise(r => w.server.close(() => r()));
+  for (const w of [...Object.values(worlds), ...Object.values(uiWorlds)]) await new Promise(r => w.server.close(() => r()));
   await lc.stop().catch(() => {});
   for (const c of spawned) if (c.exitCode === null && c.signalCode === null) await killProcessTree(c).catch(() => {});
   try { fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 3 }); } catch { /* temp */ }

@@ -76,6 +76,7 @@ const HEALTH_CODES: Record<string, string> = {
   HEALTH_TIMEOUT: 'ne répond pas à temps', HEALTH_HTTP_ERROR: 'répond en erreur', HEALTH_FAILED: 'contrôle de santé en échec',
   IDENTITY_MISMATCH: 'un autre programme occupe son port', START_TIMEOUT: 'démarrage trop long', PORT_IN_USE: 'port déjà occupé',
   PROCESS_EXITED: 'processus arrêté de façon inattendue', NON_LOOPBACK_ENDPOINT: 'adresse non locale : non contrôlée', OBSERVE_FAILED: 'état illisible',
+  STOP_TIMEOUT: 'arrêt non confirmé dans le délai prévu',
 };
 export const healthLabel = (code: unknown): string => (typeof code === 'string' && HEALTH_CODES[code]) || 'état non détaillé';
 
@@ -89,8 +90,23 @@ const ERRORS: Record<string, string> = {
   RESTART_NOT_HEALTHY: 'Le service a redémarré mais n’est pas encore sain.', BINDING_NOT_LOOPBACK: 'Le service ne s’est pas lié en local uniquement : arrêté par sécurité.',
   DEFINITION_INVALID: 'La configuration du service est invalide.', START_CANCELLED: 'Démarrage annulé.', RESTART_FAILED: 'La relance a échoué.',
   OPERATION_IN_PROGRESS: 'Une opération était déjà en cours.',
+  STOP_TIMEOUT: 'Arrêt expiré : l’arrêt du service n’a pas pu être confirmé dans le délai prévu.',
+  PORT_NOT_RELEASED: 'Le processus s’est arrêté, mais son port n’a pas été libéré dans le délai prévu.',
 };
 export const errorLabel = (code: unknown): string | null => (code === null || code === undefined ? null : (typeof code === 'string' && ERRORS[code]) || 'Erreur non détaillée.');
+
+/**
+ * [RS-UI-1] A controlled stop that could not be confirmed: the state stays DEGRADED (never STOPPED). Shown only for that exact
+ * condition — other DEGRADED reasons keep their own detail. `mayStillRun` only reflects what the server reports (owned process).
+ */
+export function stopTimeoutNotice(s: Pick<RuntimeServiceDto, 'state' | 'health' | 'processRunning'>): { title: string; text: string; mayStillRun: boolean } | null {
+  if (s.state !== 'DEGRADED' || s.health?.code !== 'STOP_TIMEOUT') return null;
+  return {
+    title: 'Arrêt expiré',
+    text: 'Docteur n’a pas pu confirmer l’arrêt du service dans le délai prévu.',
+    mayStillRun: s.processRunning === true,
+  };
+}
 
 const RESTART_REASONS: Record<string, string> = {
   SELF_RESTART_UNSUPPORTED: 'Le serveur Docteur ne peut pas se relancer lui-même.',

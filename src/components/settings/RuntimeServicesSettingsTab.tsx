@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, RotateCcw, ShieldAlert } from 'lucide-react';
 import { createHttpRuntimePort } from '../../lib/runtime/http-port';
 import {
-  RuntimeUiError, errorLabel, formatUptime, healthLabel, isBusy, ownershipLabel, restartEffectLabel, restartReasonLabel, stateBadge,
+  RuntimeUiError, errorLabel, formatUptime, healthLabel, isBusy, ownershipLabel, restartEffectLabel, restartReasonLabel, stateBadge, stopTimeoutNotice,
   type RestartChallengeDto, type RestartGesture, type RuntimePort, type RuntimeServiceDto, type Tone,
 } from '../../lib/runtime/contracts';
 
@@ -58,6 +58,7 @@ function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancel
     ['Dernière relance', fmtTime(s.lastRestartAt)],
   ];
   const err = errorLabel(s.lastError);
+  const stopTimeout = stopTimeoutNotice(s);
   return (
     <li data-testid={`rs-service-${s.serviceId}`} data-state={s.state} className="rs-card"
       style={{ border: `1px solid ${TONE[badge.tone].border}`, borderRadius: 8, padding: 12, background: 'rgba(255,255,255,0.02)', listStyle: 'none' }}>
@@ -79,6 +80,14 @@ function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancel
           <div key={k} style={{ minWidth: 0 }}><dt style={{ color: '#5a4a7a', fontSize: 10 }}>{k}</dt><dd style={{ margin: 0, color: '#cbd5e1', overflowWrap: 'anywhere' }}>{v}</dd></div>
         ))}
       </dl>
+      {stopTimeout && (
+        <div data-testid="rs-stop-timeout" role="status" aria-live="polite"
+          style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, border: `1px solid ${TONE.warn.border}`, background: TONE.warn.bg, fontFamily: 'monospace' }}>
+          <p style={{ margin: 0, fontSize: 12, color: TONE.warn.fg }}>{stopTimeout.title}</p>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: '#e2e8f0' }}>{stopTimeout.text}</p>
+          {stopTimeout.mayStillRun && <p data-testid="rs-stop-timeout-running" style={{ margin: '2px 0 0', fontSize: 11, color: '#e2e8f0' }}>Le service peut encore être actif.</p>}
+        </div>
+      )}
       {err && <p data-testid="rs-error" style={{ margin: '8px 0 0', fontSize: 11, color: '#f87171', fontFamily: 'monospace' }}>Dernière erreur : {err}</p>}
       {s.note && <p style={{ margin: '6px 0 0', fontSize: 10, color: '#5a4a7a', fontFamily: 'monospace' }}>{s.note}</p>}
       {!s.restart.allowed && (
