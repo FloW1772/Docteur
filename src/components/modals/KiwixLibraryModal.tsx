@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   X, Library, Search, Settings, Download, Trash2, Play, Square,
-  ExternalLink, Plus, ArrowLeft, AlertTriangle, CheckCircle,
+  ExternalLink, Plus, ArrowLeft, AlertTriangle, CheckCircle, Loader2,
 } from 'lucide-react';
 import { cortexClient } from '../../lib/cortex/client';
 import type {
@@ -39,6 +39,11 @@ export default function KiwixLibraryModal({ onClose }: Props) {
   const [searching, setSearching] = useState(false);
 
   const [article, setArticle] = useState<KiwixArticleContent | null>(null);
+  // [KWX-2] article loading is visible, its failure is shown where the user is (the results list), and only the LATEST
+  // selection may land: a slower earlier article never replaces a newer one (nor a new search).
+  const [articleLoading, setArticleLoading] = useState(false);
+  const [articleError, setArticleError] = useState<string | null>(null);
+  const articleSeq = useRef(0);
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
 
@@ -107,6 +112,9 @@ export default function KiwixLibraryModal({ onClose }: Props) {
     if (!searchQuery.trim()) return;
     setSearching(true);
     setArticle(null);
+    articleSeq.current += 1; // an article still loading from the previous results must not land on the new ones
+    setArticleLoading(false);
+    setArticleError(null);
     try {
       const results = await cortexClient.kiwixSearchArchives(searchBook, searchQuery.trim());
       setSearchResults(results);
@@ -118,12 +126,19 @@ export default function KiwixLibraryModal({ onClose }: Props) {
   }
 
   async function openArticle(book: string, path: string) {
+    const seq = ++articleSeq.current;
+    setArticleLoading(true);
+    setArticleError(null);
     try {
       const content = await cortexClient.kiwixArticle(book, path);
+      if (seq !== articleSeq.current) return; // a newer selection or search superseded this one
       setArticle(content);
       setImportMsg(null);
     } catch (e) {
-      setImportMsg(e instanceof Error ? e.message : 'Erreur de chargement');
+      if (seq !== articleSeq.current) return;
+      setArticleError(e instanceof Error ? e.message : 'Erreur de chargement');
+    } finally {
+      if (seq === articleSeq.current) setArticleLoading(false);
     }
   }
 
@@ -375,6 +390,14 @@ export default function KiwixLibraryModal({ onClose }: Props) {
 
                   {!article && (
                     <div className="flex flex-col gap-1">
+                      {articleLoading && (
+                        <p data-testid="kiwix-article-loading" role="status" className="font-mono text-xs flex items-center gap-1" style={{ color: '#7a6c9a' }}>
+                          <Loader2 size={12} className="animate-spin" /> Chargement de l’article…
+                        </p>
+                      )}
+                      {articleError && (
+                        <p data-testid="kiwix-article-error" role="alert" className="font-mono text-xs" style={{ color: '#f87171' }}>{articleError}</p>
+                      )}
                       {searchResults.map((r, i) => (
                         <button
                           key={`${r.bookName}-${r.path}-${i}`}

@@ -6,6 +6,11 @@ export { DEEP_CAPTURE_TIMEOUT_MS } from '../capturePipeline';
 const BASE      = `${window.location.protocol}//${window.location.hostname}:3001`;
 const TIMEOUT        = 90_000;   // ms per request (default)
 const TIMEOUT_ANSWER = 120_000;  // ms for /api/answer — first call loads model into VRAM
+// [KWX-2] Kiwix article content only (search, status and every other call keep their own budgets). The server sends the article
+// after the local kiwix-serve fetch AND the HTML sanitisation; its slowest observed article took 21.97 s server-side (typical < 1 s),
+// so 30 s keeps a ~35 % margin without hiding a genuinely stuck request.
+export const KIWIX_ARTICLE_TIMEOUT_MS = 30_000;
+export const KIWIX_ARTICLE_TIMEOUT_MESSAGE = 'Le chargement de cet article a dépassé le délai prévu.';
 const MAX_RETRY = 2;        // network retries (not HTTP errors)
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -6361,7 +6366,14 @@ export const cortexClient = {
 
   async kiwixArticle(book: string, articlePath: string): Promise<KiwixArticleContent> {
     const cleanPath = articlePath.replace(/^\/+/, '');
-    const res = await apiFetch(`/api/kiwix/content/${encodeURIComponent(book)}/${cleanPath}`, { method: 'GET' }, 15_000);
+    let res: Response;
+    try {
+      res = await apiFetch(`/api/kiwix/content/${encodeURIComponent(book)}/${cleanPath}`, { method: 'GET' }, KIWIX_ARTICLE_TIMEOUT_MS);
+    } catch (e) {
+      // our own budget expired: say so plainly (not "Kiwix crashed", "no internet" or "article missing" — none of that is known)
+      if (e instanceof Error && e.name === 'AbortError') throw Object.assign(new Error(KIWIX_ARTICLE_TIMEOUT_MESSAGE), { name: 'KiwixArticleTimeout' });
+      throw e;
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as { error?: string };
       throw new Error(err.error ?? `KiwixArticle HTTP ${res.status}`);
