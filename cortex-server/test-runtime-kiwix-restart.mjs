@@ -87,8 +87,9 @@ async function rig({ modes = ['healthy'], terminate, forceKill, policyGate } = {
 const UI_ORIGIN = 'http://127.0.0.1:5173';
 const UI = Object.freeze({ origin: UI_ORIGIN, 'sec-fetch-site': 'same-site', 'content-type': 'application/json' });
 /** Supervisor + authority + route over a rig. policy: 'V2' (in-memory reviewed V2) | 'LIVE' (the shipped signed policy through the real runtime). */
-async function world({ policy = 'V2', modes, terminate, forceKill, authorityNow, loopback = true, decideSpy = null } = {}) {
-  const kiwixPolicyGate = policy === 'LIVE' ? undefined : createKiwixProcessPolicyGate({ getPolicyViewFn: viewFor(V2), decideFn: e2.decide });
+async function world({ policy = 'V2', modes, terminate, forceKill, authorityNow, loopback = true, decideSpy = null, kiwixGateWrap = null } = {}) {
+  const baseGate = policy === 'LIVE' ? undefined : createKiwixProcessPolicyGate({ getPolicyViewFn: viewFor(V2), decideFn: e2.decide });
+  const kiwixPolicyGate = kiwixGateWrap && baseGate ? kiwixGateWrap(baseGate) : baseGate; // tests only: observe / force the Kiwix gate
   const r = await rig({ modes, terminate, forceKill, policyGate: kiwixPolicyGate });
   const decisions = [];
   const decide = policy === 'LIVE' ? rootPolicy.decide : (req) => e2.decide(req);
@@ -498,6 +499,115 @@ test('15. LIVE (shipped signed V2, server.js composition: real decide, real view
   await cleanup(w);
 });
 
+// ═══════════════════════════ RS-OBS-1: the replacement PROCESS_START decision is audited ═══════════════════════════════
+/** Test-only Kiwix gate wrapper: logs every evaluation into a timeline; `force(q)` may substitute a decision (never used for ALLOW tests). */
+const observingGate = (timeline, force = null) => (gate) => Object.freeze({
+  evaluate(q) {
+    const d = force?.(q) ?? gate.evaluate(q);
+    timeline.push(`gate:${q.action}:${q.reason}:${d.decision}`);
+    return d;
+  },
+});
+const kiwixEvents = (w) => w.audit.recent('kiwix-serve', 50);
+const DECISION_EVENT_KEYS = ['action', 'actor', 'at', 'context', 'decision', 'definitionDigest', 'event', 'generation', 'policyVersion', 'reason', 'serviceId'];
+
+test('OBS-1 A/B/E/G/H. certified restart: ONE replacement PROCESS_START ALLOW event, after SERVICE_RESTART and BEFORE the old instance is stopped; one evaluation; replay refused; nothing sensitive', async () => {
+  const timeline = []; let wRef = null;
+  const w = await world({
+    kiwixGateWrap: observingGate(timeline),
+    terminate: (child) => { timeline.push(`terminate:audit=${wRef.audit.recent('kiwix-serve', 50).map(e => e.event).join(',')}`); child.kill(); },
+  });
+  wRef = w;
+  try {
+    await w.lc.start();
+    const before = w.port.getLifecycleStatus();
+    timeline.length = 0;
+    const c = await w.challenge();
+    assert.equal((await w.confirm(c.json.value.challengeId)).status, 202);
+    await w.sup.whenIdle('kiwix-serve');
+    assert.deepEqual([w.lc.status().state, w.lc.status().generation, w.calls.length], ['HEALTHY', before.generation + 1, 2]);
+
+    const events = kiwixEvents(w); const order = events.map(e => e.event);
+    const decisions = events.filter(e => e.event === 'REPLACEMENT_START_DECISION');
+    assert.equal(decisions.length, 1, 'A: exactly one replacement decision event');
+    const [dec] = decisions;
+    assert.deepEqual(
+      [dec.action, dec.context, dec.serviceId, dec.decision, dec.reason, dec.actor, dec.policyVersion, dec.generation, dec.definitionDigest],
+      ['PROCESS_START', 'RUNTIME_SUPERVISOR_REPLACEMENT', 'kiwix-serve', 'ALLOW', 'ALLOW_INTERNAL_TYPED_EXECUTOR', 'MODULE', 2, before.generation, before.definitionDigest],
+    );
+    assert.equal(events.find(e => e.event === 'CHALLENGE_CONFIRMED').reason, 'ALLOW_CERTIFIED_BOUNDARY', 'SERVICE_RESTART decision');
+    assert.ok(order.indexOf('CHALLENGE_CONFIRMED') < order.indexOf('REPLACEMENT_START_DECISION') && order.indexOf('REPLACEMENT_START_DECISION') < order.indexOf('RESTART_SUCCEEDED'), order.join(' > '));
+    // B: when the old process is signalled, the decision is already in the audit trail; the gate saw START before STOP
+    const term = timeline.find(t => t.startsWith('terminate:'));
+    assert.ok(term?.includes('REPLACEMENT_START_DECISION'), term);
+    const gates = timeline.filter(t => t.startsWith('gate:'));
+    assert.deepEqual(gates, ['gate:PROCESS_START:RUNTIME_SUPERVISOR_RESTART:ALLOW', 'gate:PROCESS_STOP:RUNTIME_SUPERVISOR_RESTART_STOP:ALLOW']);
+    // H: one authoritative evaluation — logging adds none
+    assert.equal(gates.filter(t => t.startsWith('gate:PROCESS_START:')).length, 1);
+    // E: replay refused, and it records no new decision
+    const replay = await w.confirm(c.json.value.challengeId);
+    assert.deepEqual([replay.status, replay.json.error.code], [409, 'RS_CHALLENGE_REPLAYED']);
+    assert.equal(kiwixEvents(w).filter(e => e.event === 'REPLACEMENT_START_DECISION').length, 1);
+    // G: typed fields only — no challenge, gesture, authorization, path or argument
+    assert.deepEqual(Object.keys(dec).sort(), DECISION_EVENT_KEYS);
+    const everything = JSON.stringify(kiwixEvents(w));
+    for (const leak of [c.json.value.challengeId, TMP, BIN_DIR, ZIM_DIR, KIWIX_BINARY_NAME, '--port', '--address', '--blockexternal', 'POINTER', 'authorization', 'gesture', 'trusted']) {
+      assert.ok(!everything.includes(leak), `audit must not contain ${String(leak).slice(0, 24)}`);
+    }
+  } finally { await cleanup(w); }
+});
+
+test('OBS-1 C/D. replacement PROCESS_START DENY: audited with its exact reason; the healthy old instance is NOT stopped, nothing is spawned, no success event', async () => {
+  const timeline = [];
+  const denyReplacement = (q) => (q.action === 'PROCESS_START' && q.reason === 'RUNTIME_SUPERVISOR_RESTART' ? Object.freeze({ decision: 'DENY', code: 'DENY_ARBITRARY_EXECUTION', policyVersion: 2 }) : null);
+  const w = await world({ kiwixGateWrap: observingGate(timeline, denyReplacement), terminate: (child) => { timeline.push('terminate'); child.kill(); } });
+  try {
+    await w.lc.start();
+    const before = w.lc.status();
+    timeline.length = 0;
+    const c = await w.challenge();
+    assert.equal((await w.confirm(c.json.value.challengeId)).status, 202);
+    await w.sup.whenIdle('kiwix-serve');
+    const after = w.lc.status();
+    assert.deepEqual([after.state, after.pid, after.generation, w.calls.length], ['HEALTHY', before.pid, before.generation, 1], 'old instance kept, no replacement spawned');
+    assert.equal(alive(before.pid), true);
+    assert.equal(timeline.includes('terminate'), false, 'nothing was signalled');
+    assert.deepEqual(timeline, ['gate:PROCESS_START:RUNTIME_SUPERVISOR_RESTART:DENY'], 'no stop was even evaluated');
+    const events = kiwixEvents(w); const order = events.map(e => e.event);
+    const decisions = events.filter(e => e.event === 'REPLACEMENT_START_DECISION');
+    assert.equal(decisions.length, 1);
+    assert.deepEqual([decisions[0].decision, decisions[0].reason, decisions[0].action, decisions[0].context, decisions[0].policyVersion, decisions[0].actor], ['DENY', 'DENY_ARBITRARY_EXECUTION', 'PROCESS_START', 'RUNTIME_SUPERVISOR_REPLACEMENT', 2, 'MODULE']);
+    assert.equal(order.includes('RESTART_SUCCEEDED'), false, 'no false success');
+    assert.equal(order.filter(e => e === 'RESTART_FAILED').length, 1);
+    assert.ok(order.indexOf('REPLACEMENT_START_DECISION') < order.indexOf('RESTART_FAILED'));
+  } finally { await cleanup(w); }
+});
+
+test('OBS-1 failure after ALLOW: the decision stays ALLOW, the later spawn failure is its own event, nothing is rewritten and no success is claimed', async () => {
+  const w = await world({ modes: ['healthy', 'crash-on-start'] });
+  try {
+    await w.lc.start();
+    const c = await w.challenge();
+    assert.equal((await w.confirm(c.json.value.challengeId)).status, 202);
+    await w.sup.whenIdle('kiwix-serve');
+    const events = kiwixEvents(w); const order = events.map(e => e.event);
+    assert.deepEqual(events.filter(e => e.event === 'REPLACEMENT_START_DECISION').map(e => e.decision), ['ALLOW']);
+    assert.equal(order.includes('RESTART_SUCCEEDED'), false);
+    assert.ok(order.indexOf('REPLACEMENT_START_DECISION') < order.indexOf('RESTART_FAILED'), order.join(' > '));
+  } finally { await cleanup(w); }
+});
+
+test('OBS-1 F. non-Kiwix services stay refused (HTTP + policy) and never produce a replacement decision', async () => {
+  const w = await world();
+  for (const id of ['ollama', 'docteur-backend', 'docteur-frontend', 'comfyui']) {
+    assert.equal((await w.post(`${id}/restart-challenge`)).status, 403, id);
+    assert.equal(e2.decide(RESTART({ certifiedBoundary: true, context: { serviceId: id, target: id, payloadHash: 'a'.repeat(64) } })).code, 'DENY_SERVICE_NOT_ALLOWLISTED', id);
+  }
+  assert.equal((await w.post('unknown-service/restart-challenge')).status, 404);
+  assert.equal(w.audit.recent(null, 50).filter(e => e.event === 'REPLACEMENT_START_DECISION').length, 0);
+  assert.equal(w.calls.length, 0, 'nothing launched');
+});
+
 // ═══════════════════════════ STATIC: who can mint, who can call, what HTTP can carry ═══════════════════════════════
 const SRC = path.join(HERE, 'src');
 // comments only: block comments that START a line (a '/api/*' string glob must not open a "comment"), line comments
@@ -544,7 +654,8 @@ test('17. STATIC: HTTP can never carry the flag, an approval token, a process fi
   const kiwix = strip(fs.readFileSync(path.join(SRC, 'lib/kiwix.js'), 'utf8'));
   assert.doesNotMatch(kiwix, /root-policy\/|certifiedBoundary|rootPolicyDecide/, 'the delegate cannot authorise itself');
   const sup = strip(fs.readFileSync(path.join(SRC, 'lib/runtime-supervisor.js'), 'utf8'));
-  assert.equal((sup.match(/restartOwnedInstance\(/g) ?? []).length, 1); assert.match(sup, /def\.delegate\.restartOwnedInstance\(r\.authorization\)/);
+  // one call site; its only capability is the minted authorization (the second argument is the RS-OBS-1 audit observer, nothing else)
+  assert.equal((sup.match(/restartOwnedInstance\(/g) ?? []).length, 1); assert.match(sup, /def\.delegate\.restartOwnedInstance\(r\.authorization, \{ onReplacementDecision \}\)/);
   assert.doesNotMatch(sup, /\bexecute\(|\brun\(|kill\(pid|delegate\.(spawn|kill|exec)/);
   const services = strip(fs.readFileSync(path.join(SRC, 'lib/runtime-supervisor-services.js'), 'utf8'));
   assert.doesNotMatch(services, /executable|\bargs\b|\bcwd\b|kiwixServePath|spawn/);

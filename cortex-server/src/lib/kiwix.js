@@ -582,6 +582,21 @@ export function registerShutdownHook(logger) {
 // restartOwnedKiwix(authorization). The authorization is the opaque, single-use object the Runtime Supervisor's internal
 // authority mints after a consumed local challenge and a Root Policy SERVICE_RESTART decision of ALLOW_CERTIFIED_BOUNDARY;
 // it is redeemed here against the LIVE digest and generation. Not wired with a redeemer ⇒ every restart is refused.
+// [RS-OBS-1] The caller may pass an observer, onReplacementDecision, which receives the ONE replacement PROCESS_START decision this
+// module has just made (never a re-evaluation) before anything is stopped. It is called only when a policy decision exists, and
+// only with typed, non-secret fields; whatever it does or throws, the restart flow is unchanged.
+
+/** The replacement PROCESS_START decision prepareStart() already made, or null when no policy evaluation happened. */
+function replacementDecision(replacement, generation, fallbackDigest) {
+  if (replacement?.ok === true) {
+    const { decision, code, policyVersion } = replacement.prepared.decision;
+    return Object.freeze({ action: 'PROCESS_START', decision, code, policyVersion, actor: 'MODULE', generation, definitionDigest: replacement.prepared.plan.definitionDigest });
+  }
+  if (replacement?.error === 'policy_denied') {
+    return Object.freeze({ action: 'PROCESS_START', decision: 'DENY', code: replacement.decisionCode, policyVersion: replacement.policyVersion, actor: 'MODULE', generation, definitionDigest: fallbackDigest });
+  }
+  return null;
+}
 
 export function createKiwixLifecyclePort({ lifecycle = productLifecycle, redeemRestartAuthorization = () => false } = {}) {
   if (typeof redeemRestartAuthorization !== 'function' || typeof lifecycle?.prepareStart !== 'function' || typeof lifecycle?.startPrepared !== 'function') throw new Error('KIWIX_PORT_INVALID');
@@ -592,7 +607,7 @@ export function createKiwixLifecyclePort({ lifecycle = productLifecycle, redeemR
       return Object.freeze({ serviceId: KIWIX_SERVICE_ID, state: s.state, owned: s.running, pid: s.pid, port: s.port, startedAt: s.startedAt, generation: s.generation, lastError: s.lastError, definitionDigest: d.ok ? d.definitionDigest : null });
     },
     /** HEALTHY/DEGRADED → STOPPING → our exit → port released → STOPPED → STARTING → launch → binding + health → HEALTHY. */
-    async restartOwnedKiwix(authorization) {
+    async restartOwnedKiwix(authorization, { onReplacementDecision = null } = {}) {
       const d = lifecycle.describe();
       const s = lifecycle.status();
       let redeemed = false;
@@ -603,6 +618,8 @@ export function createKiwixLifecyclePort({ lifecycle = productLifecycle, redeemR
       // the current healthy instance still exists; a typed-process denial
       // therefore causes no outage. The opaque prepared object is one-use.
       const replacement = lifecycle.prepareStart({ actor: 'MODULE', userInitiated: true, reason: 'RUNTIME_SUPERVISOR_RESTART' });
+      const decided = replacementDecision(replacement, s.generation, d.definitionDigest);
+      if (decided && typeof onReplacementDecision === 'function') { try { onReplacementDecision(decided); } catch { /* observation never changes the restart */ } }
       if (!replacement.ok) return replacement;
       const stopped = await lifecycle.stop({ actor: 'MODULE', userInitiated: true, reason: 'RUNTIME_SUPERVISOR_RESTART_STOP' });
       if (!stopped.ok) return failure('restart_stop_failed', { stop: stopped.error, state: lifecycle.status().state }); // never start a replacement

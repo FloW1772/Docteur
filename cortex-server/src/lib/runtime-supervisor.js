@@ -134,7 +134,7 @@ export function validateServiceDefinition(def) {
 /** Local structured audit: in-memory ring + optional JSONL file (dedicated, rotated). Only ids / codes / numbers. */
 export function createRuntimeAuditLog({ file = null, ring = SUPERVISOR_LIMITS.auditRing, now = Date.now } = {}) {
   const entries = [];
-  const FIELDS = ['serviceId', 'from', 'to', 'reason', 'pid', 'exitCode', 'health', 'actor', 'event'];
+  const FIELDS = ['serviceId', 'from', 'to', 'reason', 'pid', 'exitCode', 'health', 'actor', 'event', 'action', 'context', 'decision', 'policyVersion', 'generation', 'definitionDigest'];
   return Object.freeze({
     record(e) {
       const row = { at: new Date(now()).toISOString() };
@@ -422,8 +422,24 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
     const before = delegatedStatus(def);
     audit.record({ event: 'CHALLENGE_CONFIRMED', serviceId: def.serviceId, actor, reason: r.policyCode });
     audit.record({ event: 'RESTART_STARTED', serviceId: def.serviceId, actor, from: before?.state, pid: before?.pid ?? null });
+    // [RS-OBS-1] the owner reports the ONE replacement PROCESS_START decision it already made, before it stops anything; it is
+    // recorded once, as typed values only (no challenge, authorization, path, argument or free text).
+    let replacementRecorded = false;
+    const onReplacementDecision = (d) => {
+      if (replacementRecorded) return;
+      replacementRecorded = true;
+      audit.record({
+        event: 'REPLACEMENT_START_DECISION', serviceId: def.serviceId, action: 'PROCESS_START', context: 'RUNTIME_SUPERVISOR_REPLACEMENT',
+        decision: d?.decision === 'ALLOW' ? 'ALLOW' : 'DENY',
+        reason: typeof d?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(d.code) ? d.code : 'UNKNOWN',
+        actor: typeof d?.actor === 'string' && /^[A-Z][A-Z_]{0,19}$/.test(d.actor) ? d.actor : 'UNKNOWN',
+        policyVersion: Number.isInteger(d?.policyVersion) ? d.policyVersion : null,
+        generation: Number.isInteger(d?.generation) ? d.generation : null,
+        definitionDigest: typeof d?.definitionDigest === 'string' && /^[0-9a-f]{64}$/.test(d.definitionDigest) ? d.definitionDigest : null,
+      });
+    };
     rec.op = Promise.resolve()
-      .then(() => def.delegate.restartOwnedInstance(r.authorization))
+      .then(() => def.delegate.restartOwnedInstance(r.authorization, { onReplacementDecision }))
       .then((res) => {
         const after = delegatedStatus(def);
         if (res?.ok === true && after?.state === 'HEALTHY') {

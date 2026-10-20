@@ -39,7 +39,7 @@ function kiwixDelegatedService(port) {
     restartEffects: ['IN_FLIGHT_REQUESTS_INTERRUPTED', 'LOCAL_ARCHIVES_UNCHANGED'],
     delegate: {
       status: () => port.getLifecycleStatus(),
-      restartOwnedInstance: (authorization) => port.restartOwnedKiwix(authorization),
+      restartOwnedInstance: (authorization, { onReplacementDecision } = {}) => port.restartOwnedKiwix(authorization, { onReplacementDecision }),
     },
   };
 }
