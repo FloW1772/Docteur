@@ -10,6 +10,7 @@ import { CompanionStatusPanel } from './CompanionStatusPanel';
 import { CompanionMemoryPanel } from './CompanionMemoryPanel';
 import { CompanionWhyPanel } from './CompanionWhyPanel';
 import { CompanionActionReview } from './CompanionActionReview';
+import { CompanionChat } from './CompanionChat';
 import { CompanionErrorAlert, ToneBadge } from './CompanionCommon';
 import './companion.css';
 
@@ -60,6 +61,8 @@ export function CompanionPanel({ port, pendingProposals = [], contextRequestId =
   return (
     <div className="cmp-root" data-testid="cmp-panel">
       <CompanionErrorAlert code={error} />
+      {/* [COMP-9 CHAT] conversation over the existing answer path; "why" reuses the context explanation (memory ON only) */}
+      <CompanionChat port={port} active={status?.activation === 'ACTIVE'} memoryEnabled={status?.preferences?.memoryEnabled === true} onExplain={id => { remember(); void explainContext(id); }} />
       <CompanionStatusPanel status={status} onRequestPreferences={(patch: Partial<CompanionPreferences>) => void requestAction('COMPANION.PREFERENCES.UPDATE', patch)} />
       {shown.length > 0 && (
         <section className="cmp-card" aria-labelledby="cmp-pending-title" data-testid="cmp-pending">

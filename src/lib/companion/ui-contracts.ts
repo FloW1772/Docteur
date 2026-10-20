@@ -81,6 +81,19 @@ export interface CompanionUiPort {
   abortExecution(executionId: string): Promise<boolean>;
   reject(proposalId: string): Promise<ProposalDto>;
   cancel(proposalId: string): Promise<ProposalDto>;
+  /** [COMP-9 CHAT] One bounded local answer (POST /companion/answers). Aborting `signal` closes the request, which
+   *  aborts the server-side context assembly and the local model call. Optional: fixtures without it show no chat. */
+  answer?(text: string, options?: { signal?: AbortSignal }): Promise<AnswerDto>;
+}
+
+// ── [COMP-9 CHAT] answer contract (cortex-server/src/lib/companion-conversation.js) ──
+export interface AnswerKgProvenanceDto { itemId: string; sourceRef: string | null; evidenceRefs: { kind: string; ref: string }[]; authority: string }
+export interface AnswerDto {
+  requestId: string; text: string; truncated: boolean; local: boolean; model: string | null; durationMs: number | null; contextItems: number | null;
+  /** The model also returned an action proposal: it was NOT registered (the answer path creates no action). */
+  actionProposalIgnored: boolean;
+  diagnostics: { kgContextUsed: boolean; kg: { gate: string; state: string; status: string; authority: string; retrieved: number; used: number; dropped: number; chars: number; excluded: string[] } };
+  kgProvenance: AnswerKgProvenanceDto[];
 }
 
 // ── privacy ──
@@ -269,6 +282,14 @@ const ERROR_TEXT: Record<string, string> = {
   ACTION_CANCELLED: 'Action annulée.', ACTION_NOT_ALLOWED: 'Action refusée.', UNKNOWN_ACTION: 'Action inconnue : refusée.', INVALID_ACTION_PAYLOAD: 'Paramètres invalides : refusé.',
   CAPABILITY_REQUIRED: 'Action externe désactivée.', LOCAL_MODEL_UNAVAILABLE: 'Aucun modèle local disponible.', MODEL_TIMEOUT: 'Le modèle local n’a pas répondu à temps.',
   MODEL_CANCELLED: 'La requête au modèle a été annulée.',
+  // [COMP-9 CHAT] answer path (COMP-4 / COMP-7 codes)
+  COMPANION_DISABLED: 'Le Companion n’est pas activé : la conversation est indisponible.',
+  COMP_CONVERSATION_INVALID: 'Question refusée : texte vide ou trop long.',
+  COMP_CONVERSATION_FAILED: 'La réponse a échoué ; réessayez.',
+  MODEL_PROVIDER_ERROR: 'Le modèle local a renvoyé une erreur.',
+  MODEL_INVALID_RESPONSE: 'Le modèle local a renvoyé une réponse inutilisable.',
+  MODEL_CLOUD_FORBIDDEN: 'Refusé : le Companion n’utilise jamais le cloud.',
+  ROOT_POLICY_DENIED: 'Refusé par la politique racine de Docteur.',
 };
 export function errorText(code: unknown): { code: string; text: string; known: boolean } {
   return typeof code === 'string' && ERROR_TEXT[code] ? { code, text: ERROR_TEXT[code], known: true } : { code: typeof code === 'string' ? code.slice(0, 40) : 'UNKNOWN', text: 'Refusé (raison inconnue).', known: false };

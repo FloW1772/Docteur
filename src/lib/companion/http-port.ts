@@ -13,21 +13,27 @@ import {
   type MemoryExplainDto,
   type MemoryRowDto,
   type ProposalDto,
+  type AnswerDto,
 } from './ui-contracts';
 
-type CallOptions = { json?: unknown };
+type CallOptions = { json?: unknown; signal?: AbortSignal };
+/** [COMP-9 CHAT] an abort by the caller is a cancellation, never "Docteur est injoignable". */
+const cancelled = () => new CompanionUiError('MODEL_CANCELLED', 'La requête au modèle a été annulée.', 'CLIENT_ABORT');
 
 export function createHttpCompanionUiPort({ baseUrl, fetchImpl = fetch }: { baseUrl: string; fetchImpl?: typeof fetch }): CompanionUiPort {
   const api = `${baseUrl.replace(/\/+$/, '')}/api/companion`;
   const id = (value: string) => encodeURIComponent(value);
-  async function call<T>(method: string, url: string, { json }: CallOptions = {}): Promise<T> {
+  async function call<T>(method: string, url: string, { json, signal }: CallOptions = {}): Promise<T> {
     const headers: Record<string, string> = {};
     if (json !== undefined) headers['content-type'] = 'application/json';
     let response: Response;
-    try { response = await fetchImpl(url, { method, headers, body: json === undefined ? undefined : JSON.stringify(json) }); }
-    catch { throw new CompanionUiError('ACTION_FAILED', 'Docteur est injoignable.', 'NETWORK'); }
+    try { response = await fetchImpl(url, { method, headers, body: json === undefined ? undefined : JSON.stringify(json), ...(signal ? { signal } : {}) }); }
+    catch {
+      if (signal?.aborted) { throw cancelled(); }
+      throw new CompanionUiError('ACTION_FAILED', 'Docteur est injoignable.', 'NETWORK');
+    }
     let payload: { ok?: boolean; value?: T; error?: { code?: string; message?: string; reason?: string | null } } = {};
-    try { payload = await response.json(); } catch { /* fail closed below */ }
+    try { payload = await response.json(); } catch { if (signal?.aborted) throw cancelled(); /* fail closed below */ }
     if (!response.ok || payload.ok !== true) throw new CompanionUiError(payload.error?.code ?? `HTTP_${response.status}`, payload.error?.message ?? 'Requête refusée.', payload.error?.reason ?? null);
     return payload.value as T;
   }
@@ -48,5 +54,6 @@ export function createHttpCompanionUiPort({ baseUrl, fetchImpl = fetch }: { base
     abortExecution: (executionId: string) => call<boolean>('POST', `${api}/executions/${id(executionId)}/abort`),
     reject: (proposalId: string) => call<ProposalDto>('POST', `${api}/proposals/${id(proposalId)}/reject`),
     cancel: (proposalId: string) => call<ProposalDto>('POST', `${api}/proposals/${id(proposalId)}/cancel`),
+    answer: (text: string, options: { signal?: AbortSignal } = {}) => call<AnswerDto>('POST', `${api}/answers`, { json: { text }, signal: options.signal }), // [COMP-9 CHAT]
   } satisfies CompanionUiPort);
 }
