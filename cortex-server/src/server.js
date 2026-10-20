@@ -104,7 +104,7 @@ import { createOmegaViewRoute }    from './routes/omega-view.js';
 import { createOmegaInteractiveRoute } from './routes/omega-interactive.js';
 import { createOmegaAdminRoute }   from './routes/omega-admin.js';
 import { createOmegaOutboundRoute } from './routes/omega-outbound.js';
-import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe } from './lib/kiwix.js';
+import { registerShutdownHook as registerKiwixShutdownHook, stopKiwixServe, createKiwixLifecyclePort, KIWIX_SERVICE_ID } from './lib/kiwix.js';
 import { getKiwixSearchScope } from './lib/sqlite.js';
 import { search as kiwixSearch, getContent as kiwixGetContent } from './lib/kiwix-client.js';
 import { sanitizeZimHtml } from './lib/kiwix-sanitize.js';
@@ -140,6 +140,7 @@ import { wireCompanionConversation } from './lib/wire-companion-conversation.js'
 import { createRuntimeSupervisor, createRuntimeAuditLog } from './lib/runtime-supervisor.js';
 import { createProductRuntimeServices } from './lib/runtime-supervisor-services.js';
 import { createRuntimeSupervisorRoute } from './routes/runtime-supervisor.js';
+import { createRestartAuthority } from './lib/runtime-restart-authority.js';
 import { validateImageId, getImagePath } from './lib/image.js';
 import { detectLocalHardwareProfile } from './lib/local-hardware-profile.js';
 import { pairProvider } from './lib/providers/pair.js';
@@ -2028,8 +2029,13 @@ if (recorderService) {
 // [Runtime Supervisor V1] closed registry of known services, read-only observers. The product injects NO launcher and
 // NO killer: no service is restartable in V1, and SERVICE_RESTART still requires a Root Policy approval that no product
 // path can issue (ROOT_POLICY_CAPABILITY_REQUIRED). Audit: ids / codes only, in a dedicated JSONL beside the data dir.
+// [RS-KIWIX-RESTART] kiwix-serve is DELEGATED: the Kiwix module keeps the process; the supervisor's restart authority (real
+// Root Policy) is the only minter of the single-use authorization the Kiwix port redeems. Under the signed V1 policy no
+// runtime boundary exists: the ceremony is refused before any challenge (ROOT_POLICY_APPROVAL_REQUIRED) — nothing restarts.
+const runtimeRestartAuthority = createRestartAuthority({ services: [KIWIX_SERVICE_ID] });
 const runtimeSupervisor = createRuntimeSupervisor({
-  services: createProductRuntimeServices({ ollamaUrl: env.OLLAMA_URL }),
+  services: createProductRuntimeServices({ ollamaUrl: env.OLLAMA_URL, kiwixDelegate: createKiwixLifecyclePort({ redeemRestartAuthorization: runtimeRestartAuthority.redeem }) }),
+  restartAuthority: runtimeRestartAuthority,
   audit: createRuntimeAuditLog({ file: path.join(path.dirname(env.SQLITE_PATH), 'runtime-supervisor', 'audit.jsonl') }),
 });
 app.route('/api', createRuntimeSupervisorRoute({ supervisor: runtimeSupervisor, logger }));

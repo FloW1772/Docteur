@@ -16,6 +16,11 @@
 //   • BOUNDED FAILURE: manual restart only (auto-restart OFF), exponential backoff after crashes, BLOCKED after a crash
 //     loop (manual reset required), one operation per service at a time.
 //   • AUDIT: every transition is recorded (ids, codes, counts) — never an environment, command line, token or output.
+//   • DELEGATED (RS-KIWIX-RESTART): a service whose process OWNER is another module (Kiwix). The supervisor holds no handle,
+//     executable, argument, cwd or PID for it: only a closed delegate { status(), restartOwnedInstance(authorization) }. Its
+//     state is a PROJECTION of the owner's lifecycle (the owner stays the single source of truth; no second state machine).
+//     A restart goes only through the local ceremony: createRestartChallenge → confirmRestart, both decided by the injected
+//     restart authority (challenge consumed ⇒ Root Policy ⇒ opaque single-use authorization redeemed by the owner).
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -25,7 +30,11 @@ import { probeLoopback } from './runtime-supervisor-probe.js';
 
 export const RUNTIME_STATES = Object.freeze(['STOPPED', 'STARTING', 'HEALTHY', 'DEGRADED', 'CRASHED', 'STOPPING', 'RESTARTING', 'BACKOFF', 'BLOCKED']);
 export const OWNERSHIP_CLASSES = Object.freeze(['DOCTEUR_OWNED', 'DOCTEUR_MANAGED_OPTIONAL', 'EXTERNAL_OBSERVED', 'UNKNOWN']);
-export const SERVICE_KINDS = Object.freeze(['SELF', 'OBSERVED', 'SPAWN']);
+export const SERVICE_KINDS = Object.freeze(['SELF', 'OBSERVED', 'SPAWN', 'DELEGATED']);
+/** What a delegated restart interrupts / leaves alone — closed codes, rendered as fixed text by the UI. */
+export const RESTART_EFFECTS = Object.freeze(['IN_FLIGHT_REQUESTS_INTERRUPTED', 'LOCAL_ARCHIVES_UNCHANGED']);
+const DELEGATE_KEYS = 'restartOwnedInstance,status';
+const DELEGATED_STATES = Object.freeze(['STOPPED', 'STARTING', 'HEALTHY', 'DEGRADED', 'STOPPING', 'CRASHED']);
 export const HEALTH_STATUSES = Object.freeze(['HEALTHY', 'DEGRADED', 'UNREACHABLE', 'NOT_PROBED']);
 
 /** The only legal lifecycle transitions of a supervised (SPAWN) service. Anything else is a bug and throws. */
@@ -86,6 +95,17 @@ export function validateServiceDefinition(def) {
     if (typeof def.observe !== 'function') bad('OBSERVE');
     return deepFreeze({ ...out, observe: def.observe, restartable: false });
   }
+  if (def.kind === 'DELEGATED') {
+    // the owner module keeps the process: no launch definition may be attached, only the closed two-method delegate
+    if (def.ownershipClass !== 'DOCTEUR_MANAGED_OPTIONAL') bad('DELEGATED_REQUIRES_MANAGED_OPTIONAL');
+    if (def.launch !== undefined || def.healthCheck !== undefined || def.gracefulStop !== undefined) bad('DELEGATED_HAS_NO_LAUNCH');
+    const dg = def.delegate;
+    if (!dg || typeof dg !== 'object' || Object.keys(dg).sort().join(',') !== DELEGATE_KEYS || typeof dg.status !== 'function' || typeof dg.restartOwnedInstance !== 'function') bad('DELEGATE');
+    const effects = def.restartEffects ?? [];
+    if (!Array.isArray(effects) || effects.some(e => !RESTART_EFFECTS.includes(e))) bad('RESTART_EFFECTS');
+    if ((def.restartPolicy ?? 'MANUAL') !== 'MANUAL') bad('RESTART_POLICY');
+    return deepFreeze({ ...out, delegate: Object.freeze({ status: dg.status, restartOwnedInstance: dg.restartOwnedInstance }), restartEffects: [...new Set(effects)], restartPolicy: 'MANUAL', restartable: true });
+  }
   // SPAWN: a Docteur-owned process this supervisor launches itself from a fixed, audited definition
   if (def.ownershipClass !== 'DOCTEUR_OWNED') bad('SPAWN_REQUIRES_DOCTEUR_OWNED');
   const l = def.launch;
@@ -145,8 +165,9 @@ export function createRuntimeAuditLog({ file = null, ring = SUPERVISOR_LIMITS.au
  *   probe         bounded local probe (default: loopback-only probeLoopback)
  *   policyDecide  Root Policy decide (default: the real one) — injected by tests only
  *   audit         createRuntimeAuditLog(...)
+ *   restartAuthority  createRestartAuthority(...) — the ONLY way a DELEGATED service is restarted (null ⇒ never)
  */
-export function createRuntimeSupervisor({ services, spawnImpl = null, killTree = null, probe = probeLoopback, policyDecide = rootPolicyDecide, audit = createRuntimeAuditLog(), now = Date.now, limits = {} } = {}) {
+export function createRuntimeSupervisor({ services, spawnImpl = null, killTree = null, probe = probeLoopback, policyDecide = rootPolicyDecide, audit = createRuntimeAuditLog(), now = Date.now, limits = {}, restartAuthority = null } = {}) {
   if (!Array.isArray(services) || services.length === 0 || services.length > 32) fail('RS_DEFINITION_INVALID', 'a closed, non-empty service registry is required');
   const L = { ...SUPERVISOR_LIMITS, ...limits };
   const registry = new Map();
@@ -330,10 +351,107 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
     if (h.status !== 'HEALTHY' && rec.state === 'HEALTHY') { rec.lastError = h.code; setState(def, 'DEGRADED', { reason: h.code, pid: rec.instance.pid }); }
   }
 
+  // ── DELEGATED: projection of the owner's lifecycle (never a second state machine) ───────────────────────────────
+  /** The owner's own status, read-only. A throwing / malformed delegate projects as DEGRADED, never as HEALTHY. */
+  function delegatedStatus(def) {
+    let s = null;
+    try { s = def.delegate.status(); } catch { s = null; }
+    if (!s || typeof s !== 'object' || s.serviceId !== def.serviceId || !DELEGATED_STATES.includes(s.state)) return null;
+    return s;
+  }
+  const DELEGATED_HEALTH = Object.freeze({
+    HEALTHY: { status: 'HEALTHY', code: 'OK' }, DEGRADED: { status: 'DEGRADED', code: 'HEALTH_FAILED' }, STOPPED: { status: 'NOT_PROBED', code: 'NOT_RUNNING' },
+    STARTING: { status: 'NOT_PROBED', code: 'NOT_STARTED' }, STOPPING: { status: 'NOT_PROBED', code: 'NOT_RUNNING' }, CRASHED: { status: 'UNREACHABLE', code: 'PROCESS_EXITED' },
+  });
+  function projectDelegated(def) {
+    const rec = records.get(def.serviceId);
+    const s = delegatedStatus(def);
+    const state = s ? s.state : 'DEGRADED';
+    if (rec.observed && rec.observed.state !== state) audit.record({ event: 'OBSERVED_CHANGE', serviceId: def.serviceId, from: rec.observed.state, to: state });
+    rec.observed = { state };
+    return { s, state, health: s ? { ...DELEGATED_HEALTH[state] } : { status: 'DEGRADED', code: 'OBSERVE_FAILED' } };
+  }
+  function delegatedEligibility(def) {
+    const rec = records.get(def.serviceId);
+    if (!restartAuthority) return { allowed: false, code: 'RESTART_AUTHORITY_UNAVAILABLE' };
+    if (rec.op) return { allowed: false, code: 'OPERATION_IN_PROGRESS' };
+    const boundary = restartAuthority.boundaryStatus();
+    if (!boundary.available) return { allowed: false, code: boundary.code };
+    const s = delegatedStatus(def);
+    if (s && ['STARTING', 'STOPPING'].includes(s.state)) return { allowed: false, code: 'OPERATION_IN_PROGRESS' };
+    if (!s || s.owned !== true || !['HEALTHY', 'DEGRADED'].includes(s.state)) return { allowed: false, code: 'NOT_RUNNING' };
+    return { allowed: true, code: 'CHALLENGE_REQUIRED' };
+  }
+  const CEREMONY_ERRORS = Object.freeze({
+    ACTOR_NOT_PERMITTED: 'RS_ACTOR_NOT_PERMITTED', SERVICE_NOT_DELEGATED: 'RS_RESTART_NOT_ALLOWED', ROOT_POLICY_APPROVAL_REQUIRED: 'RS_POLICY_APPROVAL_REQUIRED',
+    ROOT_POLICY_DENIED: 'RS_POLICY_DENIED', NOT_RUNNING: 'RS_NOT_RUNNING', CHALLENGE_INVALID: 'RS_CHALLENGE_INVALID', CHALLENGE_UNKNOWN: 'RS_CHALLENGE_INVALID',
+    CHALLENGE_EXPIRED: 'RS_CHALLENGE_EXPIRED', CHALLENGE_REPLAYED: 'RS_CHALLENGE_REPLAYED', CHALLENGE_WRONG_SERVICE: 'RS_CHALLENGE_MISMATCH',
+    CHALLENGE_ORIGIN_MISMATCH: 'RS_CHALLENGE_MISMATCH', DEFINITION_CHANGED: 'RS_CHALLENGE_STALE', INSTANCE_CHANGED: 'RS_CHALLENGE_STALE', STATE_CHANGED: 'RS_CHALLENGE_STALE',
+    GESTURE_INVALID: 'RS_REQUEST_INVALID',
+  });
+  const CEREMONY_AUDIT = Object.freeze({ CHALLENGE_EXPIRED: 'CHALLENGE_EXPIRED', CHALLENGE_REPLAYED: 'CHALLENGE_REPLAY_REJECTED', ROOT_POLICY_APPROVAL_REQUIRED: 'RESTART_POLICY_DENIED', ROOT_POLICY_DENIED: 'RESTART_POLICY_DENIED' });
+  const ceremonyFail = (def, r, actor) => {
+    audit.record({ event: CEREMONY_AUDIT[r.code] ?? 'CHALLENGE_REJECTED', serviceId: def.serviceId, reason: r.policyCode ? `${r.code}:${r.policyCode}` : r.code, actor });
+    fail(CEREMONY_ERRORS[r.code] ?? 'RS_RESTART_NOT_ALLOWED', 'restart ceremony refused', { reason: r.code });
+  };
+  const delegatedDef = (serviceId) => {
+    const def = resolveDef(serviceId);
+    if (def.kind !== 'DELEGATED') fail('RS_RESTART_NOT_ALLOWED', 'this service has no local restart ceremony', { reason: def.restartable ? 'CEREMONY_NOT_APPLICABLE' : notRestartableReason(def) });
+    if (!restartAuthority) fail('RS_RESTART_NOT_ALLOWED', 'no restart authority is available', { reason: 'RESTART_AUTHORITY_UNAVAILABLE' });
+    return def;
+  };
+
+  /** Step 1 of the ceremony. Returns only what the UI needs: an opaque id, its expiry and the state it was issued for. */
+  function createRestartChallenge(serviceId, { origin = null, actor = 'USER' } = {}) {
+    const def = delegatedDef(serviceId);
+    const rec = records.get(def.serviceId);
+    if (rec.op) fail('RS_OPERATION_IN_PROGRESS', 'an operation is already in progress', { reason: 'OPERATION_IN_PROGRESS' });
+    const r = restartAuthority.issueChallenge({ serviceId: def.serviceId, status: delegatedStatus(def), origin, actor });
+    if (!r.ok) ceremonyFail(def, r, actor);
+    audit.record({ event: 'CHALLENGE_CREATED', serviceId: def.serviceId, actor });
+    return deepFreeze({ serviceId: def.serviceId, challengeId: r.challengeId, expiresAt: r.expiresAt, state: r.state, operation: 'RESTART', effects: [...def.restartEffects] });
+  }
+
+  /** Step 2. Synchronous until the operation is registered: a second confirmation sees it (or a burnt challenge). */
+  function confirmRestart(serviceId, { challengeId, gesture, origin = null, actor = 'USER' } = {}) {
+    const def = delegatedDef(serviceId);
+    const rec = records.get(def.serviceId);
+    if (rec.op) fail('RS_OPERATION_IN_PROGRESS', 'an operation is already in progress', { reason: 'OPERATION_IN_PROGRESS' });
+    const r = restartAuthority.confirmChallenge({ serviceId: def.serviceId, challengeId, gesture, origin, actor, status: delegatedStatus(def) });
+    if (!r.ok) ceremonyFail(def, r, actor);
+    const before = delegatedStatus(def);
+    audit.record({ event: 'CHALLENGE_CONFIRMED', serviceId: def.serviceId, actor, reason: r.policyCode });
+    audit.record({ event: 'RESTART_STARTED', serviceId: def.serviceId, actor, from: before?.state, pid: before?.pid ?? null });
+    rec.op = Promise.resolve()
+      .then(() => def.delegate.restartOwnedInstance(r.authorization))
+      .then((res) => {
+        const after = delegatedStatus(def);
+        if (res?.ok === true && after?.state === 'HEALTHY') {
+          rec.restartCount += 1; rec.lastRestartAt = new Date(now()).toISOString(); rec.lastError = null;
+          audit.record({ event: 'RESTART_SUCCEEDED', serviceId: def.serviceId, actor, to: after.state, pid: after.pid ?? null });
+        } else {
+          rec.lastError = res?.ok === true ? 'RESTART_NOT_HEALTHY' : delegatedFailure(res?.error);
+          audit.record({ event: 'RESTART_FAILED', serviceId: def.serviceId, actor, reason: rec.lastError, to: after?.state ?? null });
+        }
+      })
+      .catch(() => { rec.lastError = 'INTERNAL'; audit.record({ event: 'RESTART_FAILED', serviceId: def.serviceId, actor, reason: 'INTERNAL' }); })
+      .finally(() => { rec.op = null; });
+    return deepFreeze({ accepted: true, serviceId: def.serviceId, state: before?.state ?? 'DEGRADED' });
+  }
+  /** The owner's failure code → a closed supervisor code (never the owner's message). */
+  const DELEGATED_FAILURES = Object.freeze({
+    restart_not_authorized: 'RESTART_NOT_AUTHORIZED', restart_stop_failed: 'STOP_FAILED', definition_changed: 'DEFINITION_CHANGED', instance_changed: 'INSTANCE_CHANGED',
+    port_in_use: 'PORT_IN_USE', spawn_failed: 'SPAWN_FAILED', start_crashed: 'PROCESS_EXITED', start_cancelled: 'START_CANCELLED', binding_not_loopback: 'BINDING_NOT_LOOPBACK',
+    identity_mismatch: 'IDENTITY_MISMATCH', operation_in_progress: 'OPERATION_IN_PROGRESS', binary_not_found: 'DEFINITION_INVALID', binary_invalid: 'DEFINITION_INVALID',
+    invalid_port: 'DEFINITION_INVALID', no_archives: 'DEFINITION_INVALID', archive_invalid: 'DEFINITION_INVALID',
+  });
+  const delegatedFailure = (code) => DELEGATED_FAILURES[code] ?? 'RESTART_FAILED';
+
   /** Why a non-restartable service cannot be restarted here (a code, never free text). */
   const notRestartableReason = (def) => (def.kind === 'SELF' ? 'SELF_RESTART_UNSUPPORTED' : def.ownershipClass === 'DOCTEUR_MANAGED_OPTIONAL' ? 'MANAGED_BY_OWN_MODULE' : 'NOT_DOCTEUR_OWNED');
   function restartEligibility(def) {
     const rec = records.get(def.serviceId);
+    if (def.kind === 'DELEGATED') return delegatedEligibility(def);
     if (!def.restartable) return { allowed: false, code: notRestartableReason(def) };
     if (typeof spawnImpl !== 'function') return { allowed: false, code: 'LAUNCHER_UNAVAILABLE' };
     if (rec.op || ['STARTING', 'STOPPING', 'RESTARTING'].includes(rec.state)) return { allowed: false, code: 'OPERATION_IN_PROGRESS' };
@@ -346,6 +464,18 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
 
   async function view(def) {
     const rec = records.get(def.serviceId);
+    if (def.kind === 'DELEGATED') {
+      const { s, state, health } = projectDelegated(def);
+      const running = s?.owned === true;
+      const started = running && typeof s.startedAt === 'string' ? Date.parse(s.startedAt) : NaN;
+      return deepFreeze({
+        serviceId: def.serviceId, displayName: def.displayName, ownershipClass: def.ownershipClass, kind: def.kind, optional: def.optional, dependencies: [...def.dependencies], note: def.note,
+        state, health, processRunning: s ? running : null, portListening: state === 'HEALTHY' ? true : null, pid: running && Number.isInteger(s.pid) ? s.pid : null,
+        uptimeMs: Number.isFinite(started) ? Math.max(0, now() - started) : null, lastExitCode: null,
+        lastError: rec.lastError ?? (s?.lastError ? 'KIWIX_REPORTED_ERROR' : null), lastRestartAt: rec.lastRestartAt, restartCount: rec.restartCount, crashCount: 0, retryAt: null,
+        operationInProgress: Boolean(rec.op), restart: delegatedEligibility(def), restartEffects: [...def.restartEffects],
+      });
+    }
     if (def.kind !== 'SPAWN') {
       const o = await observe(def);
       return deepFreeze({
@@ -369,6 +499,8 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
   async function restart(serviceId, { confirmInterrupt = false, resetBlocked = false, actor = 'USER' } = {}) {
     const def = resolveDef(serviceId);
     const rec = records.get(def.serviceId);
+    // a delegated service is never restarted by the boolean confirmation path: only the local ceremony applies
+    if (def.kind === 'DELEGATED') fail('RS_CHALLENGE_REQUIRED', 'this restart requires the local confirmation ceremony', { reason: 'CHALLENGE_REQUIRED' });
     if (!def.restartable) fail('RS_RESTART_NOT_ALLOWED', 'this service cannot be restarted by Docteur', { reason: notRestartableReason(def) });
     if (typeof spawnImpl !== 'function') fail('RS_RESTART_NOT_ALLOWED', 'no launcher is available for this service', { reason: 'LAUNCHER_UNAVAILABLE' });
     if (rec.op || ['STARTING', 'STOPPING', 'RESTARTING'].includes(rec.state)) fail('RS_OPERATION_IN_PROGRESS', 'an operation is already in progress', { reason: 'OPERATION_IN_PROGRESS' });
@@ -399,6 +531,8 @@ export function createRuntimeSupervisor({ services, spawnImpl = null, killTree =
     async list() { return Promise.all([...registry.values()].map(view)); },
     async get(serviceId) { return view(resolveDef(serviceId)); },
     restart,
+    createRestartChallenge,
+    confirmRestart,
     events(serviceId, limit = 20) { resolveDef(serviceId); return audit.recent(serviceId, Math.min(50, Math.max(1, limit))); },
     async whenIdle(serviceId) { const rec = records.get(resolveDef(serviceId).serviceId); while (rec.op) await rec.op; },
     /** Server shutdown: stop every instance this supervisor launched (our handles only). */

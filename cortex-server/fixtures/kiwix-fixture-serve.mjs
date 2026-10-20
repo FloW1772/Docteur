@@ -21,6 +21,16 @@ const address = mode === 'wide' ? '0.0.0.0' : (arg('address') ?? '127.0.0.1');
 if (mode === 'crash-on-start') setTimeout(() => process.exit(7), 50);
 else {
   const server = http.createServer((req, res) => {
+    if (mode !== 'unhealthy' && req.url?.startsWith('/search?')) {
+      res.writeHead(200, { 'content-type': 'application/rss+xml' });
+      res.end('<?xml version="1.0"?><rss><channel><item><title>Fixture article</title><link>/content/pokepedia/A/Fixture</link><description>Local result</description></item></channel></rss>');
+      return;
+    }
+    if (mode !== 'unhealthy' && req.url === '/content/pokepedia/A/Fixture') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<article>Local Kiwix fixture content</article>');
+      return;
+    }
     res.writeHead(mode === 'unhealthy' ? 500 : 200, { 'content-type': 'text/plain' });
     res.end('kiwix fixture');
   });

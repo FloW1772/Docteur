@@ -20,6 +20,9 @@ import { probeLoopback, loopbackTarget } from './src/lib/runtime-supervisor-prob
 import { createProductRuntimeServices } from './src/lib/runtime-supervisor-services.js';
 import { createRuntimeSupervisorRoute } from './src/routes/runtime-supervisor.js';
 import { killProcessTree } from './src/lib/process-tree.js';
+import { createEngine } from './src/lib/root-policy/engine.js';
+import { getRootPolicyStatus } from './src/lib/root-policy/index.js';
+import { SHIPPED_POLICY, loadHistoricalV1 } from './fixtures/root-policy-history.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'runtime-fixture-service.mjs');
@@ -269,12 +272,20 @@ test('13. PID-reuse safety: an exited instance is never killed; kills only ever 
   assert.ok(alive(other.pid), 'the unrelated process is untouched');
 });
 
-test('14. Root Policy: real sealed policy ⇒ REQUIRE_APPROVAL ⇒ restart refused, nothing launched; DENY ⇒ refused', async () => {
+test('14. Root Policy: real shipped policy (V2) ⇒ a SPAWN restart is refused, nothing launched; historical V1 ⇒ REQUIRE_APPROVAL; DENY ⇒ refused', async () => {
   const f = await fixtureDef('healthy');
-  const real = rig([f.def], { policy: 'REAL' }); // the real Root Policy decide() on the sealed V1 policy
-  await assert.rejects(real.sup.restart(f.def.serviceId), code('RS_POLICY_APPROVAL_REQUIRED', 'ROOT_POLICY_APPROVAL_REQUIRED'));
+  // LIVE: the real Root Policy decide() on the shipped signed policy — V2 allowlists kiwix-serve only, through its delegated ceremony.
+  const real = rig([f.def], { policy: 'REAL' });
+  await assert.rejects(real.sup.restart(f.def.serviceId), code('RS_POLICY_DENIED', 'ROOT_POLICY_DENIED'));
+  const live = getRootPolicyStatus();
+  assert.deepEqual([live.state, live.version, live.sha256, live.keyId], ['VALID', SHIPPED_POLICY.version, SHIPPED_POLICY.sha256.slice(0, 16), SHIPPED_POLICY.keyId.slice(0, 16)], 'the live policy is the reviewed shipped V2');
   const view = await real.sup.get(f.def.serviceId);
-  assert.deepEqual([view.state, view.restart.allowed, view.restart.code, real.spawned.length], ['STOPPED', false, 'ROOT_POLICY_APPROVAL_REQUIRED', 0]);
+  assert.deepEqual([view.state, view.restart.allowed, view.restart.code, real.spawned.length], ['STOPPED', false, 'ROOT_POLICY_DENIED', 0]);
+  // HISTORICAL V1 (fixture, isolated from the live policy): the sealed V1 had no runtime boundary ⇒ approval required, nothing launched.
+  const v1 = loadHistoricalV1().policy;
+  const historical = rig([f.def], { policy: (req) => createEngine({ getPolicy: () => ({ valid: true, policy: v1, version: v1.version }) }).decide(req) });
+  await assert.rejects(historical.sup.restart(f.def.serviceId), code('RS_POLICY_APPROVAL_REQUIRED', 'ROOT_POLICY_APPROVAL_REQUIRED'));
+  assert.deepEqual([(await historical.sup.get(f.def.serviceId)).restart.code, historical.spawned.length], ['ROOT_POLICY_APPROVAL_REQUIRED', 0]);
   const denied = rig([f.def], { policy: () => ({ decision: 'DENY', code: 'DENY_X' }) });
   await assert.rejects(denied.sup.restart(f.def.serviceId), code('RS_POLICY_DENIED'));
   const throwing = rig([f.def], { policy: () => { throw new Error('policy engine down'); } });
@@ -396,7 +407,8 @@ test('21. static: one launch site (shell:false, registered argv), no process/net
   const route = strip(read('routes/runtime-supervisor.js'));
   assert.match(route, /const RESTART_FIELDS = Object\.freeze\(\['confirmInterrupt', 'resetBlocked'\]\);/);
   assert.doesNotMatch(route, /child_process|spawn|exec|req\.query|c\.req\.query|executable|\bcwd\b|\bshell\b/);
-  assert.deepEqual([...route.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)'/g)].map(m => `${m[1]} ${m[2]}`), ['get /runtime/services', 'get /runtime/services/:serviceId', 'post /runtime/services/:serviceId/restart']);
+  assert.deepEqual([...route.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)'/g)].map(m => `${m[1]} ${m[2]}`), ['get /runtime/services', 'get /runtime/services/:serviceId', 'post /runtime/services/:serviceId/restart',
+    'post /runtime/services/:serviceId/restart-challenge', 'post /runtime/services/:serviceId/restart-confirm']); // [RS-KIWIX-RESTART] the local ceremony (closed bodies)
   const server = read('server.js');
   const call = server.slice(server.indexOf('createRuntimeSupervisor({'), server.indexOf('app.route(\'/api\', createRuntimeSupervisorRoute'));
   assert.doesNotMatch(call, /spawnImpl|killTree|policyDecide|probe:/, 'the product injects no launcher, killer, policy override or probe');

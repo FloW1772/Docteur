@@ -16,11 +16,11 @@
 // Stop: STOPPING → terminate our handle → wait for the REAL 'exit' → (if needed) tree-kill of our live handle → wait →
 // port released → STOPPED. A process that does not exit is never reported stopped (stop_timeout, DEGRADED).
 //
-// Root Policy: the active signed policy (v1) has no `kiwix` module (PROCESS_START / PROCESS_STOP ⇒ DENY_UNKNOWN_MODULE).
-// The existing USER start / stop routes therefore keep their current, ungated behaviour (KWX_ROOT_POLICY_REQUIRES_
-// SEPARATE_POLICY_MISSION). The FUTURE Runtime Supervisor restart path is a separate, typed port
-// (createKiwixLifecyclePort) that can only act after a Root Policy SERVICE_RESTART decision of ALLOW — under the sealed
-// v1 policy that decision is REQUIRE_APPROVAL, so the port fails closed. It is not wired anywhere.
+// Root Policy transition: the active signed V1 keeps the historical user start/stop behavior only while it is exactly
+// VALID V1. Under V2 every spawn is authorized as the exact `kiwix-serve` typed plan; invalid/unavailable/future policy
+// versions fail closed. User and internal owned-child stops are explicitly mapped to PROCESS_STOP/ALLOW_STOP_ALWAYS.
+// Runtime Supervisor restart still requires its independent SERVICE_RESTART challenge and authorization, then also
+// preauthorizes this typed launch plan before the healthy old instance is stopped.
 
 import { spawn, ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -31,7 +31,7 @@ import os from 'node:os';
 import { getKiwixSettings } from './sqlite.js';
 import { runNetstatListing, parseNetstatListeners } from './port-preflight.js';
 import { killProcessTree } from './process-tree.js';
-import { decide as rootPolicyDecide } from './root-policy/index.js';
+import { productKiwixProcessPolicyGate } from './kiwix-process-policy.js';
 
 export const KIWIX_TOOLS_URL = 'https://download.kiwix.org/release/kiwix-tools/';
 
@@ -59,9 +59,8 @@ export const KIWIX_LIMITS = Object.freeze({
 });
 const RESERVED_PORTS = new Set([3001, 5173, 11_434, 8188, Number(process.env.PORT) || 3001]);
 const CHILD_ENV_KEYS = Object.freeze(['SystemRoot', 'SYSTEMROOT', 'windir', 'TEMP', 'TMP', 'PATH', 'Path', 'PATHEXT', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA']);
-const RESTART_REASONS = Object.freeze(['USER_REQUESTED', 'SUPERVISOR']);
-const RESTART_FIELDS = Object.freeze(['reason', 'expectedDefinitionDigest', 'expectedGeneration']);
 const DEFINITION_ADAPTER = 'kiwix-lifecycle@1';
+const RESTART_DELEGATE = 'kiwix-restart-delegate@1';
 
 export function defaultArchivesFolder() {
   return path.join(os.homedir(), 'AppData', 'Roaming', 'kiwix-desktop');
@@ -208,12 +207,33 @@ const canonical = (v) => (Array.isArray(v) ? `[${v.map(canonical).join(',')}]`
   : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}` : JSON.stringify(v));
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-export function kiwixDefinitionDigest({ binary, args, cwd, port }) {
+// [RS-KIWIX-RESTART] content hash of the binary (~10 MB), cached per file identity + size + mtime + ctime: a replaced or
+// rewritten kiwix-serve.exe changes the digest, also when the replacement restores the size and the modification time.
+const binaryHashes = new Map();
+function binarySha256(binary) {
+  let st;
+  try { st = fs.statSync(binary.path, { bigint: true }); } catch { return null; }
+  const key = `${binary.path}|${st.ino}|${st.size}|${st.mtimeNs}|${st.ctimeNs}`;
+  if (!binaryHashes.has(key)) {
+    let h = null;
+    try { h = crypto.createHash('sha256').update(fs.readFileSync(binary.path)).digest('hex'); } catch { h = null; }
+    while (binaryHashes.size >= 8) binaryHashes.delete(binaryHashes.keys().next().value);
+    binaryHashes.set(key, h);
+  }
+  return binaryHashes.get(key);
+}
+
+/** Every security-relevant property of a (re)start. Any change invalidates an outstanding restart challenge / authorization. */
+export function kiwixDefinitionDigest({ binary, args, cwd, port, environment = {} }) {
   return sha256(canonical({
-    v: 1, serviceId: KIWIX_SERVICE_ID, adapter: DEFINITION_ADAPTER, ownership: 'MODULE_OWNED_CHILD',
-    executable: { basename: path.basename(binary.path).toLowerCase(), path: binary.path, size: binary.size, mtimeMs: binary.mtimeMs },
-    args: sha256(JSON.stringify(args)), cwd, port,
-    healthCheck: { host: LOOPBACK_ADDRESS, port, path: '/' }, stop: { kind: 'TERMINATE_OWN_HANDLE', graceMs: KIWIX_LIMITS.stopGraceMs }, restart: 'MANUAL',
+    v: 2, serviceId: KIWIX_SERVICE_ID, adapter: DEFINITION_ADAPTER, ownership: 'MODULE_OWNED_CHILD', delegate: RESTART_DELEGATE,
+    executable: { basename: path.basename(binary.path).toLowerCase(), path: binary.path, size: binary.size, mtimeMs: binary.mtimeMs, sha256: binary.sha256 ?? binarySha256(binary) },
+    args: { template: 'kiwix-serve-loopback', sha256: sha256(JSON.stringify(args)) }, cwd: { kind: 'EXECUTABLE_FOLDER', path: cwd }, port,
+    environment: { contract: 'MINIMAL_ALLOWLIST', keys: Object.keys(environment).sort(), sha256: sha256(canonical(environment)) },
+    binding: { address: LOOPBACK_ADDRESS, blockExternal: true, verification: 'OWNED_LOOPBACK_LISTENERS_ONLY' },
+    healthCheck: { host: LOOPBACK_ADDRESS, port, path: '/', accept: '2xx-3xx-404', timeoutMs: 2_000 },
+    stop: { kind: 'TERMINATE_OWN_HANDLE', graceMs: KIWIX_LIMITS.stopGraceMs, forced: 'TREE_KILL_OWN_LIVE_HANDLE', forceWaitMs: KIWIX_LIMITS.forceWaitMs, portRelease: 'REQUIRED' },
+    restart: { policy: 'MANUAL', strategy: 'STOP_VERIFIED_EXIT_THEN_START', authorization: 'SERVICE_RESTART@runtime-supervisor-certified' },
   }));
 }
 
@@ -240,19 +260,24 @@ const MESSAGES = Object.freeze({
   instance_changed: 'L’instance Kiwix a changé depuis la demande.',
   restart_not_authorized: 'La Root Policy n’autorise pas cette relance.',
   restart_stop_failed: 'Relance interrompue : l’arrêt de l’instance en cours a échoué.',
+  policy_denied: 'La Root Policy n’autorise pas cette opération Kiwix.',
+  prepared_start_invalid: 'Le plan de démarrage Kiwix préparé est invalide ou déjà utilisé.',
 });
 const failure = (code, extra = {}) => ({ ok: false, error: code, message: MESSAGES[code] ?? 'Erreur Kiwix.', ...extra });
 
 /**
  * @param {object} deps — injected only by tests; the product uses the defaults.
- *   spawnFn, getSettings, scan, portFree, health, listListeners, terminate(child), forceKill(child), logger, limits
+ *   spawnFn, getSettings, scan, portFree, health, listListeners, terminate(child), forceKill(child), policyGate, logger, limits
  */
 export function createKiwixLifecycle({
   spawnFn = spawn, getSettings = getKiwixSettings, scan = scanArchives, portFree = isPortFree, health = healthCheck,
-  listListeners = listPortListeners, terminate = (child) => child.kill(), forceKill = killProcessTree, logger = null, limits = {},
+  listListeners = listPortListeners, terminate = (child) => child.kill(), forceKill = killProcessTree,
+  policyGate = productKiwixProcessPolicyGate, logger = null, limits = {},
 } = {}) {
+  if (!policyGate || typeof policyGate.evaluate !== 'function') throw new Error('KIWIX_POLICY_GATE_INVALID');
   const L = { ...KIWIX_LIMITS, ...limits };
   const S = { state: 'STOPPED', instance: null, generation: 0, lastError: null, lastExitCode: null, startPromise: null, stopPromise: null };
+  const preparedStarts = new WeakSet();
   const sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); t.unref?.(); });
   const log = (event, fields = {}, lg = logger) => { try { lg?.info?.({ event, serviceId: KIWIX_SERVICE_ID, ...fields }, 'kiwix lifecycle'); } catch { /* logging never breaks the lifecycle */ } };
   const setState = (to, code = null, lg) => {
@@ -276,6 +301,12 @@ export function createKiwixLifecycle({
     try { setState('CRASHED', S.lastError); } catch { /* exit handlers never throw into the server */ }
   }
 
+  function childEnv() {
+    const env = {};
+    for (const k of CHILD_ENV_KEYS) if (typeof process.env[k] === 'string') env[k] = process.env[k];
+    return env;
+  }
+
   function resolveDefinition() {
     const settings = getSettings() ?? {};
     const binary = resolveBinaryFromSettings(settings);
@@ -287,13 +318,60 @@ export function createKiwixLifecycle({
     if (!arch.ok) return { ok: false, code: arch.code };
     const args = [`--port=${port}`, `--address=${LOOPBACK_ADDRESS}`, '--blockexternal', ...archives.map(a => a.path)];
     const cwd = path.dirname(binary.path);
-    return { ok: true, binary, port, archives, args, cwd, digest: kiwixDefinitionDigest({ binary, args, cwd, port }) };
+    const env = childEnv();
+    return { ok: true, binary, port, archives, args, cwd, env, digest: kiwixDefinitionDigest({ binary, args, cwd, port, environment: env }) };
   }
 
-  function childEnv() {
-    const env = {};
-    for (const k of CHILD_ENV_KEYS) if (typeof process.env[k] === 'string') env[k] = process.env[k];
-    return env;
+  const deepFreeze = (value) => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+      for (const child of Object.values(value)) deepFreeze(child);
+      Object.freeze(value);
+    }
+    return value;
+  };
+
+  /** The single immutable object both Root Policy and child_process.spawn consume. */
+  function launchPlan(def) {
+    return deepFreeze({
+      version: 1,
+      serviceId: KIWIX_SERVICE_ID,
+      executorId: 'kiwix-serve',
+      executable: def.binary.path,
+      args: [...def.args],
+      cwd: def.cwd,
+      argsTyped: true,
+      freeFormCommand: false,
+      viaShell: false,
+      port: def.port,
+      address: LOOPBACK_ADDRESS,
+      blockExternal: true,
+      archives: def.archives.map(a => ({ path: a.path, sizeBytes: a.sizeBytes ?? null })),
+      environment: { contract: 'MINIMAL_ALLOWLIST', keys: Object.keys(def.env).sort() },
+      spawnOptions: { cwd: def.cwd, env: { ...def.env }, shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] },
+      definitionDigest: def.digest,
+    });
+  }
+
+  function evaluatePolicy(action, plan, { actor = 'MODULE', userInitiated = false, reason = 'INTERNAL', lg } = {}) {
+    let decision;
+    try { decision = policyGate.evaluate({ action, plan, actor, userInitiated, reason }); }
+    catch { decision = { decision: 'DENY', code: 'DENY_POLICY_INVALID', policyVersion: 0 }; }
+    log('root_policy_decision', { action, decision: decision?.decision ?? 'DENY', decisionCode: decision?.code ?? 'DENY_POLICY_INVALID', policyVersion: decision?.policyVersion ?? 0, actor, userInitiated, reason, definitionDigest: plan?.definitionDigest ?? null }, lg);
+    return decision;
+  }
+
+  function prepareStart({ actor = 'MODULE', userInitiated = false, reason = 'INTERNAL_START', logger: lg = logger } = {}) {
+    const def = resolveDefinition();
+    if (!def.ok) { S.lastError = def.code; return failure(def.code); }
+    const plan = launchPlan(def);
+    const decision = evaluatePolicy('PROCESS_START', plan, { actor, userInitiated, reason, lg });
+    if (decision?.decision !== 'ALLOW') {
+      S.lastError = 'policy_denied';
+      return failure('policy_denied', { decisionCode: decision?.code ?? 'DENY_POLICY_INVALID', policyVersion: decision?.policyVersion ?? 0 });
+    }
+    const prepared = Object.freeze({ plan, decision: Object.freeze({ decision: decision.decision, code: decision.code, policyVersion: decision.policyVersion }) });
+    preparedStarts.add(prepared);
+    return { ok: true, prepared };
   }
 
   /** One verification step: 'pending' | 'healthy' | 'degraded' | 'unsafe' | 'gone'. */
@@ -351,7 +429,9 @@ export function createKiwixLifecycle({
     if (!inst.stopPromise) inst.stopPromise = runStop(inst, opts).finally(() => { inst.stopPromise = null; });
     return inst.stopPromise;
   }
-  async function runStop(inst, { reason = 'USER_STOP', finalState = 'STOPPED', lg } = {}) {
+  async function runStop(inst, { reason = 'USER_STOP', finalState = 'STOPPED', lg, actor = 'MODULE', userInitiated = false } = {}) {
+    const decision = evaluatePolicy('PROCESS_STOP', null, { actor, userInitiated, reason, lg });
+    if (decision?.decision !== 'ALLOW') return failure('policy_denied', { state: S.state, decisionCode: decision?.code ?? 'DENY_POLICY_INVALID', policyVersion: decision?.policyVersion ?? 0 });
     inst.stopping = true;
     clearTimeout(inst.verifyTimer);
     setState('STOPPING', reason, lg);
@@ -390,19 +470,23 @@ export function createKiwixLifecycle({
     };
   }
 
-  async function doStart({ spawnFn: spawnOverride, logger: lg = logger, healthCheckAttempts = L.healthAttempts, healthCheckIntervalMs = L.healthIntervalMs } = {}) {
-    const def = resolveDefinition();
+  async function doStart({ logger: lg = logger, healthCheckAttempts = L.healthAttempts, healthCheckIntervalMs = L.healthIntervalMs } = {}, suppliedPrepared = null) {
     if (S.instance && !S.instance.exited) return { ok: true, alreadyRunning: true, ...status() }; // our own instance is never a foreign occupant
-    if (!def.ok) { S.lastError = def.code; return failure(def.code); }
-    if (!(await portFree(def.port)) || (await health(def.port))) { S.lastError = 'port_in_use'; return failure('port_in_use', { port: def.port }); }
-    setState('STARTING', 'USER_START', lg);
+    const prep = suppliedPrepared ?? prepareStart(arguments[0] ?? {});
+    if (!prep?.ok) return prep;
+    const prepared = prep.prepared;
+    if (!preparedStarts.has(prepared)) return failure('prepared_start_invalid');
+    preparedStarts.delete(prepared);
+    const plan = prepared.plan;
+    if (!(await portFree(plan.port)) || (await health(plan.port))) { S.lastError = 'port_in_use'; return failure('port_in_use', { port: plan.port }); }
+    setState('STARTING', 'POLICY_AUTHORIZED_START', lg);
     S.generation += 1;
     let resolveExit;
     const exitPromise = new Promise(r => { resolveExit = r; });
-    const inst = { generation: S.generation, child: null, pid: null, startedAt: Date.now(), port: def.port, archives: def.archives, exited: false, exitCode: null, stopping: false, exitPromise, resolveExit, verifyTimer: null, binding: null, stopPromise: null };
+    const inst = { generation: S.generation, child: null, pid: null, startedAt: Date.now(), port: plan.port, archives: plan.archives, exited: false, exitCode: null, stopping: false, exitPromise, resolveExit, verifyTimer: null, binding: null, stopPromise: null };
     let child;
     try {
-      child = (spawnOverride ?? spawnFn)(def.binary.path, def.args, { cwd: def.cwd, env: childEnv(), shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore'] });
+      child = spawnFn(plan.executable, plan.args, plan.spawnOptions);
     } catch {
       S.lastError = 'spawn_failed';
       setState('CRASHED', 'SPAWN_FAILED', lg);
@@ -417,7 +501,7 @@ export function createKiwixLifecycle({
       await sleep(healthCheckIntervalMs);
       if (!isCurrent(inst)) break;
       const r = await verifyOnce(inst, lg);
-      if (r === 'healthy') return { ok: true, ...status(), bindingVerified: true, message: `kiwix-serve démarré avec ${def.archives.length} archive(s).` };
+      if (r === 'healthy') return { ok: true, ...status(), bindingVerified: true, message: `kiwix-serve démarré avec ${plan.archives.length} archive(s).` };
       if (r === 'degraded') return { ok: true, ...status(), bindingVerified: false, code: 'binding_unverified', message: MESSAGES.binding_unverified };
       if (r === 'unsafe') return failure(S.lastError, { state: S.state });
       if (r === 'gone') break;
@@ -426,7 +510,7 @@ export function createKiwixLifecycle({
     if (inst.exited) return failure('start_crashed', { exitCode: inst.exitCode, state: S.state });
     if (S.instance !== inst) return failure('start_cancelled', { state: S.state });
     scheduleBackgroundVerify(inst, healthCheckIntervalMs, lg);
-    return { ok: true, ...status(), bindingVerified: false, message: `kiwix-serve démarré avec ${def.archives.length} archive(s) — vérification en cours.` };
+    return { ok: true, ...status(), bindingVerified: false, message: `kiwix-serve démarré avec ${plan.archives.length} archive(s) — vérification en cours.` };
   }
 
   return Object.freeze({
@@ -438,6 +522,15 @@ export function createKiwixLifecycle({
       S.startPromise = doStart(opts).finally(() => { S.startPromise = null; });
       return S.startPromise;
     },
+    /** Internal composition seam: authorize a replacement before stopping the current healthy instance. */
+    prepareStart,
+    startPrepared(prepared, opts = {}) {
+      if (S.stopPromise || S.state === 'STOPPING') return Promise.resolve(failure('operation_in_progress', { state: S.state }));
+      if (S.startPromise) return S.startPromise;
+      if (S.instance && !S.instance.exited) return Promise.resolve({ ok: true, alreadyRunning: true, ...status() });
+      S.startPromise = doStart(opts, { ok: true, prepared }).finally(() => { S.startPromise = null; });
+      return S.startPromise;
+    },
     /** User stop (existing route): stops only our instance, waits for the real exit; a second call joins the first. */
     stop(opts = {}) {
       if (S.stopPromise) return S.stopPromise;
@@ -446,7 +539,7 @@ export function createKiwixLifecycle({
         if (S.state === 'CRASHED') setState('STOPPED', 'ACKNOWLEDGED', opts.logger);
         return Promise.resolve({ ok: true, wasRunning: false, state: S.state });
       }
-      S.stopPromise = stopInstance(inst, { reason: 'USER_STOP', lg: opts.logger }).finally(() => { S.stopPromise = null; });
+      S.stopPromise = stopInstance(inst, { reason: opts.reason ?? 'USER_STOP', lg: opts.logger, actor: opts.actor ?? 'MODULE', userInitiated: opts.userInitiated === true }).finally(() => { S.stopPromise = null; });
       return S.stopPromise;
     },
     status,
@@ -457,6 +550,10 @@ export function createKiwixLifecycle({
       const inst = S.instance;
       if (!inst || inst.exited) return;
       inst.stopping = true;
+      // PROCESS_STOP is a hard-coded stop-always action. The synchronous exit
+      // hook records the mapping, then ownership safety still wins if logging
+      // or policy infrastructure itself is unavailable during teardown.
+      evaluatePolicy('PROCESS_STOP', null, { actor: 'MODULE', userInitiated: false, reason: 'BACKEND_SHUTDOWN', lg });
       log('shutdown_stop', { pid: inst.pid }, lg);
       try { inst.child.kill(); } catch { /* process exit */ }
     },
@@ -467,48 +564,51 @@ export function createKiwixLifecycle({
 
 const productLifecycle = createKiwixLifecycle();
 
-export function startKiwixServe(opts = {}) { return productLifecycle.start(opts); }
-export function stopKiwixServe(opts = {}) { return productLifecycle.stop(opts); }
+export function startKiwixServe({ logger } = {}) {
+  return productLifecycle.start({ logger, actor: 'USER', userInitiated: true, reason: 'USER_START_ROUTE' });
+}
+export function stopKiwixServe({ logger } = {}) {
+  return productLifecycle.stop({ logger, actor: 'USER', userInitiated: true, reason: 'USER_STOP_ROUTE' });
+}
 export function getStatus() { return productLifecycle.status(); }
 export function registerShutdownHook(logger) {
   process.on('exit', () => productLifecycle.shutdownSync(logger));
 }
 
-// ── FUTURE Runtime Supervisor delegation contract (V1B) — NOT WIRED ──────────
-// Typed, Kiwix-specific, closed: it accepts NO executable, argument, working directory, PID or command — the
-// definition stays fixed inside this module. Every restart first needs a Root Policy SERVICE_RESTART decision of ALLOW
-// bound to this service and to the digest of what would really run (target = serviceId, payloadHash = digest). Under
-// the sealed v1 policy that decision is REQUIRE_APPROVAL: the port fails closed and touches nothing.
+// ── Runtime Supervisor delegation contract (RS-KIWIX-RESTART) ───────────────
+// Typed, Kiwix-specific, closed: it accepts NO executable, argument, working directory, PID or command — the definition
+// stays fixed inside this module, which remains the only process owner. The supervisor gets two things: a read-only
+// status (with the definition digest and instance identity a restart challenge binds to) and ONE operation,
+// restartOwnedKiwix(authorization). The authorization is the opaque, single-use object the Runtime Supervisor's internal
+// authority mints after a consumed local challenge and a Root Policy SERVICE_RESTART decision of ALLOW_CERTIFIED_BOUNDARY;
+// it is redeemed here against the LIVE digest and generation. Not wired with a redeemer ⇒ every restart is refused.
 
-const defaultAuthorizeRestart = ({ serviceId, definitionDigest }) => rootPolicyDecide({
-  action: 'SERVICE_RESTART', module: 'runtime-supervisor', trustDomain: 'RUNTIME', actor: { kind: 'USER' }, userInitiated: true,
-  context: { serviceId, target: serviceId, payloadHash: definitionDigest },
-});
-
-export function createKiwixLifecyclePort({ lifecycle = productLifecycle, authorizeRestart = defaultAuthorizeRestart } = {}) {
-  if (typeof authorizeRestart !== 'function' || typeof lifecycle?.start !== 'function') throw new Error('KIWIX_PORT_INVALID');
+export function createKiwixLifecyclePort({ lifecycle = productLifecycle, redeemRestartAuthorization = () => false } = {}) {
+  if (typeof redeemRestartAuthorization !== 'function' || typeof lifecycle?.prepareStart !== 'function' || typeof lifecycle?.startPrepared !== 'function') throw new Error('KIWIX_PORT_INVALID');
   return Object.freeze({
     serviceId: KIWIX_SERVICE_ID,
     getLifecycleStatus() {
       const s = lifecycle.status(); const d = lifecycle.describe();
       return Object.freeze({ serviceId: KIWIX_SERVICE_ID, state: s.state, owned: s.running, pid: s.pid, port: s.port, startedAt: s.startedAt, generation: s.generation, lastError: s.lastError, definitionDigest: d.ok ? d.definitionDigest : null });
     },
-    async restartOwnedKiwix(request = {}) {
-      if (!request || typeof request !== 'object' || Array.isArray(request) || Object.getPrototypeOf(request) !== Object.prototype) return failure('request_invalid', { reason: 'NOT_AN_OBJECT' });
-      for (const k of Object.keys(request)) if (!RESTART_FIELDS.includes(k)) return failure('request_invalid', { reason: 'UNKNOWN_FIELD' });
-      if (!RESTART_REASONS.includes(request.reason)) return failure('request_invalid', { reason: 'REASON' });
+    /** HEALTHY/DEGRADED → STOPPING → our exit → port released → STOPPED → STARTING → launch → binding + health → HEALTHY. */
+    async restartOwnedKiwix(authorization) {
       const d = lifecycle.describe();
-      if (!d.ok) return failure(d.code);
-      if (request.expectedDefinitionDigest !== undefined && request.expectedDefinitionDigest !== d.definitionDigest) return failure('definition_changed');
-      if (request.expectedGeneration !== undefined && request.expectedGeneration !== lifecycle.status().generation) return failure('instance_changed');
-      let verdict = null;
-      try { verdict = await authorizeRestart({ serviceId: KIWIX_SERVICE_ID, operation: 'RESTART', definitionDigest: d.definitionDigest }); } catch { verdict = null; }
-      if (verdict?.decision !== 'ALLOW') return failure('restart_not_authorized', { policyCode: String(verdict?.code ?? 'UNKNOWN').slice(0, 60) });
-      if (lifecycle.status().running) {
-        const stopped = await lifecycle.stop();
-        if (!stopped.ok) return failure('restart_stop_failed', { stop: stopped.error });
-      }
-      return lifecycle.start();
+      const s = lifecycle.status();
+      let redeemed = false;
+      try { redeemed = d.ok && redeemRestartAuthorization(authorization, { serviceId: KIWIX_SERVICE_ID, definitionDigest: d.definitionDigest, generation: s.generation }) === true; } catch { redeemed = false; }
+      if (!redeemed) return failure('restart_not_authorized', { state: s.state });
+      if (!s.running) return failure('instance_changed', { state: s.state }); // nothing owned to restart (a start is not a restart)
+      // Both gates are required. Authorize the exact replacement plan while
+      // the current healthy instance still exists; a typed-process denial
+      // therefore causes no outage. The opaque prepared object is one-use.
+      const replacement = lifecycle.prepareStart({ actor: 'MODULE', userInitiated: true, reason: 'RUNTIME_SUPERVISOR_RESTART' });
+      if (!replacement.ok) return replacement;
+      const stopped = await lifecycle.stop({ actor: 'MODULE', userInitiated: true, reason: 'RUNTIME_SUPERVISOR_RESTART_STOP' });
+      if (!stopped.ok) return failure('restart_stop_failed', { stop: stopped.error, state: lifecycle.status().state }); // never start a replacement
+      const again = lifecycle.describe();
+      if (!again.ok || again.definitionDigest !== replacement.prepared.plan.definitionDigest) return failure('definition_changed', { state: lifecycle.status().state });
+      return lifecycle.startPrepared(replacement.prepared);
     },
   });
 }

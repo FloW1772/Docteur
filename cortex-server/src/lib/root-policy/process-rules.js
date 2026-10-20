@@ -102,11 +102,12 @@ export const ARG_TEMPLATES = Object.freeze({
 });
 export const ARG_TEMPLATE_IDS = Object.freeze(Object.keys(ARG_TEMPLATES));
 
-const ENTRY_KEYS = ['executables', 'deniedExecutables', 'executableExtension', 'parentDir', 'argsTemplates'];
+const ENTRY_KEYS = ['executables', 'deniedExecutables', 'executableExtension', 'parentDir', 'argsTemplates', 'actors'];
+const PROCESS_ACTORS = Object.freeze(['USER', 'MODULE']);
 const isStrArray = (v) => Array.isArray(v) && v.every(x => typeof x === 'string');
 
 /** Structural validation of the `executors` constraint (used by schema.js, so a malformed signed policy is refused at load). */
-export function validateExecutorsConstraint(executors, path, errors, { isModuleWithProcessCapability }) {
+export function validateExecutorsConstraint(executors, path, errors, { isModuleWithProcessCapability, requireActors = false }) {
   if (executors === null || typeof executors !== 'object' || Array.isArray(executors)) { errors.push(`${path}: object required`); return; }
   for (const [moduleName, byExecutor] of Object.entries(executors)) {
     const here = `${path}.${moduleName}`;
@@ -128,6 +129,10 @@ export function validateExecutorsConstraint(executors, path, errors, { isModuleW
       if (!hasDeny && entry.executableExtension !== undefined) errors.push(`${where}.executableExtension: only with deniedExecutables`);
       if (entry.parentDir !== undefined && (typeof entry.parentDir !== 'string' || !BASENAME_RE.test(entry.parentDir))) errors.push(`${where}.parentDir: base name required`);
       if (!isStrArray(entry.argsTemplates) || entry.argsTemplates.length === 0 || entry.argsTemplates.some(t => !ARG_TEMPLATE_IDS.includes(t))) errors.push(`${where}.argsTemplates: known templates required`);
+      if (requireActors && (!isStrArray(entry.actors) || entry.actors.length === 0)) errors.push(`${where}.actors: non-empty process actor list required`);
+      if (entry.actors !== undefined && (!isStrArray(entry.actors) || entry.actors.length === 0 || entry.actors.some(a => !PROCESS_ACTORS.includes(a)) || new Set(entry.actors).size !== entry.actors.length)) {
+        errors.push(`${where}.actors: unique USER/MODULE list required`);
+      }
     }
   }
 }
@@ -148,6 +153,9 @@ export function evaluateProcessRules(rules, context) {
 function evaluate(rules, context) {
   const entry = typeof context?.executorId === 'string' && Object.hasOwn(rules, context.executorId) ? rules[context.executorId] : undefined;
   if (!entry) return { ok: false, reason: 'EXECUTOR_NOT_DECLARED' };
+  // V2 entries carry their own actor allowlist. Older policy documents have no
+  // such field and preserve their exact historical MODULE-only action config.
+  if (entry.actors !== undefined && !entry.actors.includes(context.actor)) return { ok: false, reason: 'ACTOR_NOT_PERMITTED' };
 
   const executable = parseAbsoluteWindowsPath(context.executable);
   if (!executable) return { ok: false, reason: 'EXECUTABLE_PATH_INVALID' };

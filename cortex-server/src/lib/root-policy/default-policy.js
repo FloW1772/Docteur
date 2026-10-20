@@ -67,21 +67,33 @@ const V2_MODULES = Object.freeze({
 const V2_PROCESS_EXECUTORS = Object.freeze({
   browser: {
     // the four browsers Docteur DETECTS, each pinned to the folder it installs into (a `chrome.exe` dropped in Downloads is not a detected Chrome)
-    'browser-open-brave': { executables: ['brave.exe'], parentDir: 'Application', argsTemplates: ['url'] },
-    'browser-open-chrome': { executables: ['chrome.exe'], parentDir: 'Application', argsTemplates: ['url'] },
-    'browser-open-edge': { executables: ['msedge.exe'], parentDir: 'Application', argsTemplates: ['url'] },
-    'browser-open-firefox': { executables: ['firefox.exe'], parentDir: 'Mozilla Firefox', argsTemplates: ['url'] },
-    'browser-open-system': { executables: ['cmd.exe', 'explorer.exe'], argsTemplates: ['cmd-start-url', 'shell-open-url'] },
-    'browser-open-custom': { deniedExecutables: [...BROWSER_SHELL_LIKE], executableExtension: '.exe', argsTemplates: ['url'] },
+    'browser-open-brave': { executables: ['brave.exe'], parentDir: 'Application', argsTemplates: ['url'], actors: ['MODULE'] },
+    'browser-open-chrome': { executables: ['chrome.exe'], parentDir: 'Application', argsTemplates: ['url'], actors: ['MODULE'] },
+    'browser-open-edge': { executables: ['msedge.exe'], parentDir: 'Application', argsTemplates: ['url'], actors: ['MODULE'] },
+    'browser-open-firefox': { executables: ['firefox.exe'], parentDir: 'Mozilla Firefox', argsTemplates: ['url'], actors: ['MODULE'] },
+    'browser-open-system': { executables: ['cmd.exe', 'explorer.exe'], argsTemplates: ['cmd-start-url', 'shell-open-url'], actors: ['MODULE'] },
+    'browser-open-custom': { deniedExecutables: [...BROWSER_SHELL_LIKE], executableExtension: '.exe', argsTemplates: ['url'], actors: ['MODULE'] },
   },
   kiwix: {
-    'kiwix-serve': { executables: ['kiwix-serve.exe'], argsTemplates: ['kiwix-serve-loopback'] },
+    'kiwix-serve': { executables: ['kiwix-serve.exe'], argsTemplates: ['kiwix-serve-loopback'], actors: ['USER', 'MODULE'] },
   },
   'image-generation': {
-    'comfyui-launch': { executables: ['python.exe'], parentDir: 'python_embeded', argsTemplates: ['comfyui-main'] },
-    'comfyui-archive': { executables: ['7za.exe'], argsTemplates: ['sevenzip-archive'] },
+    'comfyui-launch': { executables: ['python.exe'], parentDir: 'python_embeded', argsTemplates: ['comfyui-main'], actors: ['MODULE'] },
+    'comfyui-archive': { executables: ['7za.exe'], argsTemplates: ['sevenzip-archive'], actors: ['MODULE'] },
   },
 });
+
+// ── V2 (RS-KIWIX-RESTART): the Runtime Supervisor's certified restart boundary ─────────────────────────────────────────────────────────────
+// ADDED only: one boundary covering exactly SERVICE_RESTART, referenced only by `runtime-supervisor` (its V1 grant RUNTIME.RESTART_SERVICE
+// in the RUNTIME domain is unchanged). The document closes the service identity to exactly `kiwix-serve`; the restart also runs only through
+// the Runtime Supervisor's internal authority (runtime-restart-authority.js) after a single-use local UI challenge bound to the service, its
+// definition digest and its live instance has been consumed; the delegate (the Kiwix module, still the process owner) redeems a single-use,
+// non-serializable authorization. It covers no PROCESS_START / PROCESS_STOP / SHELL_* / DEVICE_* / FILE_* action.
+export const RUNTIME_RESTART_BOUNDARY = 'runtime-supervisor-certified';
+const V2_BOUNDARIES = Object.freeze({
+  [RUNTIME_RESTART_BOUNDARY]: { covers: ['SERVICE_RESTART'], serviceAllowlist: ['kiwix-serve'], description: 'Runtime Supervisor: delegated restart of a closed list of Docteur-managed services, only after a single-use local UI challenge bound to the service definition digest and live instance; the owning module redeems a single-use internal authorization.' },
+});
+const V2_MODULE_BOUNDARIES = Object.freeze({ 'runtime-supervisor': RUNTIME_RESTART_BOUNDARY });
 
 export function buildDefaultPolicy({ version = 1, issuedAt = new Date().toISOString() } = {}) {
   const capabilities = {};
@@ -97,7 +109,16 @@ export function buildDefaultPolicy({ version = 1, issuedAt = new Date().toISOStr
   const actions = {};
   for (const id of ACTION_IDS) {
     const c = ACTION_CEILING[id];
-    actions[id] = { impact: c.impact, protected: c.protected, actors: [...c.actors], enabled: !c.never };
+    // Changing the code ceiling must not change one byte of the V1 document:
+    // V1 PROCESS_START remains its historical MODULE-only action. V2 relies on
+    // each executor's narrower actor list above.
+    const actors = id === 'PROCESS_START' && version === 1 ? ['MODULE'] : [...c.actors];
+    actions[id] = { impact: c.impact, protected: c.protected, actors, enabled: !c.never };
+  }
+  const approvalBoundaries = JSON.parse(JSON.stringify(BOUNDARIES));
+  if (version >= 2) {
+    Object.assign(approvalBoundaries, JSON.parse(JSON.stringify(V2_BOUNDARIES)));
+    for (const [name, boundary] of Object.entries(V2_MODULE_BOUNDARIES)) modules[name].approvalBoundary = boundary;
   }
   return {
     schema: POLICY_SCHEMA,
@@ -108,6 +129,6 @@ export function buildDefaultPolicy({ version = 1, issuedAt = new Date().toISOStr
     capabilities,
     actions,
     modules,
-    approvalBoundaries: JSON.parse(JSON.stringify(BOUNDARIES)),
+    approvalBoundaries,
   };
 }

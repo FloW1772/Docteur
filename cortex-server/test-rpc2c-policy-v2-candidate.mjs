@@ -22,6 +22,7 @@ import { loadAndVerify } from './src/lib/root-policy/loader.js';
 import { evaluateProcessRules, parseAbsoluteWindowsPath, isNormalisedHttpUrl, ARG_TEMPLATE_IDS } from './src/lib/root-policy/process-rules.js';
 import { buildCandidateText, semanticDiff, writeCandidate, sha256Hex } from './root-policy-v2-candidate.mjs';
 import { signPolicy, keyIdOf } from './root-policy-tool.mjs';
+import { loadHistoricalV1 } from './fixtures/root-policy-history.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ACTIVE_DIR = path.join(HERE, 'policy');
@@ -44,9 +45,13 @@ after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 const touch = (p, text = '') => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p; };
 
 // ── the three policies under test ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Version-neutral: whatever reviewed policy is live (V1 until 2026-10-20, V2 since), nothing below may change a byte of policy/.
+const listActiveDir = (dir = ACTIVE_DIR, rel = '') => fs.readdirSync(path.join(dir, rel), { withFileTypes: true }).flatMap(e => (e.isDirectory()
+  ? listActiveDir(dir, path.join(rel, e.name)) : [`${path.join(rel, e.name).replace(/\\/g, '/')}:${sha256Hex(fs.readFileSync(path.join(dir, rel, e.name), 'utf8'))}`])).sort();
 const activeBytesBefore = ['root-policy.json', 'root-policy.sig.json', 'signing-log.jsonl'].map(f => sha256Hex(fs.readFileSync(path.join(ACTIVE_DIR, f), 'utf8')));
-const V1_TEXT = fs.readFileSync(path.join(ACTIVE_DIR, 'root-policy.json'), 'utf8');
-const V1 = JSON.parse(V1_TEXT);
+const activeListingBefore = listActiveDir();
+// V1 = the HISTORICAL signed V1 (public fixture, verified with its own historical anchor) — never the live file.
+const { text: V1_TEXT, policy: V1 } = loadHistoricalV1();
 const ISSUED = '2026-10-02T00:00:00.000Z';
 const V2_TEXT = buildCandidateText({ issuedAt: ISSUED });
 const V2 = JSON.parse(V2_TEXT);
@@ -74,17 +79,28 @@ test('CANDIDATE: version 2, schema-valid, canonical, reproducible, unsigned — 
   assert.deepEqual(Object.keys(V2).sort(), Object.keys(V1).sort(), 'same document shape / schema');
 });
 
-test('CANDIDATE: semantic diff V1 → V2 — REMOVED 0, no unrelated CHANGED, ADDED = the 3 modules + their process rules', () => {
+test('CANDIDATE: semantic diff V1 → V2 — REMOVED 0; CHANGED includes the narrow USER process actor + runtime boundary; ADDED = typed modules/rules + restart allowlist', () => {
   const diff = semanticDiff(V1, V2);
   assert.equal(diff.counts.REMOVED, 0);
-  assert.deepEqual(diff.changed.map(c => c.path).sort(), ['$.issuedAt', '$.version']);
+  assert.deepEqual(diff.changed.map(c => c.path).sort(), ['$.actions.PROCESS_START.actors', '$.issuedAt', '$.modules.runtime-supervisor.approvalBoundary', '$.version']);
+  assert.deepEqual(diff.changed.find(c => c.path === '$.actions.PROCESS_START.actors'), { path: '$.actions.PROCESS_START.actors', from: '["MODULE"]', to: '["USER","MODULE"]' });
+  // [RS-KIWIX-RESTART] the only CHANGED grant-side leaf: runtime-supervisor now names the certified runtime boundary
+  assert.deepEqual(diff.changed.find(c => c.path === '$.modules.runtime-supervisor.approvalBoundary'), { path: '$.modules.runtime-supervisor.approvalBoundary', from: 'null', to: '"runtime-supervisor-certified"' });
   assert.ok(diff.counts.UNCHANGED > 200);
   const addedTop = new Set(diff.added.map(p => p.split('.').slice(0, 3).join('.')));
-  assert.deepEqual([...addedTop].sort(), ['$.capabilities.PROCESS', '$.modules.browser', '$.modules.image-generation', '$.modules.kiwix']);
-  assert.ok(diff.added.every(p => p.startsWith('$.modules.') || p.startsWith('$.capabilities.PROCESS.START_TYPED.constraints.executors.')), 'nothing else is added');
-  // every V1 module / capability / action / boundary is deeply equal
-  for (const section of ['invariants', 'trustDomains', 'actions', 'approvalBoundaries']) assert.deepEqual(V2[section], V1[section], section);
-  for (const [name, def] of Object.entries(V1.modules)) assert.deepEqual(V2.modules[name], def, `module ${name}`);
+  assert.deepEqual([...addedTop].sort(), ['$.approvalBoundaries.runtime-supervisor-certified', '$.capabilities.PROCESS', '$.modules.browser', '$.modules.image-generation', '$.modules.kiwix']);
+  assert.ok(diff.added.every(p => p.startsWith('$.modules.') || p.startsWith('$.capabilities.PROCESS.START_TYPED.constraints.executors.') || p.startsWith('$.approvalBoundaries.runtime-supervisor-certified.')), 'nothing else is added');
+  // every V1 module / capability / action / boundary is deeply equal (the runtime-supervisor module differs ONLY by its boundary name)
+  for (const section of ['invariants', 'trustDomains']) assert.deepEqual(V2[section], V1[section], section);
+  for (const [id, action] of Object.entries(V1.actions)) if (id !== 'PROCESS_START') assert.deepEqual(V2.actions[id], action, `action ${id}`);
+  for (const [name, def] of Object.entries(V1.approvalBoundaries)) assert.deepEqual(V2.approvalBoundaries[name], def, `boundary ${name}`);
+  assert.deepEqual(Object.keys(V2.approvalBoundaries).filter(n => !(n in V1.approvalBoundaries)), ['runtime-supervisor-certified']);
+  assert.deepEqual(V2.approvalBoundaries['runtime-supervisor-certified'].covers, ['SERVICE_RESTART'], 'covers exactly SERVICE_RESTART');
+  assert.deepEqual(V2.approvalBoundaries['runtime-supervisor-certified'].serviceAllowlist, ['kiwix-serve'], 'one exact policy-defined service');
+  assert.deepEqual(Object.entries(V2.modules).filter(([, d]) => d.approvalBoundary === 'runtime-supervisor-certified').map(([n]) => n), ['runtime-supervisor'], 'one module references it');
+  for (const [name, def] of Object.entries(V1.modules)) {
+    assert.deepEqual(V2.modules[name], name === 'runtime-supervisor' ? { ...def, approvalBoundary: 'runtime-supervisor-certified' } : def, `module ${name}`);
+  }
   for (const [name, def] of Object.entries(V1.capabilities)) if (name !== 'PROCESS.START_TYPED') assert.deepEqual(V2.capabilities[name], def, `capability ${name}`);
   assert.equal(V2.capabilities['PROCESS.START_TYPED'].grantable, V1.capabilities['PROCESS.START_TYPED'].grantable);
   for (const name of ['browser', 'kiwix', 'image-generation']) assert.deepEqual(V2.modules[name], { domains: ['PROCESS'], capabilities: ['PROCESS.START_TYPED'], approvalBoundary: null });
@@ -119,19 +135,33 @@ test('CANDIDATE: the schema refuses malformed or over-permissive process rules (
 });
 
 // ═══════════════════════════ nothing else changes: R1–R9, strict local, STOP, approvals, AI/plugin/MCP, fail-closed ═════════════════════
-test('V2 vs V1: identical decisions for every module other than the three new ones, across the whole action × actor × module × domain × context space', () => {
+test('V2 vs V1: identical decisions for every module other than the three new ones, across the whole action × actor × module × domain × context space — EXCEPT exactly the certified runtime restart', () => {
   const modules = [...Object.keys(V1.modules), 'unknown-module'];
   const contexts = [{}, { executorId: 'x', argsTyped: true }, { executorId: 'x', argsTyped: true, viaShell: true }, { accessMode: 'public', networkClass: 'public' },
-    { containsSecret: true, cloudEnabled: true }, { strictLocal: true }, { serviceId: 's' }];
-  let compared = 0;
+    { containsSecret: true, cloudEnabled: true }, { strictLocal: true }, { serviceId: 's' }, { serviceId: 'kiwix-serve', target: 'kiwix-serve', payloadHash: 'a'.repeat(64) }];
+  let compared = 0; const delta = [];
   for (const action of ACTION_IDS) for (const actor of ACTORS) for (const module of modules) {
-    for (const trustDomain of new Set([...ACTION_CEILING[action].domains, 'WEB'])) for (const context of contexts) for (const userInitiated of [true, false]) {
-      const request = { action, actor: { kind: actor }, module, trustDomain, context, userInitiated, certifiedBoundary: true };
-      assert.equal(verdict(e2, request), verdict(e1, request), JSON.stringify({ action, actor, module, trustDomain, context }));
+    for (const trustDomain of new Set([...ACTION_CEILING[action].domains, 'WEB'])) for (const context of contexts) for (const userInitiated of [true, false]) for (const certifiedBoundary of [true, false]) {
+      const request = { action, actor: { kind: actor }, module, trustDomain, context, userInitiated, certifiedBoundary };
+      const v1 = verdict(e1, request); const v2 = verdict(e2, request);
+      if (v1 !== v2) delta.push({ action, actor, module, trustDomain, context: JSON.stringify(context), userInitiated, certifiedBoundary, v1, v2 });
       compared++;
     }
   }
-  assert.ok(compared > 100_000, `${compared} decisions compared`);
+  assert.ok(compared > 200_000, `${compared} decisions compared`);
+  // [RS-KIWIX-RESTART] the ONLY newly allowed difference is the exact allowlisted Kiwix request. The synthetic non-allowlisted
+  // service context tightens from REQUIRE_APPROVAL to DENY for USER/MODULE, independently of certifiedBoundary and userInitiated.
+  const newlyAllowed = delta.filter(d => d.v2.startsWith('ALLOW:'));
+  assert.deepEqual(newlyAllowed.map(d => `${d.action}|${d.module}|${d.trustDomain}|${d.actor}|${d.context}|${d.userInitiated}|${d.certifiedBoundary}|${d.v1}→${d.v2}`).sort(), [
+    'SERVICE_RESTART|runtime-supervisor|RUNTIME|MODULE|{"serviceId":"kiwix-serve","target":"kiwix-serve","payloadHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}|false|true|REQUIRE_APPROVAL:REQUIRE_LOCAL_APPROVAL→ALLOW:ALLOW_CERTIFIED_BOUNDARY',
+    'SERVICE_RESTART|runtime-supervisor|RUNTIME|MODULE|{"serviceId":"kiwix-serve","target":"kiwix-serve","payloadHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}|true|true|REQUIRE_APPROVAL:REQUIRE_LOCAL_APPROVAL→ALLOW:ALLOW_CERTIFIED_BOUNDARY',
+    'SERVICE_RESTART|runtime-supervisor|RUNTIME|USER|{"serviceId":"kiwix-serve","target":"kiwix-serve","payloadHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}|false|true|REQUIRE_APPROVAL:REQUIRE_LOCAL_APPROVAL→ALLOW:ALLOW_CERTIFIED_BOUNDARY',
+    'SERVICE_RESTART|runtime-supervisor|RUNTIME|USER|{"serviceId":"kiwix-serve","target":"kiwix-serve","payloadHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}|true|true|REQUIRE_APPROVAL:REQUIRE_LOCAL_APPROVAL→ALLOW:ALLOW_CERTIFIED_BOUNDARY',
+  ]);
+  const tightened = delta.filter(d => d.v2 === 'DENY:DENY_SERVICE_TARGET_MISMATCH' || d.v2 === 'DENY:DENY_SERVICE_NOT_ALLOWLISTED');
+  assert.equal(tightened.length, 8);
+  assert.ok(tightened.every(d => d.action === 'SERVICE_RESTART' && d.module === 'runtime-supervisor' && d.trustDomain === 'RUNTIME' && d.context === '{"serviceId":"s"}' && d.v1 === 'REQUIRE_APPROVAL:REQUIRE_LOCAL_APPROVAL'));
+  assert.equal(delta.length, newlyAllowed.length + tightened.length, 'no other semantic delta');
 });
 
 test('V2 keeps the root rules: R1 strict local, cloud opt-in, R2 secrets, R3 auth bypass, R4 approval, R5 no shell, R6 domains, R7 STOP, R8 policy immutable, R9 fail-closed', () => {
@@ -159,12 +189,15 @@ test('V2 keeps the root rules: R1 strict local, cloud opt-in, R2 secrets, R3 aut
   assert.equal(verdict(e2, { action: 'NOT_AN_ACTION', module: 'web', trustDomain: 'WEB', actor: mod }), 'DENY:DENY_UNKNOWN_ACTION');
 });
 
-test('V2: untrusted origins can NEVER start a process through the new modules; unknown protected state fails closed', () => {
+test('V2: only the trusted USER Kiwix gesture is added; untrusted origins can NEVER start a process; unknown protected state fails closed', () => {
   const form = { executable: 'C:\\Program Files\\Kiwix\\kiwix-serve.exe', cwd: 'C:\\Program Files\\Kiwix', args: ['--port=8090', '--address=127.0.0.1', '--blockexternal', 'D:\\zim\\a.zim'] };
-  for (const actor of ['AI_LOCAL', 'AI_CLOUD', 'AGENT', 'PLUGIN', 'MCP', 'REMOTE', 'CONNECTOR', 'DOCUMENT', 'USER']) {
+  for (const actor of ['AI_LOCAL', 'AI_CLOUD', 'AGENT', 'PLUGIN', 'MCP', 'REMOTE', 'CONNECTOR', 'DOCUMENT']) {
     const request = { ...processRequest('kiwix', 'kiwix-serve', form), actor: { kind: actor } };
     assert.match(verdict(e2, request), /^DENY:DENY_ACTOR_NOT_PERMITTED$/, `${actor} must not start kiwix`);
   }
+  const userRequest = { ...processRequest('kiwix', 'kiwix-serve', form), actor: { kind: 'USER' } };
+  assert.equal(verdict(e2, userRequest), 'DENY:DENY_NOT_USER_INITIATED');
+  assert.equal(verdict(e2, { ...userRequest, userInitiated: true }), ALLOW, 'the exact trusted user gesture is the sole USER process expansion');
   assert.equal(verdict(eInvalid, processRequest('kiwix', 'kiwix-serve', form)), 'DENY:DENY_POLICY_INVALID', 'untrusted policy ⇒ protected operation refused');
   assert.equal(verdict(e1, processRequest('kiwix', 'kiwix-serve', form)), 'DENY:DENY_UNKNOWN_MODULE', 'under V1 the three modules do not exist yet (fail-closed): this is what V2 changes');
   assert.equal(verdict(e2, { ...processRequest('kiwix', 'kiwix-serve', form), module: 'someone-new' }), 'DENY:DENY_UNKNOWN_MODULE');
@@ -226,7 +259,11 @@ test('KIWIX: the form startKiwixServe really produces (binary, loopback argument
   const zims = path.join(scratch, 'ZIM archives été'); touch(path.join(zims, 'wikipedia_fr.zim')); touch(path.join(zims, 'pokepedia.ZIM'));
   db.setKiwixSettings({ kiwixServePath: dir, archivesFolder: zims, port: 18091 });
   const before = spawned.length;
-  const started = await kiwix.startKiwixServe({ spawnFn: (command, args, options) => { spawned.push({ command, args: [...args], options }); return fakeChild(); }, healthCheckAttempts: 0, healthCheckIntervalMs: 1 });
+  const lifecycle = kiwix.createKiwixLifecycle({
+    spawnFn: (command, args, options) => { spawned.push({ command, args: [...args], options }); return fakeChild(); },
+    health: async () => false, portFree: async () => true,
+  });
+  const started = await lifecycle.start({ healthCheckAttempts: 0, healthCheckIntervalMs: 1 });
   assert.equal(started.ok, true, JSON.stringify(started).slice(0, 200));
   const call = spawned.at(-1); assert.equal(spawned.length, before + 1);
   const form = { command: call.command, args: call.args, cwd: call.options.cwd };
@@ -236,7 +273,6 @@ test('KIWIX: the form startKiwixServe really produces (binary, loopback argument
   assert.equal(e2.decide(request).decision, 'ALLOW', 'no approval prompt');
   // the configuration the user may use today: the .exe path itself instead of its folder
   db.setKiwixSettings({ kiwixServePath: path.join(dir, 'kiwix-serve.exe') });
-  kiwix.stopKiwixServe();
 });
 
 test('COMFYUI: the launch form startComfyUi really produces, and the 7-Zip archive operations of the installer, are ALLOWED', () => {
@@ -462,10 +498,9 @@ test('REHEARSAL with a THROW-AWAY key in a temporary directory: the candidate by
   assert.notEqual(loadAndVerify({ policyDir: dir, trustAnchors: anchors, highestVersionSeen: 0 }).ok, true);
 });
 
-test('NOTHING REAL CHANGED: the active V1 pair and signing log are byte-identical after every test above', () => {
+test('NOTHING REAL CHANGED: the live policy pair, signing log and whole policy directory are byte-identical after every test above', () => {
   const after = ['root-policy.json', 'root-policy.sig.json', 'signing-log.jsonl'].map(f => sha256Hex(fs.readFileSync(path.join(ACTIVE_DIR, f), 'utf8')));
   assert.deepEqual(after, activeBytesBefore);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, 'root-policy.json'), 'utf8')).version, 1);
-  assert.equal(fs.existsSync(path.join(ACTIVE_DIR, 'recovery')), false, 'no recovery copy was created in the real policy directory (the rehearsal used a temporary one)');
-  assert.deepEqual(fs.readdirSync(ACTIVE_DIR).sort(), ['root-policy.json', 'root-policy.sig.json', 'signing-log.jsonl']);
+  // no file added, removed or changed anywhere under policy/ — in particular no recovery copy was created by the rehearsal (it used a temporary one)
+  assert.deepEqual(listActiveDir(), activeListingBefore);
 });

@@ -8,7 +8,7 @@ export interface RuntimeServiceDto {
   serviceId: string;
   displayName: string;
   ownershipClass: OwnershipClass;
-  kind: 'SELF' | 'OBSERVED' | 'SPAWN';
+  kind: 'SELF' | 'OBSERVED' | 'SPAWN' | 'DELEGATED';
   optional: boolean;
   dependencies: string[];
   note: string | null;
@@ -26,13 +26,21 @@ export interface RuntimeServiceDto {
   retryAt: string | null;
   operationInProgress: boolean;
   restart: { allowed: boolean; code: string };
+  restartEffects?: RestartEffect[];
 }
+/** [RS-KIWIX-RESTART] closed effect codes of a delegated restart, rendered as fixed text. */
+export type RestartEffect = 'IN_FLIGHT_REQUESTS_INTERRUPTED' | 'LOCAL_ARCHIVES_UNCHANGED';
+/** The minimum the UI receives to run the local ceremony: an opaque id (never displayed), its expiry and the bound state. */
+export interface RestartChallengeDto { serviceId: string; challengeId: string; expiresAt: string; state: RuntimeState; operation: 'RESTART'; effects: RestartEffect[] }
+export interface RestartGesture { kind: 'POINTER' | 'KEYBOARD'; trusted: boolean }
 export interface RuntimeEventDto { at: string; serviceId?: string; event?: string; from?: string; to?: string; reason?: string; pid?: number; exitCode?: number; actor?: string }
 export interface RestartOptions { confirmInterrupt?: boolean; resetBlocked?: boolean }
 export interface RuntimePort {
   list(): Promise<RuntimeServiceDto[]>;
   get(serviceId: string): Promise<{ service: RuntimeServiceDto; events: RuntimeEventDto[] }>;
   restart(serviceId: string, options?: RestartOptions): Promise<{ accepted: boolean; serviceId: string; state: RuntimeState }>;
+  createRestartChallenge(serviceId: string): Promise<RestartChallengeDto>;
+  confirmRestart(serviceId: string, challengeId: string, gesture: RestartGesture): Promise<{ accepted: boolean; serviceId: string; state: RuntimeState }>;
 }
 
 export class RuntimeUiError extends Error {
@@ -76,6 +84,11 @@ const ERRORS: Record<string, string> = {
   SPAWN_FAILED: 'Le lancement a échoué.', START_TIMEOUT: 'Le service n’est pas devenu sain à temps.', HEALTH_TIMEOUT: 'Le contrôle de santé ne répond pas.',
   HEALTH_HTTP_ERROR: 'Le contrôle de santé renvoie une erreur.', IDENTITY_MISMATCH: 'Le port répond, mais pas avec ce service.', KIWIX_REPORTED_ERROR: 'Le module Kiwix signale une erreur.',
   INTERNAL: 'Erreur interne du superviseur.',
+  RESTART_NOT_AUTHORIZED: 'Relance non autorisée.',
+  DEFINITION_CHANGED: 'La configuration du service a changé pendant la relance.', INSTANCE_CHANGED: 'L’instance du service a changé pendant la relance.',
+  RESTART_NOT_HEALTHY: 'Le service a redémarré mais n’est pas encore sain.', BINDING_NOT_LOOPBACK: 'Le service ne s’est pas lié en local uniquement : arrêté par sécurité.',
+  DEFINITION_INVALID: 'La configuration du service est invalide.', START_CANCELLED: 'Démarrage annulé.', RESTART_FAILED: 'La relance a échoué.',
+  OPERATION_IN_PROGRESS: 'Une opération était déjà en cours.',
 };
 export const errorLabel = (code: unknown): string | null => (code === null || code === undefined ? null : (typeof code === 'string' && ERRORS[code]) || 'Erreur non détaillée.');
 
@@ -88,7 +101,14 @@ const RESTART_REASONS: Record<string, string> = {
   ROOT_POLICY_APPROVAL_REQUIRED: 'Root Policy : une approbation locale est requise et n’est pas encore disponible.',
   ROOT_POLICY_DENIED: 'Root Policy : relance refusée.',
   RESTART_BACKOFF: 'Relance suspendue quelques instants après un plantage.',
+  NOT_RUNNING: 'Service arrêté : rien à relancer (démarrez-le depuis ses propres réglages).',
+  RESTART_AUTHORITY_UNAVAILABLE: 'Aucune autorité de relance locale n’est disponible.',
 };
+const EFFECTS: Record<RestartEffect, string> = {
+  IN_FLIGHT_REQUESTS_INTERRUPTED: 'Les recherches et lectures en cours sur ce service sont interrompues quelques secondes.',
+  LOCAL_ARCHIVES_UNCHANGED: 'Vos archives locales restent inchangées (aucun fichier modifié, déplacé ou supprimé).',
+};
+export const restartEffectLabel = (code: unknown): string | null => (typeof code === 'string' && Object.prototype.hasOwnProperty.call(EFFECTS, code) ? EFFECTS[code as RestartEffect] : null);
 export const restartReasonLabel = (code: unknown): string => (typeof code === 'string' && RESTART_REASONS[code]) || 'Relance indisponible.';
 
 export function formatUptime(ms: unknown): string {

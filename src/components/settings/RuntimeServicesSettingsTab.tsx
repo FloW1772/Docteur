@@ -2,12 +2,15 @@
 // Read: state, health, ownership, PID / uptime when known, last exit / error / restart. Act: « Relancer » only when the
 // backend says the restart is allowed (closed registry, Docteur-owned, Root Policy). Confirmation before interrupting a
 // running service; explicit reset for a blocked one; one operation at a time; sanitized, fixed messages only.
+// [RS-KIWIX-RESTART] a DELEGATED service (Kiwix) answers restart.code CHALLENGE_REQUIRED: « Relancer » asks the server for a
+// local challenge, shows what the restart does, and only a trusted click / key press on « Confirmer » sends the opaque id
+// back. The id is never displayed; no path, PID action, command line or policy detail is shown or sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, RotateCcw, ShieldAlert } from 'lucide-react';
 import { createHttpRuntimePort } from '../../lib/runtime/http-port';
 import {
-  RuntimeUiError, errorLabel, formatUptime, healthLabel, isBusy, ownershipLabel, restartReasonLabel, stateBadge,
-  type RuntimePort, type RuntimeServiceDto, type Tone,
+  RuntimeUiError, errorLabel, formatUptime, healthLabel, isBusy, ownershipLabel, restartEffectLabel, restartReasonLabel, stateBadge,
+  type RestartChallengeDto, type RestartGesture, type RuntimePort, type RuntimeServiceDto, type Tone,
 } from '../../lib/runtime/contracts';
 
 const TONE: Record<Tone, { fg: string; bg: string; border: string }> = {
@@ -27,18 +30,25 @@ const POLL_BUSY_MS = 700;
 const POLL_IDLE_MS = 10_000;
 
 type Message = { tone: Tone; text: string };
+/** What confirmed the ceremony: keyboard activation reports detail 0; a script-dispatched event is not trusted. */
+const gestureOf = (e: React.MouseEvent<HTMLButtonElement>): RestartGesture => ({ kind: e.detail === 0 ? 'KEYBOARD' : 'POINTER', trusted: e.nativeEvent.isTrusted === true });
 
-function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancelConfirm, pending }: {
+function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancelConfirm, pending, ceremony, onAskCeremony, onConfirmCeremony, onCancelCeremony }: {
   s: RuntimeServiceDto; onRestart: (s: RuntimeServiceDto, opts: { confirmInterrupt?: boolean; resetBlocked?: boolean }) => void; message: Message | undefined;
   confirming: boolean; onAskConfirm: (s: RuntimeServiceDto) => void; onCancelConfirm: () => void; pending: boolean;
+  ceremony: RestartChallengeDto | undefined; onAskCeremony: (s: RuntimeServiceDto) => void;
+  onConfirmCeremony: (s: RuntimeServiceDto, c: RestartChallengeDto, g: RestartGesture) => void; onCancelCeremony: (s: RuntimeServiceDto) => void;
 }) {
   const badge = stateBadge(s.state);
   const busy = isBusy(s) || pending;
-  const allowed = s.restart.allowed && !busy;
+  const allowed = s.restart.allowed && !busy && !ceremony;
   const reasonId = `rs-reason-${s.serviceId}`;
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const ceremonyRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (confirming) confirmRef.current?.focus(); }, [confirming]);
+  useEffect(() => { if (ceremony) ceremonyRef.current?.focus(); }, [ceremony]);
   const needsConfirm = s.restart.code === 'CONFIRMATION_REQUIRED' || s.restart.code === 'RESET_REQUIRED';
+  const needsCeremony = s.restart.code === 'CHALLENGE_REQUIRED';
   const rows: Array<[string, string]> = [
     ['Santé', `${healthLabel(s.health.code)}`],
     ['Propriété', ownershipLabel(s.ownershipClass)],
@@ -59,7 +69,7 @@ function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancel
           <span style={{ fontSize: 10, fontFamily: 'monospace', color: '#5a4a7a' }}>{s.optional ? 'optionnel' : 'requis'}</span>
         </div>
         <button type="button" data-testid="rs-restart" disabled={!allowed} aria-disabled={!allowed} aria-describedby={!s.restart.allowed ? reasonId : undefined} aria-busy={busy}
-          onClick={() => (needsConfirm ? onAskConfirm(s) : onRestart(s, {}))} style={btn(s.state === 'BLOCKED' ? 'danger' : 'info', !allowed)}>
+          onClick={() => (needsCeremony ? onAskCeremony(s) : needsConfirm ? onAskConfirm(s) : onRestart(s, {}))} style={btn(s.state === 'BLOCKED' ? 'danger' : 'info', !allowed)}>
           <RotateCcw size={12} className={busy ? 'animate-spin' : undefined} aria-hidden="true" />
           {busy ? 'Relance…' : s.state === 'BLOCKED' ? 'Débloquer et relancer' : 'Relancer'}
         </button>
@@ -95,6 +105,24 @@ function ServiceCard({ s, onRestart, message, confirming, onAskConfirm, onCancel
           </div>
         </div>
       )}
+      {ceremony && (
+        <div role="alertdialog" aria-modal="false" aria-labelledby={`rs-ceremony-title-${s.serviceId}`} aria-describedby={`rs-ceremony-desc-${s.serviceId}`} data-testid="rs-ceremony"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onCancelCeremony(s); } }}
+          style={{ marginTop: 10, padding: 10, borderRadius: 6, border: `1px solid ${TONE.warn.border}`, background: TONE.warn.bg }}>
+          <p id={`rs-ceremony-title-${s.serviceId}`} style={{ margin: 0, fontSize: 12, color: '#fbbf24', fontFamily: 'monospace' }}>Relancer {s.displayName} ?</p>
+          <ul id={`rs-ceremony-desc-${s.serviceId}`} data-testid="rs-ceremony-details" style={{ margin: '6px 0 0', paddingLeft: 16, fontSize: 11, color: '#e2e8f0', fontFamily: 'monospace', display: 'grid', gap: 2 }}>
+            <li>État actuel : {stateBadge(ceremony.state).label}</li>
+            <li>Opération : arrêt vérifié du service, puis redémarrage local (127.0.0.1 uniquement).</li>
+            {ceremony.effects.map(e => restartEffectLabel(e)).filter(Boolean).map(text => <li key={text}>{text}</li>)}
+            <li>Confirmation à usage unique, valable jusqu’à {fmtTime(ceremony.expiresAt)}.</li>
+          </ul>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+            <button ref={ceremonyRef} type="button" data-testid="rs-ceremony-confirm" disabled={pending} style={btn('warn', pending)}
+              onClick={(e) => onConfirmCeremony(s, ceremony, gestureOf(e))}>Confirmer la relance</button>
+            <button type="button" data-testid="rs-ceremony-cancel" style={btn('muted', false)} onClick={() => onCancelCeremony(s)}>Annuler</button>
+          </div>
+        </div>
+      )}
       <p aria-live="polite" data-testid="rs-message" style={{ margin: message ? '8px 0 0' : 0, fontSize: 11, fontFamily: 'monospace', color: message ? TONE[message.tone].fg : undefined }}>{message?.text ?? ''}</p>
     </li>
   );
@@ -107,7 +135,10 @@ export function RuntimeServicesSettingsTab({ port: injected, baseUrl }: { port?:
   const [messages, setMessages] = useState<Record<string, Message>>({});
   const [confirming, setConfirming] = useState<string | null>(null);
   const [pending, setPending] = useState<Record<string, true>>({});
+  const [ceremonies, setCeremonies] = useState<Record<string, RestartChallengeDto>>({});
   const watching = useRef(new Set<string>());
+  const inFlight = useRef(new Set<string>()); // synchronous guard: a double click never sends two ceremony requests
+  const dropCeremony = useCallback((serviceId: string) => setCeremonies(c => { const n = { ...c }; delete n[serviceId]; return n; }), []);
 
   const load = useCallback(async () => {
     try {
@@ -150,6 +181,49 @@ export function RuntimeServicesSettingsTab({ port: injected, baseUrl }: { port?:
     }
   }, [pending, port, load]);
 
+  const failText = (e: unknown, fallback: string) => (e instanceof RuntimeUiError ? e.message : fallback);
+  /** Ceremony step 1: the server issues a challenge for the current instance (or explains why not). */
+  const askCeremony = useCallback(async (s: RuntimeServiceDto) => {
+    if (inFlight.current.has(s.serviceId)) return;
+    inFlight.current.add(s.serviceId);
+    setConfirming(null);
+    setPending(p => ({ ...p, [s.serviceId]: true }));
+    setMessages(m => { const n = { ...m }; delete n[s.serviceId]; return n; });
+    try {
+      const c = await port.createRestartChallenge(s.serviceId);
+      setCeremonies(x => ({ ...x, [s.serviceId]: c }));
+    } catch (e) {
+      setMessages(m => ({ ...m, [s.serviceId]: { tone: 'danger', text: failText(e, 'Relance impossible.') } }));
+    } finally {
+      inFlight.current.delete(s.serviceId);
+      setPending(p => { const n = { ...p }; delete n[s.serviceId]; return n; });
+    }
+  }, [port]);
+  /** Ceremony step 2: only a trusted gesture sends the opaque id back; the dialog closes first, so it can never be resent. */
+  const confirmCeremony = useCallback(async (s: RuntimeServiceDto, c: RestartChallengeDto, gesture: RestartGesture) => {
+    if (inFlight.current.has(s.serviceId)) return;
+    dropCeremony(s.serviceId);
+    if (!gesture.trusted) { setMessages(m => ({ ...m, [s.serviceId]: { tone: 'danger', text: 'Confirmation refusée : geste non reconnu.' } })); return; }
+    inFlight.current.add(s.serviceId);
+    setPending(p => ({ ...p, [s.serviceId]: true }));
+    setMessages(m => ({ ...m, [s.serviceId]: { tone: 'info', text: 'Relance en cours…' } }));
+    try {
+      await port.confirmRestart(s.serviceId, c.challengeId, gesture);
+      watching.current.add(s.serviceId);
+      await load(); // stay busy until the server's own "operation in progress" is on screen (no enabled-button gap)
+    } catch (e) {
+      setMessages(m => ({ ...m, [s.serviceId]: { tone: 'danger', text: failText(e, 'Relance impossible.') } }));
+    } finally {
+      inFlight.current.delete(s.serviceId);
+      setPending(p => { const n = { ...p }; delete n[s.serviceId]; return n; });
+      void load();
+    }
+  }, [port, load, dropCeremony]);
+  const cancelCeremony = useCallback((s: RuntimeServiceDto) => {
+    dropCeremony(s.serviceId); // nothing is sent: the unused challenge expires server-side
+    setMessages(m => ({ ...m, [s.serviceId]: { tone: 'muted', text: 'Relance annulée.' } }));
+  }, [dropCeremony]);
+
   return (
     <section aria-labelledby="rs-heading" className="px-5 py-4" data-testid="runtime-services">
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
@@ -164,8 +238,9 @@ export function RuntimeServicesSettingsTab({ port: injected, baseUrl }: { port?:
       {services && (
         <ul aria-label="Services Docteur" style={{ display: 'grid', gap: 10, padding: 0, margin: 0 }}>
           {services.map(s => (
-            <ServiceCard key={s.serviceId} s={s} message={messages[s.serviceId]} pending={Boolean(pending[s.serviceId])}
-              confirming={confirming === s.serviceId} onAskConfirm={(x) => setConfirming(x.serviceId)} onCancelConfirm={() => setConfirming(null)} onRestart={restart} />
+            <ServiceCard key={s.serviceId} s={s} message={messages[s.serviceId]} pending={Boolean(pending[s.serviceId]) || watching.current.has(s.serviceId)}
+              confirming={confirming === s.serviceId} onAskConfirm={(x) => setConfirming(x.serviceId)} onCancelConfirm={() => setConfirming(null)} onRestart={restart}
+              ceremony={ceremonies[s.serviceId]} onAskCeremony={(x) => { void askCeremony(x); }} onConfirmCeremony={(x, c, g) => { void confirmCeremony(x, c, g); }} onCancelCeremony={cancelCeremony} />
           ))}
         </ul>
       )}

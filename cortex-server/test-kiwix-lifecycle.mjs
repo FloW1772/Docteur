@@ -329,16 +329,16 @@ test('18. routes: start / stop take NO parameters — executable, args, cwd, pid
   assert.deepEqual([start.status, sj.error], [409, 'binary_not_found'], 'empty settings: refused before any spawn');
 });
 
-test('19. delegation port (NOT wired): closed request, real sealed Root Policy ⇒ restart_not_authorized, nothing touched', async () => {
+test('19. delegation port: without a redeemed authorization nothing restarts — process fields, policy-looking objects and the unwired default are all refused, nothing touched', async () => {
   const r = await rig();
   await r.lc.start();
   const before = r.lc.status();
-  const port = createKiwixLifecyclePort({ lifecycle: r.lc }); // default authorization = the real Root Policy decide()
-  for (const bad of [{ executable: 'cmd.exe' }, { args: ['x'] }, { cwd: 'C:\\' }, { pid: before.pid }, { command: 'x' }, { reason: 'SUPERVISOR', shell: true }, { reason: 'ROOT' }, [], null, 'x']) {
-    assert.equal((await port.restartOwnedKiwix(bad)).error, 'request_invalid', JSON.stringify(bad));
+  const port = createKiwixLifecyclePort({ lifecycle: r.lc }); // default redeemer: never authorized (not wired to a restart authority)
+  for (const bad of [undefined, null, {}, { executable: 'cmd.exe' }, { args: ['x'] }, { cwd: 'C:\\' }, { pid: before.pid }, { command: 'x' }, { reason: 'SUPERVISOR' },
+    { certifiedBoundary: true }, { decision: 'ALLOW', code: 'ALLOW_CERTIFIED_BOUNDARY' }, { approval: { token: 'x' } }, [], 'x', true]) {
+    const res = await port.restartOwnedKiwix(bad);
+    assert.deepEqual([res.ok, res.error], [false, 'restart_not_authorized'], JSON.stringify(bad) ?? String(bad));
   }
-  const res = await port.restartOwnedKiwix({ reason: 'SUPERVISOR' });
-  assert.deepEqual([res.ok, res.error, res.policyCode], [false, 'restart_not_authorized', 'REQUIRE_LOCAL_APPROVAL']);
   assert.deepEqual([r.lc.status().pid, r.lc.status().state, r.calls.length], [before.pid, 'HEALTHY', 1], 'nothing stopped or started');
   const st = port.getLifecycleStatus();
   assert.match(st.definitionDigest, /^[0-9a-f]{64}$/);
@@ -346,34 +346,37 @@ test('19. delegation port (NOT wired): closed request, real sealed Root Policy �
   await r.lc.stop();
 });
 
-test('20. delegation port with an injected ALLOW: bound to the definition digest and the instance generation', async () => {
+test('20. delegation port: the redeemer is asked with the LIVE digest + generation; a redeemed authorization stops OUR instance (real exit) then starts a new one → HEALTHY', async () => {
   const r = await rig();
   await r.lc.start();
-  const seen = [];
-  const port = createKiwixLifecyclePort({ lifecycle: r.lc, authorizeRestart: async (req) => { seen.push(req); return { decision: 'ALLOW', code: 'ALLOW_TEST' }; } });
+  const seen = []; const GOOD = Object.freeze({});
+  const port = createKiwixLifecyclePort({ lifecycle: r.lc, redeemRestartAuthorization: (authorization, binding) => { seen.push(binding); return authorization === GOOD; } });
   const { definitionDigest, generation, pid } = port.getLifecycleStatus();
-  assert.equal((await port.restartOwnedKiwix({ reason: 'SUPERVISOR', expectedDefinitionDigest: 'f'.repeat(64) })).error, 'definition_changed');
-  assert.equal((await port.restartOwnedKiwix({ reason: 'SUPERVISOR', expectedGeneration: generation + 5 })).error, 'instance_changed');
-  assert.equal(seen.length, 0, 'stale requests never reach the policy');
-  const res = await port.restartOwnedKiwix({ reason: 'SUPERVISOR', expectedDefinitionDigest: definitionDigest, expectedGeneration: generation });
+  assert.equal((await port.restartOwnedKiwix(Object.freeze({}))).error, 'restart_not_authorized', 'a look-alike object is not the authorization');
+  assert.deepEqual([r.lc.status().pid, r.calls.length], [pid, 1], 'refused before any stop');
+  const mark = logs.length;
+  const res = await port.restartOwnedKiwix(GOOD);
   assert.deepEqual([res.ok, res.state], [true, 'HEALTHY']);
-  assert.deepEqual(seen[0], { serviceId: 'kiwix-serve', operation: 'RESTART', definitionDigest });
+  assert.deepEqual(seen.at(-1), { serviceId: 'kiwix-serve', definitionDigest, generation });
+  assert.deepEqual(transitions(mark), ['HEALTHY>STOPPING', 'STOPPING>STOPPED', 'STOPPED>STARTING', 'STARTING>HEALTHY']);
   assert.notEqual(r.lc.status().pid, pid);
+  assert.equal(r.lc.status().generation, generation + 1);
   assert.equal(alive(pid), false);
   await r.lc.stop();
 });
 
 // ── static guards / isolation ──────────────────────────────────────────────────────────────────────────────────────
-test('21. static: one spawn site with shell:false + typed argv; no stop by name/port/PID; delegation port not wired; logs sanitized', () => {
+test('21. static: one spawn site with shell:false + typed argv; no stop by name/port/PID; delegation port wired only by the composition root; logs sanitized', () => {
   const src = fs.readFileSync(path.join(HERE, 'src', 'lib', 'kiwix.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  assert.equal((src.match(/\(spawnOverride \?\? spawnFn\)\(/g) ?? []).length, 1, 'one launch site');
-  assert.match(src, /\(spawnOverride \?\? spawnFn\)\(def\.binary\.path, def\.args, \{ cwd: def\.cwd, env: childEnv\(\), shell: false, windowsHide: true, stdio: \['ignore', 'ignore', 'ignore'\] \}\)/);
+  assert.equal((src.match(/spawnFn\(plan\.executable, plan\.args, plan\.spawnOptions\)/g) ?? []).length, 1, 'one launch site');
+  assert.match(src, /spawnFn\(plan\.executable, plan\.args, plan\.spawnOptions\)/);
+  assert.match(src, /spawnOptions:\s*\{ cwd: def\.cwd, env: \{ \.\.\.def\.env \}, shell: false, windowsHide: true, stdio: \['ignore', 'ignore', 'ignore'\] \}/);
   assert.doesNotMatch(src, /shell:\s*true|process\.kill\(|taskkill|tasklist|\/IM\b|cmd\.exe|powershell|exec\(/i);
   assert.doesNotMatch(src, /forceKill\((?!inst\.child\))/, 'force kill only ever receives our own handle');
   const users = [];
   const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.m?js$/.test(e.name) && /createKiwixLifecyclePort/.test(fs.readFileSync(p, 'utf8'))) users.push(path.relative(HERE, p).replace(/\\/g, '/')); } };
   walk(path.join(HERE, 'src'));
-  assert.deepEqual(users, ['src/lib/kiwix.js'], 'the delegation contract is not wired into the product');
+  assert.deepEqual(users.sort(), ['src/lib/kiwix.js', 'src/server.js'], 'the delegation contract is built only by the composition root (RS-KIWIX-RESTART)');
   const logged = JSON.stringify(logs);
   for (const s of [TMP, BIN_DIR, ZIM_DIR, 'wikipedia_fr', '--blockexternal', '--address', SECRET]) assert.equal(logged.includes(s), false, `log leaked ${s.slice(0, 16)}`);
 });

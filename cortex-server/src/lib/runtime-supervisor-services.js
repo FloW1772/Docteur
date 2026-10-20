@@ -13,6 +13,9 @@
 //   kiwix-serve        DOCTEUR_MANAGED_OPTIONAL  — lifecycle owned by the Kiwix module (its own start/stop)
 //   comfyui            DOCTEUR_MANAGED_OPTIONAL  — lifecycle owned by the image-generation module
 // Observers only read in-process state and make bounded loopback probes; none starts, stops or signals anything.
+// [RS-KIWIX-RESTART] when the composition root passes the Kiwix lifecycle port (`kiwixDelegate`), kiwix-serve becomes a
+// DELEGATED service: the Kiwix module stays its process owner and source of truth; the supervisor gets only its status and
+// the single restartOwnedKiwix(authorization) operation (restartable only through the local ceremony + Root Policy).
 
 import { loopbackTarget } from './runtime-supervisor-probe.js';
 import { getStatus as kiwixStatus, healthCheck as kiwixHealth } from './kiwix.js';
@@ -28,7 +31,20 @@ export function observedFromProbe(r, { okCode = 'HTTP_OK' } = {}) {
   return { state: 'DEGRADED', health: { status: 'DEGRADED', code: r.code === 'TIMEOUT' ? 'HEALTH_TIMEOUT' : 'HEALTH_HTTP_ERROR' }, portListening: true, processRunning: null };
 }
 
-export function createProductRuntimeServices({ ollamaUrl, kiwix = { status: kiwixStatus, health: kiwixHealth }, comfy = { installState: comfyInstallState }, uptime = () => process.uptime() * 1000 } = {}) {
+/** The delegated kiwix-serve entry: status + one typed restart operation, nothing else crosses into the supervisor. */
+function kiwixDelegatedService(port) {
+  return {
+    serviceId: 'kiwix-serve', displayName: 'Kiwix (archives hors-ligne)', ownershipClass: 'DOCTEUR_MANAGED_OPTIONAL', kind: 'DELEGATED', optional: true, dependencies: ['docteur-backend'],
+    note: 'Démarré et arrêté par le module Kiwix ; relance possible ici après confirmation locale.',
+    restartEffects: ['IN_FLIGHT_REQUESTS_INTERRUPTED', 'LOCAL_ARCHIVES_UNCHANGED'],
+    delegate: {
+      status: () => port.getLifecycleStatus(),
+      restartOwnedInstance: (authorization) => port.restartOwnedKiwix(authorization),
+    },
+  };
+}
+
+export function createProductRuntimeServices({ ollamaUrl, kiwix = { status: kiwixStatus, health: kiwixHealth }, kiwixDelegate = null, comfy = { installState: comfyInstallState }, uptime = () => process.uptime() * 1000 } = {}) {
   const ollama = loopbackTarget(ollamaUrl);
   return [
     {
@@ -54,7 +70,7 @@ export function createProductRuntimeServices({ ollamaUrl, kiwix = { status: kiwi
         return observedFromProbe(await probe({ ...ollama, path: '/api/version', timeoutMs: 1_500 }), { okCode: 'API_OK' });
       },
     },
-    {
+    kiwixDelegate ? kiwixDelegatedService(kiwixDelegate) : {
       serviceId: 'kiwix-serve', displayName: 'Kiwix (archives hors-ligne)', ownershipClass: 'DOCTEUR_MANAGED_OPTIONAL', kind: 'OBSERVED', optional: true, dependencies: ['docteur-backend'],
       note: 'Démarré et arrêté par le module Kiwix (Paramètres Kiwix).',
       observe: async () => {

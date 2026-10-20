@@ -48,7 +48,10 @@ export const ACTION_CEILING = Object.freeze({
   FILE_READ:        { domains: ['FILES'], capability: 'FILES.READ', impact: 'LOW', protected: false, actors: EVERYONE },
   FILE_WRITE:       { domains: ['FILES'], capability: 'FILES.USER_SELECTED_WRITE', impact: 'MEDIUM', protected: true, actors: WITH_AI, aiNeedsUserInitiated: true },
   FILE_DELETE:      { domains: ['FILES'], capability: 'FILES.DELETE', impact: 'HIGH', protected: true, actors: HUMAN_OR_MODULE },
-  PROCESS_START:    { domains: ['PROCESS'], capability: 'PROCESS.START_TYPED', impact: 'MEDIUM', protected: true, actors: ['MODULE'], typedExecutor: true },
+  // V1 policy data remains MODULE-only. V2 may additionally grant USER at the
+  // individual typed-executor entry, which keeps that expansion local to an
+  // exact executable/argv/cwd contract instead of opening every process module.
+  PROCESS_START:    { domains: ['PROCESS'], capability: 'PROCESS.START_TYPED', impact: 'MEDIUM', protected: true, actors: HUMAN_OR_MODULE, typedExecutor: true },
   PROCESS_STOP:     { domains: ['PROCESS', 'MAITRE'], capability: 'PROCESS.STOP_OWNED', impact: 'HIGH', protected: true, actors: HUMAN_OR_MODULE },
   SERVICE_RESTART:  { domains: ['RUNTIME'], capability: 'RUNTIME.RESTART_SERVICE', impact: 'HIGH', protected: true, actors: HUMAN_OR_MODULE, serviceAllowlist: true },
   SHELL_INTERNAL:   { domains: ['PROCESS'], capability: 'PROCESS.SHELL_INTERNAL', impact: 'MEDIUM', protected: true, actors: ['MODULE'], typedExecutor: true },
@@ -129,6 +132,7 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const only = (obj, allowed, path, errors) => { for (const k of Object.keys(obj)) if (!allowed.includes(k)) errors.push(`${path}.${k}: unknown key`); };
 const isStrArray = (v) => Array.isArray(v) && v.every(x => typeof x === 'string');
 const ID_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+export const SERVICE_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 /**
  * Strict validation. Returns { ok:true } or { ok:false, errors:[…] } (errors are structural paths, never policy content).
@@ -171,7 +175,21 @@ export function validatePolicy(policy) {
     only(processConstraints, ['executors'], '$.capabilities.PROCESS.START_TYPED.constraints', errors);
     if (processConstraints.executors !== undefined) {
       const hasProcessCapability = (moduleName) => isObj(policy.modules) && isObj(policy.modules[moduleName]) && isStrArray(policy.modules[moduleName].capabilities) && policy.modules[moduleName].capabilities.includes('PROCESS.START_TYPED');
-      validateExecutorsConstraint(processConstraints.executors, '$.capabilities.PROCESS.START_TYPED.constraints.executors', errors, { isModuleWithProcessCapability: hasProcessCapability });
+      validateExecutorsConstraint(processConstraints.executors, '$.capabilities.PROCESS.START_TYPED.constraints.executors', errors, {
+        isModuleWithProcessCapability: hasProcessCapability,
+        requireActors: policy.version >= 2,
+      });
+    }
+  }
+
+  // V2 SERVICE_RESTART is policy-data allowlisted. V1 remains structurally and semantically unchanged; from V2 onward the
+  // capability must explicitly require an allowlist and each certified boundary covering the action supplies its closed list.
+  const restartConstraints = isObj(policy.capabilities) ? policy.capabilities['RUNTIME.RESTART_SERVICE']?.constraints : undefined;
+  if (policy.version >= 2) {
+    if (!isObj(restartConstraints)) errors.push('$.capabilities.RUNTIME.RESTART_SERVICE.constraints: object required');
+    else {
+      only(restartConstraints, ['serviceAllowlistRequired'], '$.capabilities.RUNTIME.RESTART_SERVICE.constraints', errors);
+      if (restartConstraints.serviceAllowlistRequired !== true) errors.push('$.capabilities.RUNTIME.RESTART_SERVICE.constraints.serviceAllowlistRequired: must be true');
     }
   }
 
@@ -214,9 +232,25 @@ export function validatePolicy(policy) {
   if (!isObj(policy.approvalBoundaries)) errors.push('$.approvalBoundaries: missing');
   else for (const [name, def] of Object.entries(policy.approvalBoundaries)) {
     if (!isObj(def)) { errors.push(`$.approvalBoundaries.${name}: not an object`); continue; }
-    only(def, ['covers', 'description'], `$.approvalBoundaries.${name}`, errors);
+    only(def, ['covers', 'description', 'serviceAllowlist'], `$.approvalBoundaries.${name}`, errors);
     if (!isStrArray(def.covers) || def.covers.some(a => !ACTION_CEILING[a] || ACTION_CEILING[a].never || ACTION_CEILING[a].noModuleGrant)) errors.push(`$.approvalBoundaries.${name}.covers: invalid`);
     if (typeof def.description !== 'string') errors.push(`$.approvalBoundaries.${name}.description: string required`);
+    const coversServiceRestart = Array.isArray(def.covers) && def.covers.includes('SERVICE_RESTART');
+    if (def.serviceAllowlist !== undefined && !coversServiceRestart) errors.push(`$.approvalBoundaries.${name}.serviceAllowlist: only valid for SERVICE_RESTART`);
+    if (policy.version >= 2 && coversServiceRestart) {
+      if (!isStrArray(def.serviceAllowlist) || def.serviceAllowlist.length === 0) errors.push(`$.approvalBoundaries.${name}.serviceAllowlist: non-empty string array required`);
+      else {
+        if (def.serviceAllowlist.some(id => !SERVICE_ID_RE.test(id))) errors.push(`$.approvalBoundaries.${name}.serviceAllowlist: invalid service id`);
+        if (new Set(def.serviceAllowlist).size !== def.serviceAllowlist.length) errors.push(`$.approvalBoundaries.${name}.serviceAllowlist: duplicates forbidden`);
+      }
+    }
+  }
+  if (policy.version >= 2 && isObj(policy.modules)) for (const [name, def] of Object.entries(policy.modules)) {
+    if (!isObj(def) || !Array.isArray(def.capabilities) || !def.capabilities.includes('RUNTIME.RESTART_SERVICE')) continue;
+    const boundary = typeof def.approvalBoundary === 'string' && isObj(policy.approvalBoundaries) ? policy.approvalBoundaries[def.approvalBoundary] : null;
+    if (!isObj(boundary) || !Array.isArray(boundary.covers) || !boundary.covers.includes('SERVICE_RESTART') || !isStrArray(boundary.serviceAllowlist) || boundary.serviceAllowlist.length === 0) {
+      errors.push(`$.modules.${name}.approvalBoundary: SERVICE_RESTART boundary with a non-empty serviceAllowlist required`);
+    }
   }
   return errors.length ? { ok: false, errors } : { ok: true };
 }

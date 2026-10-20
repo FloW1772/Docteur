@@ -1,15 +1,17 @@
-// Runtime Supervisor V1 — HTTP implementation of RuntimePort. Three fixed endpoints; the only request body is the two
-// restart booleans. The server only ever sends a fixed message per error code (never raw process/provider output);
+// Runtime Supervisor V1 — HTTP implementation of RuntimePort. Fixed endpoints; the only request bodies are the two
+// restart booleans and the ceremony below. The server only ever sends a fixed message per error code (never raw process/provider output);
 // it is length-capped here, and the UI renders its own fixed labels for states, health and reasons.
-import { RuntimeUiError, type RestartOptions, type RuntimeEventDto, type RuntimePort, type RuntimeServiceDto, type RuntimeState } from './contracts';
+// [RS-KIWIX-RESTART] two more fixed calls for the local restart ceremony: an empty challenge request, then the opaque
+// challenge id + the trusted gesture that confirmed it. Nothing else is ever sent (no policy flag, token or process field).
+import { RuntimeUiError, type RestartChallengeDto, type RestartGesture, type RestartOptions, type RuntimeEventDto, type RuntimePort, type RuntimeServiceDto, type RuntimeState } from './contracts';
 
 export function createHttpRuntimePort({ baseUrl, fetchImpl = fetch }: { baseUrl: string; fetchImpl?: typeof fetch }): RuntimePort {
   const api = `${baseUrl.replace(/\/+$/, '')}/api/runtime/services`;
   const id = (value: string) => encodeURIComponent(value);
-  async function call<T>(method: 'GET' | 'POST', url: string, json?: RestartOptions): Promise<T> {
+  async function call<T>(method: 'GET' | 'POST', url: string, body?: Record<string, unknown>): Promise<T> {
     let response: Response;
     try {
-      response = await fetchImpl(url, { method, headers: json ? { 'content-type': 'application/json' } : {}, body: json ? JSON.stringify({ confirmInterrupt: json.confirmInterrupt === true, resetBlocked: json.resetBlocked === true }) : undefined });
+      response = await fetchImpl(url, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
     } catch { throw new RuntimeUiError('NETWORK', 'Docteur est injoignable.'); }
     let payload: { ok?: boolean; value?: T; error?: { code?: string; message?: string; reason?: string | null; retryAt?: string } } = {};
     try { payload = await response.json(); } catch { /* fail closed below */ }
@@ -22,6 +24,9 @@ export function createHttpRuntimePort({ baseUrl, fetchImpl = fetch }: { baseUrl:
   return Object.freeze({
     list: async () => (await call<{ services: RuntimeServiceDto[] }>('GET', api)).services,
     get: (serviceId: string) => call<{ service: RuntimeServiceDto; events: RuntimeEventDto[] }>('GET', `${api}/${id(serviceId)}`),
-    restart: (serviceId: string, options: RestartOptions = {}) => call<{ accepted: boolean; serviceId: string; state: RuntimeState }>('POST', `${api}/${id(serviceId)}/restart`, options),
+    restart: (serviceId: string, options: RestartOptions = {}) => call<{ accepted: boolean; serviceId: string; state: RuntimeState }>('POST', `${api}/${id(serviceId)}/restart`, { confirmInterrupt: options.confirmInterrupt === true, resetBlocked: options.resetBlocked === true }),
+    createRestartChallenge: (serviceId: string) => call<RestartChallengeDto>('POST', `${api}/${id(serviceId)}/restart-challenge`, {}),
+    confirmRestart: (serviceId: string, challengeId: string, gesture: RestartGesture) => call<{ accepted: boolean; serviceId: string; state: RuntimeState }>('POST', `${api}/${id(serviceId)}/restart-confirm`,
+      { challengeId, gesture: { kind: gesture.kind, trusted: gesture.trusted === true } }),
   });
 }

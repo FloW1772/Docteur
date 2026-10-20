@@ -12,7 +12,7 @@
  * modules and fixes constraints inside the ceilings of schema.js.
  */
 import crypto from 'node:crypto';
-import { ACTION_CEILING, ACTORS, AI_ACTORS, PROTECTED_ACTION_IDS, STOP_ACTION_IDS, UNTRUSTED_ORIGIN_ACTORS, canonicalize } from './schema.js';
+import { ACTION_CEILING, ACTORS, AI_ACTORS, PROTECTED_ACTION_IDS, SERVICE_ID_RE, STOP_ACTION_IDS, UNTRUSTED_ORIGIN_ACTORS, canonicalize } from './schema.js';
 import { evaluateProcessRules } from './process-rules.js';
 
 export const DECISION = Object.freeze({ ALLOW: 'ALLOW', DENY: 'DENY', REQUIRE_APPROVAL: 'REQUIRE_APPROVAL', NOT_APPLICABLE: 'NOT_APPLICABLE' });
@@ -23,6 +23,7 @@ const SECRET_SHAPES = Object.freeze([
   /ghp_[A-Za-z0-9]{36}/, /github_pat_[A-Za-z0-9_]{40,}/, /xox[baprs]-[A-Za-z0-9-]{20,}/, /AKIA[0-9A-Z]{16}/,
   /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED |DSA )?PRIVATE KEY-----/, /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
 ]);
+const SHA256_RE = /^[0-9a-f]{64}$/;
 export function containsSecretShape(text) {
   const s = typeof text === 'string' ? text : '';
   return SECRET_SHAPES.some(re => re.test(s));
@@ -63,7 +64,14 @@ export function createEngine({ getPolicy, approvals = null, now = Date.now }) {
     if (!actor) return verdict(DECISION.DENY, 'DENY_UNKNOWN_ACTOR', base);
 
     // Rule 7 — STOP / revocation wins: always allowed, even when the policy cannot be trusted and whatever the actor/session says.
-    if (STOP_ACTION_IDS.has(action)) return verdict(DECISION.ALLOW, 'ALLOW_STOP_ALWAYS', base);
+    // PROCESS_STOP is normally an approved high-impact operation (MAITRE), so
+    // it is not globally a stop-always action. The Kiwix lifecycle's exact
+    // owned-child descriptor is the narrow safe exception: no PID, name,
+    // executable, or port comes from the requester and only its ChildProcess
+    // handle can be signalled.
+    const ownedKiwixStop = (actor === 'USER' || actor === 'MODULE') && (!state?.valid || state.version >= 2) && action === 'PROCESS_STOP' && request.module === 'kiwix'
+      && request.trustDomain === 'PROCESS' && request.context?.serviceId === 'kiwix-serve' && request.context?.ownership === 'OWNED_CHILD';
+    if (STOP_ACTION_IDS.has(action) || ownedKiwixStop) return verdict(DECISION.ALLOW, 'ALLOW_STOP_ALWAYS', base);
 
     // Rule 9 — protected operations fail closed when the policy is missing, corrupt, tampered or not loaded.
     if (!state?.valid) {
@@ -80,6 +88,13 @@ export function createEngine({ getPolicy, approvals = null, now = Date.now }) {
 
     // Actors: the policy lists who may ever request this action; attacker-influenced origins are further constrained below.
     if (!cfg.actors.includes(actor)) return verdict(DECISION.DENY, 'DENY_ACTOR_NOT_PERMITTED', base);
+    // V2's sole USER process-start surface is the trusted Kiwix button. Keep
+    // all other V1 denial classes stable even though the action ceiling now
+    // permits a policy to declare USER for a narrowly actor-scoped executor.
+    if (action === 'PROCESS_START' && actor === 'USER') {
+      if (policy.version !== 2 || request.module !== 'kiwix' || request.trustDomain !== 'PROCESS') return verdict(DECISION.DENY, 'DENY_ACTOR_NOT_PERMITTED', base);
+      if (request.userInitiated !== true) return verdict(DECISION.DENY, 'DENY_NOT_USER_INITIATED', base);
+    }
 
     // Rule 6 — trust domains never merge: the request's domain must be one this action belongs to AND one the calling module is entitled to.
     const domain = request.trustDomain;
@@ -121,9 +136,26 @@ export function createEngine({ getPolicy, approvals = null, now = Date.now }) {
       // Typed process rules (RPC-2C): a module the signed policy declares executors for may start ONLY those executables, with those argument shapes,
       // from that working directory. A module without an entry keeps the V1 behaviour above (known executor id + typed arguments + no shell).
       const processRules = constraints?.executors?.[moduleName];
-      if (processRules !== undefined && !evaluateProcessRules(processRules, ctx).ok) return verdict(DECISION.DENY, 'DENY_ARBITRARY_EXECUTION', base);
+      if (processRules !== undefined && !evaluateProcessRules(processRules, { ...ctx, actor }).ok) return verdict(DECISION.DENY, 'DENY_ARBITRARY_EXECUTION', base);
+      if (action === 'PROCESS_START' && actor === 'USER' && request.userInitiated !== true) return verdict(DECISION.DENY, 'DENY_NOT_USER_INITIATED', base);
     }
-    if (ceiling.serviceAllowlist && (typeof ctx.serviceId !== 'string' || !ctx.serviceId)) return verdict(DECISION.DENY, 'DENY_UNKNOWN_CAPABILITY', base);
+    if (ceiling.serviceAllowlist) {
+      if (typeof ctx.serviceId !== 'string' || !ctx.serviceId) return verdict(DECISION.DENY, 'DENY_UNKNOWN_CAPABILITY', base);
+      // V1 compatibility is deliberate: the active signed V1 only declared that an application allowlist was required. V2 makes the
+      // allowlist enforceable policy data and binds the policy decision to the same service identity and definition digest as the ceremony.
+      if (policy.version >= 2) {
+        if (!SERVICE_ID_RE.test(ctx.serviceId)) return verdict(DECISION.DENY, 'DENY_SERVICE_ID_INVALID', base);
+        if (ctx.target !== ctx.serviceId) return verdict(DECISION.DENY, 'DENY_SERVICE_TARGET_MISMATCH', base);
+        if (typeof ctx.payloadHash !== 'string' || !SHA256_RE.test(ctx.payloadHash)) return verdict(DECISION.DENY, 'DENY_SERVICE_DEFINITION_DIGEST_INVALID', base);
+        if (constraints?.serviceAllowlistRequired !== true) return verdict(DECISION.DENY, 'DENY_SERVICE_ALLOWLIST_REQUIRED', base);
+        const boundaryName = mod.approvalBoundary;
+        const serviceAllowlist = typeof boundaryName === 'string' ? policy.approvalBoundaries?.[boundaryName]?.serviceAllowlist : null;
+        if (!Array.isArray(serviceAllowlist) || serviceAllowlist.length === 0 || new Set(serviceAllowlist).size !== serviceAllowlist.length || serviceAllowlist.some(id => typeof id !== 'string' || !SERVICE_ID_RE.test(id))) {
+          return verdict(DECISION.DENY, 'DENY_SERVICE_ALLOWLIST_INVALID', base);
+        }
+        if (!serviceAllowlist.includes(ctx.serviceId)) return verdict(DECISION.DENY, 'DENY_SERVICE_NOT_ALLOWLISTED', base);
+      }
+    }
 
     // User gesture: required for attacker-influenceable origins on actions that move data / change state, always for transfer actions.
     const userInitiated = request.userInitiated === true;

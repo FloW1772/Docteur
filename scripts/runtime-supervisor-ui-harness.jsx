@@ -11,7 +11,7 @@ export function mount() {
   createRoot(document.getElementById('root')).render(
     <div style={{ background: '#020617', minHeight: '100vh' }}>
       {cfg.mode === 'tab'
-        ? <RuntimeServicesSettingsTab baseUrl={window.location.origin} />
+        ? <RuntimeServicesSettingsTab baseUrl={cfg.baseUrl ?? window.location.origin} />
         : <SettingsModal onClose={() => { window.__closed = true; }} />}
     </div>,
   );

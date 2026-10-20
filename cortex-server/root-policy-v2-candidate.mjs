@@ -59,7 +59,9 @@ export function semanticDiff(active, candidate) {
     else changed.push({ path: key, from: a.get(key), to: value });
   }
   for (const key of a.keys()) if (!b.has(key)) removed.push(key);
-  const groupOf = (p) => (/^\$\.modules\.([^.]+)/.exec(p)?.[1] ? `module:${/^\$\.modules\.([^.]+)/.exec(p)[1]}` : /^\$\.capabilities\.PROCESS\.START_TYPED/.test(p) ? 'capability:PROCESS.START_TYPED' : /^\$\.(version|issuedAt)$/.test(p) ? 'document:version/date' : `other:${p}`);
+  const groupOf = (p) => (/^\$\.modules\.([^.]+)/.exec(p)?.[1] ? `module:${/^\$\.modules\.([^.]+)/.exec(p)[1]}` : /^\$\.capabilities\.PROCESS\.START_TYPED/.test(p) ? 'capability:PROCESS.START_TYPED'
+    : /^\$\.approvalBoundaries\.([^.]+)/.exec(p)?.[1] ? `boundary:${/^\$\.approvalBoundaries\.([^.]+)/.exec(p)[1]}` : /^\$\.capabilities\.RUNTIME\.RESTART_SERVICE/.test(p) ? 'capability:RUNTIME.RESTART_SERVICE'
+      : /^\$\.(version|issuedAt)$/.test(p) ? 'document:version/date' : `other:${p}`);
   const groups = {};
   for (const [kind, list] of [['ADDED', added], ['REMOVED', removed], ['CHANGED', changed.map(c => c.path)]]) {
     for (const p of list) { const g = groupOf(p); (groups[g] ??= { ADDED: 0, REMOVED: 0, CHANGED: 0 })[kind]++; }
