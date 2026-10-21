@@ -126,8 +126,9 @@ export const HELP_DIRECTORY: HelpCategory[] = [
     emoji: '🎮',
     title: 'Loisirs',
     items: [
-      // [GAME-2] Arcade foundation only: the sandbox and the launcher exist, no game is playable yet.
-      { name: 'Arcade', description: 'Arcade locale optionnelle : chaque jeu tourne dans un bac à sable isolé, sans accès aux données privées de Docteur (notes, mémoire, Companion, appareils) et sans réseau pendant le jeu. Ni publicité, ni pistage, ni achat, ni compte. Synapse Run est un projet de jeu original ; seule sa fondation technique est en place, le jeu n’est pas encore jouable.', feature: 'arcade', state: 'partiel', keywords: ['jeux', 'jeu', 'arcade', 'synapse run', 'loisirs', 'bac à sable'] },
+      // Arcade / Synapse Run is a playable local preview; keep this Help copy aligned with the registry
+      // (src/lib/arcade/registry.ts) and the shipped capabilities.
+      { name: 'Arcade', description: 'Arcade locale optionnelle : chaque jeu tourne dans un bac à sable isolé, sans accès aux données privées de Docteur (notes, mémoire, Companion, appareils) et sans réseau pendant le jeu. Ni publicité, ni pistage, ni achat, ni compte. Synapse Run est un jeu de course 3D local et jouable, original à Docteur : trois couloirs, saut et glissade, commandes clavier et tactiles, audio synthétisé, trois missions et progression sauvegardée sur cet appareil.', feature: 'arcade', state: 'partiel', keywords: ['jeux', 'jeu', 'arcade', 'synapse run', 'loisirs', 'bac à sable'] },
     ],
   },
   {

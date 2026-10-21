@@ -157,7 +157,8 @@ function sanitizeLimitations(text: string): string[] {
 }
 
 function buildFeatureDefinitionFromHelp(item: { name: string; description: string; category: string; feature: FeatureKey; keywords?: string[] }): FeatureDefinition {
-  // GAME-2 exposes a working launcher, while the game itself is still foundation-only.
+  // Arcade now includes the playable Synapse Run preview (still PARTIAL: a preview); keep derived feature
+  // metadata aligned with capabilities.ts and the Arcade registry (src/lib/arcade/registry.ts).
   const status = item.feature === 'arcade' ? 'PARTIAL' : FEATURE_KIND_BY_STATE[item.feature === 'settings-models' ? 'disponible' : 'local'] ?? 'AVAILABLE';
   const safeKeywords = item.keywords?.filter(Boolean) ?? [];
   const knownReferences = [

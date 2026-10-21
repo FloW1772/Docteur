@@ -45,11 +45,11 @@ export const ARCADE_GAMES: readonly ArcadeGameEntry[] = Object.freeze([
   Object.freeze({
     id: 'synapse-run',
     title: 'Synapse Run',
-    description: 'Course sans fin en 3D low-poly, projet original de Docteur : trois couloirs, sauts, glissades, éclats à ramasser. Clavier ou écran tactile, pause, trois missions et records conservés sur cet appareil. Version préliminaire : ni son ni finitions pour l’instant.',
+    description: 'Jeu de course 3D local, projet original de Docteur : trois couloirs, sauts, glissades et éclats à ramasser. Commandes clavier et tactiles, audio synthétisé, trois missions et progression sauvegardée sur cet appareil.',
     route: '/arcade/synapse-run/index.html',
     status: 'PLAYABLE_CORE',
     availability: 'PLAYABLE_PREVIEW',
-    nextMilestone: 'GAME-6',
+    nextMilestone: 'MAINTENANCE',
     capabilities: Object.freeze(['HOST_PROTOCOL_V1', 'PAUSE_RESUME', 'REDUCED_MOTION', 'LOCAL_SAVE_V1'] as const),
     save: Object.freeze({ currentVersion: 1, minSupportedVersion: 1 }),
   }),
