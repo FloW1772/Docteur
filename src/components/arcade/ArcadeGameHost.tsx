@@ -3,17 +3,50 @@
 // Isolation: <iframe sandbox="allow-scripts"> (opaque origin, no Docteur storage/cookies/DOM) + the game page's own
 // CSP (connect-src 'none'). The bridge is protocol v1 only (src/lib/arcade/protocol.ts); the host trusts a message
 // only when event.source is this iframe's window and the envelope matches this game + instance exactly.
+// [GAME-3] Save requests are answered only after those same checks (and after READY); the host, not the page,
+// touches the Arcade save store, and a result goes back only to the window that asked, if it is still the live frame.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useReducedMotion } from '../../hooks/useReducedMotion';
 import StudioStatus, { type StudioStatusTone } from '../studio/StudioStatus';
 import type { ArcadeGameEntry } from '../../lib/arcade/registry';
 import {
-  ARCADE_IFRAME_ALLOW, ARCADE_IFRAME_SANDBOX, arcadeFrameSrc, buildArcadeHostCommand, createArcadeInstanceId,
-  parseArcadeGameEvent, type ArcadeHostCommand,
+  ARCADE_IFRAME_ALLOW, ARCADE_IFRAME_SANDBOX, arcadeFrameSrc, buildArcadeHostCommand, buildArcadeSaveResult,
+  createArcadeInstanceId, parseArcadeGameEvent, type ArcadeHostCommand, type ArcadeSaveOperation, type ArcadeSaveResult, type ArcadeSaveResultPayload,
 } from '../../lib/arcade/protocol';
+import { answerArcadeSaveRequest } from '../../lib/arcade/save-bridge';
+import { getArcadeSaveStore, type ArcadeSaveErrorCode } from '../../lib/arcade/saves';
 
 /** The page must answer ARCADE_READY within this delay, otherwise the frame is removed. */
 export const ARCADE_READY_TIMEOUT_MS = 10_000;
+/** Save requests of one instance being processed at once; more are answered SAVE_BUSY without touching storage. */
+export const ARCADE_SAVE_MAX_IN_FLIGHT = 4;
+
+/** Host-owned wording for save outcomes (shared with ArcadePanel); never game-supplied text, never save contents. */
+export const ARCADE_SAVE_ERROR_TEXT: Record<ArcadeSaveErrorCode, string> = {
+  UNKNOWN_GAME: 'refusée (jeu non enregistré)',
+  INVALID_SAVE_VERSION: 'refusée (version de sauvegarde invalide)',
+  INVALID_SAVE_PAYLOAD: 'refusée (données non valides)',
+  SAVE_TOO_LARGE: 'refusée (plus de 64 Kio)',
+  CORRUPT_SAVE: 'illisible ; conservée telle quelle, effaçable depuis la liste de l’Arcade',
+  UNSUPPORTED_SAVE_VERSION: 'créée par une version plus récente ; conservée sans être chargée',
+  STORAGE_UNAVAILABLE: 'indisponible dans ce navigateur',
+  STORAGE_FAILED: 'échec du stockage local ; rien n’a été modifié',
+  SAVE_BUSY: 'trop de demandes simultanées',
+};
+
+const SAVE_OPERATION: Record<'ARCADE_SAVE_LOAD' | 'ARCADE_SAVE_WRITE' | 'ARCADE_SAVE_DELETE', ArcadeSaveOperation> = {
+  ARCADE_SAVE_LOAD: 'LOAD', ARCADE_SAVE_WRITE: 'WRITE', ARCADE_SAVE_DELETE: 'DELETE',
+};
+
+function saveNoteText(result: ArcadeSaveResultPayload): string {
+  switch (result.status) {
+    case 'EMPTY': return 'Sauvegarde locale : aucune';
+    case 'FOUND': return 'Sauvegarde locale : chargée';
+    case 'SAVED': return 'Sauvegarde locale : enregistrée sur cet appareil';
+    case 'DELETED': return 'Sauvegarde locale : effacée';
+    case 'ERROR': return `Sauvegarde locale : ${ARCADE_SAVE_ERROR_TEXT[result.code]}`;
+  }
+}
 
 type HostPhase = 'loading' | 'active' | 'paused' | 'stopped' | 'error';
 type HostError = 'NO_RESPONSE' | 'UNEXPECTED_NAVIGATION' | 'GAME_RUNTIME_ERROR';
@@ -49,11 +82,14 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
   const loadsRef = useRef(0);
   const closedRef = useRef(false);
   const droppedRef = useRef(0);
+  const saveInFlightRef = useRef(0);
+  const saveRequestsRef = useRef(0);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
   const reducedMotion = useReducedMotion();
   const reducedMotionRef = useRef(reducedMotion);
   reducedMotionRef.current = reducedMotion;
 
-  const post = useCallback((command: ArcadeHostCommand) => {
+  const post = useCallback((command: ArcadeHostCommand | ArcadeSaveResult) => {
     // The sandbox origin is opaque ("null"), so no targetOrigin can name it. The frame is torn down on any
     // re-navigation (see onLoad), and commands carry no secret beyond the per-launch instance id.
     frameRef.current?.contentWindow?.postMessage(command, '*');
@@ -77,11 +113,11 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
       const message = frame && event.source !== null && event.source === frame.contentWindow
         ? parseArcadeGameEvent(event.data, { gameId: game.id, instanceId })
         : null;
-      if (!message) {
+      const drop = () => {
         droppedRef.current += 1;
         rootRef.current?.setAttribute('data-dropped-messages', String(droppedRef.current));
-        return;
-      }
+      };
+      if (!message) { drop(); return; }
       switch (message.type) {
         case 'ARCADE_READY':
           if (readyRef.current) return;
@@ -95,6 +131,31 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         case 'ARCADE_ERROR':
           closeWithError('GAME_RUNTIME_ERROR');
           return;
+        case 'ARCADE_SAVE_LOAD':
+        case 'ARCADE_SAVE_WRITE':
+        case 'ARCADE_SAVE_DELETE': {
+          if (!readyRef.current) { drop(); return; }
+          const requester = event.source;
+          const reply = (result: ArcadeSaveResultPayload) => {
+            if (closedRef.current || frameRef.current?.contentWindow !== requester) return;
+            post(buildArcadeSaveResult(game.id, instanceId, message.requestId, result));
+            setSaveNote(saveNoteText(result));
+          };
+          if (saveInFlightRef.current >= ARCADE_SAVE_MAX_IN_FLIGHT) {
+            reply({ op: SAVE_OPERATION[message.type], status: 'ERROR', code: 'SAVE_BUSY' });
+            return;
+          }
+          saveInFlightRef.current += 1;
+          saveRequestsRef.current += 1;
+          rootRef.current?.setAttribute('data-save-requests', String(saveRequestsRef.current));
+          void answerArcadeSaveRequest(getArcadeSaveStore(), message)
+            .catch((): ArcadeSaveResultPayload => ({ op: SAVE_OPERATION[message.type], status: 'ERROR', code: 'STORAGE_FAILED' }))
+            .then(result => {
+              saveInFlightRef.current -= 1;
+              reply(result);
+            });
+          return;
+        }
       }
     };
     window.addEventListener('message', onMessage);
@@ -152,6 +213,7 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         </button>
         <button type="button" className="arc-btn danger" data-testid="arcade-stop" onClick={stop}>Arrêter</button>
       </div>
+      <p className="arc-muted" role="status" data-testid="arcade-save-status">{saveNote ?? 'Sauvegarde locale : en attente du jeu'}</p>
       <p className="arc-muted">Fondation technique : aucune partie à jouer pour l’instant. Tab entre dans le cadre du jeu et en ressort.</p>
     </section>
   );

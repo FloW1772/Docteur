@@ -10,8 +10,17 @@ export type ArcadeGameStatus = 'FOUNDATION_ONLY';
 /** What the player can expect next; COMING_NEXT = announced, not playable. */
 export type ArcadeGameAvailability = 'COMING_NEXT';
 
-/** What the page may do with the host. Nothing here grants network, storage or Docteur data. */
-export type ArcadeGameCapability = 'HOST_PROTOCOL_V1' | 'PAUSE_RESUME' | 'REDUCED_MOTION';
+/**
+ * What the page may do with the host. Nothing here grants network or Docteur data. LOCAL_SAVE_V1 [GAME-3] lets the
+ * page ask the host to load / write / delete ITS OWN bounded save record; the host owns the storage (saves.ts).
+ */
+export type ArcadeGameCapability = 'HOST_PROTOCOL_V1' | 'PAUSE_RESUME' | 'REDUCED_MOTION' | 'LOCAL_SAVE_V1';
+
+/** [GAME-3] Per-game saveVersion window the host accepts (the game migrates older versions itself). */
+export interface ArcadeGameSavePolicy {
+  readonly currentVersion: number;
+  readonly minSupportedVersion: number;
+}
 
 export interface ArcadeGameEntry {
   readonly id: ArcadeGameId;
@@ -22,6 +31,8 @@ export interface ArcadeGameEntry {
   readonly availability: ArcadeGameAvailability;
   readonly nextMilestone: string;
   readonly capabilities: readonly ArcadeGameCapability[];
+  /** null = no local save for this game */
+  readonly save: ArcadeGameSavePolicy | null;
 }
 
 /** Same-site static page path: /arcade/<id>/index.html, nothing else (no scheme, host, query or fragment). */
@@ -36,7 +47,8 @@ export const ARCADE_GAMES: readonly ArcadeGameEntry[] = Object.freeze([
     status: 'FOUNDATION_ONLY',
     availability: 'COMING_NEXT',
     nextMilestone: 'GAME-4',
-    capabilities: Object.freeze(['HOST_PROTOCOL_V1', 'PAUSE_RESUME', 'REDUCED_MOTION'] as const),
+    capabilities: Object.freeze(['HOST_PROTOCOL_V1', 'PAUSE_RESUME', 'REDUCED_MOTION', 'LOCAL_SAVE_V1'] as const),
+    save: Object.freeze({ currentVersion: 1, minSupportedVersion: 1 }),
   }),
 ]);
 

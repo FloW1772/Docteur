@@ -57,6 +57,7 @@ body {
 }
 .sr-lead { margin: 14px 0 0; color: var(--sr-muted); line-height: 1.45; }
 .sr-status { margin: 12px 0 0; font-weight: 600; }
+.sr-save { margin: 6px 0 0; color: var(--sr-muted); font-size: 0.85rem; }
 .sr-note { margin: 16px 0 0; color: var(--sr-muted); font-size: 0.78rem; }
 
 html[data-state="paused"] .sr-status { color: var(--sr-amber); }

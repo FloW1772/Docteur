@@ -1,9 +1,13 @@
-// [GAME-2] Synapse Run — foundation screen only (no gameplay, no saves; GAME-3/GAME-4 add those).
+// [GAME-2] Synapse Run — foundation screen only (no gameplay; GAME-4 adds it).
 // Runs inside <iframe sandbox="allow-scripts"> with an opaque origin and the page CSP (connect-src 'none').
 // The only channel is the Docteur Arcade postMessage protocol v1 (src/lib/arcade/protocol.ts):
 //   host → game : ARCADE_INIT {reducedMotion} · ARCADE_PAUSE {} · ARCADE_RESUME {} · ARCADE_STOP {}
+//                 ARCADE_SAVE_RESULT {op, status, …} + requestId                                  [GAME-3]
 //   game → host : ARCADE_READY {} · ARCADE_STATE {state} · ARCADE_ERROR {code}
+//                 ARCADE_SAVE_LOAD {} · ARCADE_SAVE_WRITE {saveVersion, data} · ARCADE_SAVE_DELETE {} + requestId
 // Every message carries the per-launch instanceId the host put in this page's URL fragment.
+// [GAME-3] This page has no storage of its own (opaque origin): the host owns the save. The foundation only asks
+// for its save once after INIT to show that the bridge answers; it never writes or deletes anything.
 (function () {
   'use strict';
   var CHANNEL = 'docteur-arcade';
@@ -13,16 +17,33 @@
   // even though self.origin is opaque. Only host -> sandbox needs targetOrigin="*".
   var HOST_ORIGIN = window.location.origin;
   var LABELS = { waiting: 'en attente de Docteur', active: 'actif', paused: 'en pause', stopped: 'arrêté' };
+  var SAVE_LABELS = { EMPTY: 'aucune', FOUND: 'disponible', ERROR: 'indisponible' };
 
   var match = /^#instance=([0-9a-f]{32})$/.exec(window.location.hash);
   var instanceId = match ? match[1] : null;
   var state = 'waiting';
   var statusEl = document.getElementById('sr-status');
+  var saveEl = document.getElementById('sr-save');
   var root = document.documentElement;
+  var requestCount = 0;
+  var pendingLoad = null;
 
-  function send(type, payload) {
+  function send(type, payload, requestId) {
     if (!instanceId || window.parent === window) return;
-    window.parent.postMessage({ channel: CHANNEL, v: VERSION, type: type, gameId: GAME_ID, instanceId: instanceId, payload: payload }, HOST_ORIGIN);
+    var message = { channel: CHANNEL, v: VERSION, type: type, gameId: GAME_ID, instanceId: instanceId, payload: payload };
+    if (requestId) message.requestId = requestId;
+    window.parent.postMessage(message, HOST_ORIGIN);
+  }
+
+  // correlation only: 16 lowercase hex digits, unique within this launch
+  function nextRequestId() {
+    requestCount += 1;
+    return ('0000000000000000' + requestCount.toString(16)).slice(-16);
+  }
+
+  function renderSave(status) {
+    root.setAttribute('data-save', status);
+    saveEl.textContent = 'Sauvegarde locale : ' + SAVE_LABELS[status];
   }
 
   function render() {
@@ -39,8 +60,18 @@
   function keys(o) { return Object.keys(o).sort().join(','); }
 
   // Strict shape check: anything else is ignored (no dynamic dispatch, no eval).
+  function isLoadResult(d) {
+    if (keys(d) !== 'channel,gameId,instanceId,payload,requestId,type,v' || d.type !== 'ARCADE_SAVE_RESULT') return false;
+    if (d.channel !== CHANNEL || d.v !== VERSION || d.gameId !== GAME_ID || d.instanceId !== instanceId) return false;
+    if (pendingLoad === null || d.requestId !== pendingLoad) return false;
+    var p = d.payload;
+    if (!p || typeof p !== 'object' || Array.isArray(p) || p.op !== 'LOAD') return false;
+    return p.status === 'EMPTY' || p.status === 'FOUND' || p.status === 'ERROR';
+  }
+
   function isHostCommand(d) {
     if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
+    if (isLoadResult(d)) return true;
     if (keys(d) !== 'channel,gameId,instanceId,payload,type,v') return false;
     if (d.channel !== CHANNEL || d.v !== VERSION || d.gameId !== GAME_ID || d.instanceId !== instanceId) return false;
     var p = d.payload;
@@ -54,10 +85,15 @@
     if (event.source !== window.parent || event.origin !== HOST_ORIGIN || !isHostCommand(event.data)) return;
     var d = event.data;
     if (state === 'stopped') return;
-    if (d.type === 'ARCADE_INIT') {
+    if (d.type === 'ARCADE_SAVE_RESULT') {
+      pendingLoad = null;
+      renderSave(d.payload.status);
+    } else if (d.type === 'ARCADE_INIT') {
       if (state !== 'waiting') return;
       root.setAttribute('data-reduced-motion', d.payload.reducedMotion ? 'true' : 'false');
       setState('active');
+      pendingLoad = nextRequestId();
+      send('ARCADE_SAVE_LOAD', {}, pendingLoad);
     } else if (d.type === 'ARCADE_PAUSE') {
       if (state === 'active') setState('paused');
     } else if (d.type === 'ARCADE_RESUME') {
