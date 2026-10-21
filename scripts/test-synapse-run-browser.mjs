@@ -241,7 +241,7 @@ try {
     const a = await snap(page);
     await page.waitForTimeout(800);
     const b = await snap(page);
-    eq([b.tick, b.host, b.loopActive, b.overlay], [a.tick, 'paused', false, 'En pause']);
+    eq([b.tick, b.pause, b.loopActive, b.overlay], [a.tick, ['HOST'], false, 'En pause']); // [GAME-5] host pause = HOST reason
     await page.getByTestId('arcade-pause-toggle').click();
     await waitPhase(page, 'active');
     const c = await snap(page);
@@ -291,8 +291,11 @@ try {
     await page.keyboard.press('ArrowLeft');
     await hook(page, 'advance', LANE_CHANGE_TICKS);
     eq((await snap(page)).lane, 0);
-    await page.keyboard.press('Tab');
+    // [GAME-5] Tab first visits the on-screen controls (5 buttons), then leaves the frame
+    let out = 0;
+    while (out < 8 && !(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement))) { await page.keyboard.press('Tab'); out++; }
     eq(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement), true, 'Tab leaves the frame');
+    ok(out <= 6, `left the frame after ${out} Tab presses`);
     await page.keyboard.press('ArrowRight');
     await hook(page, 'advance', LANE_CHANGE_TICKS);
     eq((await snap(page)).lane, 0);
@@ -325,7 +328,7 @@ try {
     await frameOf(page).locator('#sr-action').focus();
     await page.keyboard.press('Enter');
     await page.waitForTimeout(300);
-    eq((await snap(page)).listeners, 2);
+    eq((await snap(page)).listeners, 10); // [GAME-5] keyboard, 2 overlay buttons, 2 control-bar, 4 pointer, visibility
     // the host's own STOP command, delivered while the frame still exists
     await page.evaluate(() => {
       const frame = document.querySelector('[data-testid="arcade-frame"]');

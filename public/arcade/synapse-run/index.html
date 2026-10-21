@@ -20,9 +20,23 @@
   <section class="sr-overlay" id="sr-overlay" aria-live="polite">
     <p class="sr-overlay-title" id="sr-overlay-title">Synapse Run</p>
     <p class="sr-overlay-text" id="sr-overlay-text">Chargement…</p>
-    <button type="button" class="sr-action" id="sr-action" hidden>Démarrer</button>
-    <p class="sr-keys">← → ou A D : couloir · ↑, W ou Espace : saut · ↓ ou S : glissade · Entrée : démarrer / rejouer</p>
+    <p class="sr-overlay-detail" id="sr-overlay-detail" hidden></p>
+    <div class="sr-buttons">
+      <button type="button" class="sr-action" id="sr-action" hidden>Démarrer</button>
+      <button type="button" class="sr-secondary" id="sr-secondary" hidden>Recommencer la partie</button>
+    </div>
+    <ul class="sr-missions" id="sr-missions" aria-label="Missions" hidden></ul>
+    <p class="sr-profile" id="sr-profile" hidden></p>
+    <p class="sr-progress-save" id="sr-progress-save" hidden></p>
+    <p class="sr-keys">← → ou A D : couloir · ↑, W ou Espace : saut · ↓ ou S : glissade · Échap ou P : pause · Entrée : démarrer / reprendre / rejouer · sur écran tactile : glisser ou boutons</p>
   </section>
+  <nav class="sr-controls" id="sr-controls" aria-label="Commandes du jeu" hidden>
+    <button type="button" class="sr-control" data-control="left" aria-label="Couloir de gauche"><span aria-hidden="true">◀</span></button>
+    <button type="button" class="sr-control" data-control="slide" aria-label="Glissade"><span aria-hidden="true">▼</span></button>
+    <button type="button" class="sr-control sr-control--pause" id="sr-pause" aria-label="Pause" aria-pressed="false"><span aria-hidden="true">❚❚</span></button>
+    <button type="button" class="sr-control" data-control="jump" aria-label="Saut"><span aria-hidden="true">▲</span></button>
+    <button type="button" class="sr-control" data-control="right" aria-label="Couloir de droite"><span aria-hidden="true">▶</span></button>
+  </nav>
   <footer class="sr-footer">
     <p class="sr-status" id="sr-status" role="status">État : en attente de Docteur</p>
     <p class="sr-save" id="sr-save">Sauvegarde locale : non vérifiée</p>

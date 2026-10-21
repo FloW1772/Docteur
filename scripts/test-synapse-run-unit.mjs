@@ -320,7 +320,8 @@ test('loop: fixed 1/60 s steps, bounded catch-up, no time accumulated across res
 test('input: mapping, auto-repeat and chords ignored, per-tick queue bounded', () => {
   const key = (code, extra = {}) => actionForKey({ code, repeat: false, ctrlKey: false, altKey: false, metaKey: false, ...extra });
   assert.deepEqual(['ArrowLeft', 'KeyA', 'ArrowRight', 'KeyD', 'ArrowUp', 'KeyW', 'Space', 'ArrowDown', 'KeyS', 'Enter'].map(c => key(c)), ['LEFT', 'LEFT', 'RIGHT', 'RIGHT', 'JUMP', 'JUMP', 'JUMP', 'SLIDE', 'SLIDE', 'CONFIRM']);
-  for (const code of ['KeyQ', 'Tab', 'Escape', 'F5', 'toString', '__proto__']) assert.equal(key(code), null, code);
+  for (const code of ['KeyQ', 'Tab', 'F5', 'toString', '__proto__']) assert.equal(key(code), null, code);
+  assert.deepEqual([key('Escape'), key('KeyP')], ['PAUSE', 'PAUSE'], '[GAME-5] pause shortcut');
   assert.equal(key('ArrowLeft', { repeat: true }), null);
   for (const mod of ['ctrlKey', 'altKey', 'metaKey']) assert.equal(key('KeyA', { [mod]: true }), null);
   const q = createCommandQueue();

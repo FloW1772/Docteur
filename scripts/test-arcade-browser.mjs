@@ -87,7 +87,7 @@ try {
   await scenario('B fixed registry foundation only', async () => {
     eq(await page.getByTestId('arcade-game-list').locator('li').count(), 1);
     eq(await page.getByTestId('arcade-game-synapse-run').getAttribute('data-status'), 'PLAYABLE_CORE');
-    ok((await page.getByTestId('arcade-game-list').innerText()).includes('GAME-5'));
+    ok((await page.getByTestId('arcade-game-list').innerText()).includes('GAME-6'));
     baseline = await resources();
   });
   await scenario('C actual sandbox foundation and pause/resume', async () => {

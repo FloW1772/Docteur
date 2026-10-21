@@ -1,9 +1,11 @@
 // [GAME-4] Synapse Run — keyboard → discrete commands. Only keydown events that reach this (focused) game document
 // are seen, so Docteur's own shortcuts are never intercepted. Auto-repeat and modifier chords are ignored: holding a
 // key produces one command, whatever the OS repeat rate. Commands are queued and consumed by the next tick.
+// [GAME-5] Échap / P toggle the player pause (PAUSE). On-screen buttons and swipes (gestures.ts) map to the very same
+// LEFT / RIGHT / JUMP / SLIDE commands: one canonical command layer for every input method.
 import type { Command } from './simulation.ts';
 
-export type InputAction = Command | 'CONFIRM';
+export type InputAction = Command | 'CONFIRM' | 'PAUSE';
 
 const KEYS: Readonly<Record<string, InputAction>> = {
   ArrowLeft: 'LEFT', KeyA: 'LEFT',
@@ -11,7 +13,17 @@ const KEYS: Readonly<Record<string, InputAction>> = {
   ArrowUp: 'JUMP', KeyW: 'JUMP', Space: 'JUMP',
   ArrowDown: 'SLIDE', KeyS: 'SLIDE',
   Enter: 'CONFIRM', NumpadEnter: 'CONFIRM',
+  Escape: 'PAUSE', KeyP: 'PAUSE',
 };
+
+/** data-control value of an on-screen button → command (anything else maps to nothing). */
+export const BUTTON_COMMANDS: Readonly<Record<string, Extract<Command, 'LEFT' | 'RIGHT' | 'JUMP' | 'SLIDE'>>> = Object.freeze({
+  left: 'LEFT', right: 'RIGHT', jump: 'JUMP', slide: 'SLIDE',
+});
+
+export function commandForButton(control: string | undefined | null): Extract<Command, 'LEFT' | 'RIGHT' | 'JUMP' | 'SLIDE'> | null {
+  return typeof control === 'string' && Object.prototype.hasOwnProperty.call(BUTTON_COMMANDS, control) ? BUTTON_COMMANDS[control] : null;
+}
 
 /** Maps a key event to an action, or null (unmapped key, auto-repeat, Ctrl/Alt/Meta chord). */
 export function actionForKey(event: { code: string; repeat: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): InputAction | null {

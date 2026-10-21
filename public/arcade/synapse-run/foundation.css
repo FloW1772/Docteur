@@ -1,5 +1,6 @@
 /* [GAME-2] Synapse Run page — original CSS only, no images, no fonts, no remote assets.
-   [GAME-4] Layout for the playable core: full-frame WebGL viewport, HUD, centred overlay, compact footer. */
+   [GAME-4] Layout for the playable core: full-frame WebGL viewport, HUD, centred overlay, compact footer.
+   [GAME-5] Touch control bar (≥ 48 px targets), pause menu buttons, mission list and progression lines. */
 :root {
   color-scheme: dark;
   --sr-bg: #0a0814;
@@ -18,7 +19,7 @@ body {
   overflow: hidden;
 }
 .sr-app { position: relative; width: 100%; height: 100%; overflow: hidden; }
-.sr-viewport { position: absolute; inset: 0; }
+.sr-viewport { position: absolute; inset: 0; touch-action: none; }
 .sr-canvas { display: block; width: 100%; height: 100%; }
 .sr-hud {
   position: absolute; top: 0; left: 0; right: 0;
@@ -43,8 +44,40 @@ body {
   margin-top: 12px; padding: 8px 18px; font: inherit; font-weight: 700; cursor: pointer;
   color: var(--sr-bg); background: var(--sr-cyan); border: 0; border-radius: 6px;
 }
-.sr-action[hidden] { display: none; }
-.sr-action:focus-visible { outline: 3px solid var(--sr-amber); outline-offset: 2px; }
+.sr-action[hidden], .sr-secondary[hidden] { display: none; }
+.sr-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.sr-buttons .sr-action { margin-top: 12px; }
+.sr-secondary {
+  margin-top: 12px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 40px;
+  color: var(--sr-text); background: transparent; border: 1px solid var(--sr-muted); border-radius: 6px;
+}
+.sr-action, .sr-secondary { min-height: 40px; }
+.sr-action:focus-visible, .sr-secondary:focus-visible, .sr-control:focus-visible { outline: 3px solid var(--sr-amber); outline-offset: 2px; }
+.sr-overlay-detail { margin: 8px 0 0; color: var(--sr-green); font-size: 0.85rem; line-height: 1.4; }
+.sr-overlay-detail[hidden], .sr-missions[hidden], .sr-profile[hidden], .sr-progress-save[hidden] { display: none; }
+.sr-missions { list-style: none; margin: 10px 0 0; padding: 0; text-align: left; font-size: 0.8rem; line-height: 1.35; }
+.sr-missions li { padding: 3px 0; border-top: 1px solid rgba(168, 156, 200, 0.18); overflow-wrap: anywhere; }
+.sr-missions li[data-completed="true"] { color: var(--sr-green); font-weight: 600; }
+.sr-profile { margin: 8px 0 0; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.sr-progress-save { margin: 4px 0 0; color: var(--sr-muted); font-size: 0.75rem; line-height: 1.35; }
+.sr-controls {
+  position: absolute; left: 50%; bottom: 30px; transform: translateX(-50%);
+  display: flex; gap: 6px; padding: 4px; max-width: calc(100% - 16px);
+  background: rgba(10, 8, 20, 0.55); border-radius: 12px;
+}
+.sr-controls[hidden] { display: none; }
+.sr-control {
+  width: 48px; height: 48px; flex: 0 0 auto; padding: 0; font: inherit; font-size: 1.1rem; cursor: pointer;
+  color: var(--sr-text); background: rgba(94, 231, 255, 0.12); border: 1px solid rgba(94, 231, 255, 0.45); border-radius: 10px;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none;
+}
+.sr-control:disabled { opacity: 0.45; cursor: default; }
+.sr-control--pause { background: rgba(255, 181, 71, 0.12); border-color: rgba(255, 181, 71, 0.5); }
+/* mouse / trackpad screens: the bar stays available but visually secondary */
+@media (hover: hover) and (pointer: fine) {
+  .sr-controls { opacity: 0.7; }
+  .sr-controls:hover, .sr-controls:focus-within { opacity: 1; }
+}
 .sr-keys { margin: 10px 0 0; color: var(--sr-muted); font-size: 0.75rem; line-height: 1.4; }
 .sr-footer {
   position: absolute; left: 0; right: 0; bottom: 0;
@@ -57,4 +90,5 @@ body {
 html[data-state="paused"] .sr-status { color: var(--sr-amber); }
 @media (max-width: 420px) {
   .sr-keys, .sr-note { display: none; }
+  .sr-overlay { top: 46%; }
 }
