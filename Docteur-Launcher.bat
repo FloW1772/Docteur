@@ -55,6 +55,7 @@ echo  ============================================
 echo.
 
 call :FREE_PORTS
+if errorlevel 1 goto STARTUP_STOPPED
 
 echo [1/3] Verification Ollama...
 tasklist /FI "IMAGENAME eq ollama.exe" 2>NUL | find /I /N "ollama.exe" >NUL
@@ -73,7 +74,9 @@ if errorlevel 1 goto MENU
 
 echo [3/3] Lancement du frontend...
 start "Docteur Frontend" cmd /k "cd /d C:\dev\Docteur && npm run dev"
-timeout /t 5 /nobreak >nul
+REM [STARTUP-1] Chrome only once the frontend answers over HTTP with the Docteur page (no blind delay)
+node scripts/wait-for-frontend.mjs
+if errorlevel 1 goto STARTUP_STOPPED
 
 echo Ouverture de Chrome...
 start chrome --app=http://localhost:5173 2>nul
@@ -262,6 +265,20 @@ pause
 goto MENU
 
 REM ============================================================
+:STARTUP_STOPPED
+REM  [STARTUP-1] frontend not ready or port 5173 not Docteur's: Chrome is not opened, nothing else is stopped.
+REM ============================================================
+echo.
+echo  ============================================
+echo    Demarrage interrompu : Chrome n'a pas ete ouvert.
+echo    Voir le message ci-dessus (et la fenetre "Docteur Frontend"
+echo    si elle a ete ouverte).
+echo  ============================================
+echo.
+pause
+exit /b 1
+
+REM ============================================================
 :QUITTER
 REM ============================================================
 exit /b 0
@@ -273,11 +290,29 @@ REM  ou 3001 (Vite/cortex-server pas correctement fermes lors
 REM  d'une session precedente). Ne cible QUE ces deux ports
 REM  precis, via leur PID exact trouve par netstat -- jamais de
 REM  taskkill par nom de process ou plage de ports.
+REM  [STARTUP-1] 5173 : arret seulement si le port repond comme le
+REM  frontend Docteur ; sinon echec clair, rien n'est arrete.
 REM ============================================================
-for %%P in (5173 3001) do (
-    for /f "tokens=5" %%I in ('netstat -ano ^| findstr /R /C:"[:.]%%P .*LISTENING"') do (
-        echo Processus residuel detecte sur le port %%P, arret en cours...
-        taskkill /PID %%I /F >nul 2>&1
-    )
+set "PORT_BUSY="
+set "FREED_PID="
+for /f "tokens=5" %%I in ('netstat -ano ^| findstr /R /C:"[:.]5173 .*LISTENING"') do call :FREE_FRONTEND_PORT %%I
+if defined PORT_BUSY exit /b 1
+for /f "tokens=5" %%I in ('netstat -ano ^| findstr /R /C:"[:.]3001 .*LISTENING"') do (
+    echo Processus residuel detecte sur le port 3001, arret en cours...
+    taskkill /PID %%I /F >nul 2>&1
 )
+exit /b 0
+
+:FREE_FRONTEND_PORT
+REM  netstat lists the same PID once per address family (0.0.0.0 and [::])
+if defined PORT_BUSY exit /b 0
+if "%~1"=="%FREED_PID%" exit /b 0
+node scripts/wait-for-frontend.mjs --identify
+if errorlevel 1 (
+    set "PORT_BUSY=1"
+    exit /b 0
+)
+echo Frontend Docteur residuel detecte sur le port 5173, arret en cours...
+taskkill /PID %~1 /F >nul 2>&1
+set "FREED_PID=%~1"
 exit /b 0
