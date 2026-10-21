@@ -31,6 +31,7 @@ body {
   background: linear-gradient(180deg, rgba(10, 8, 20, 0.85), rgba(10, 8, 20, 0));
 }
 .sr-title { margin: 0; font-size: 1rem; letter-spacing: 0.06em; }
+.sr-zone { margin: 0; font-size: 0.75rem; color: #c7e7f0; letter-spacing: 0.04em; }
 .sr-stats { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .sr-stats span:nth-child(2) { color: var(--sr-cyan); }
 .sr-stats span:nth-child(3) { color: var(--sr-green); }

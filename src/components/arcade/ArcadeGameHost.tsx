@@ -10,7 +10,7 @@ import { useReducedMotion } from '../../hooks/useReducedMotion';
 import StudioStatus, { type StudioStatusTone } from '../studio/StudioStatus';
 import type { ArcadeGameEntry } from '../../lib/arcade/registry';
 import {
-  ARCADE_IFRAME_ALLOW, ARCADE_IFRAME_SANDBOX, arcadeFrameSrc, buildArcadeHostCommand, buildArcadeSaveResult,
+  ARCADE_IFRAME_ALLOW, ARCADE_IFRAME_SANDBOX, arcadeFrameSrc, buildArcadeHostCommand, buildArcadeSaveResult, buildArcadeFullscreenState,
   createArcadeInstanceId, parseArcadeGameEvent, type ArcadeHostCommand, type ArcadeSaveOperation, type ArcadeSaveResult, type ArcadeSaveResultPayload,
 } from '../../lib/arcade/protocol';
 import { answerArcadeSaveRequest } from '../../lib/arcade/save-bridge';
@@ -85,6 +85,11 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
   const saveInFlightRef = useRef(0);
   const saveRequestsRef = useRef(0);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState('');
+  const fullscreenBusy = useRef(false);
+  const fullscreenButton = useRef<HTMLButtonElement>(null);
+  const fullscreenSupported = typeof document !== 'undefined' && document.fullscreenEnabled && typeof document.documentElement.requestFullscreen === 'function';
   const reducedMotion = useReducedMotion();
   const reducedMotionRef = useRef(reducedMotion);
   reducedMotionRef.current = reducedMotion;
@@ -103,6 +108,49 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
   }, []);
 
   useEffect(() => { headingRef.current?.focus(); }, []);
+
+  // Fullscreen belongs to the host section. The frame receives state and may request exit only.
+  useEffect(() => {
+    const element = rootRef.current;
+    let wasFullscreen = false;
+    const change = () => {
+      const active = document.fullscreenElement === element;
+      setFullscreen(active);
+      if (readyRef.current && !closedRef.current) post(buildArcadeFullscreenState(game.id, instanceId, active));
+      if (wasFullscreen && !active) fullscreenButton.current?.focus({ preventScroll: true });
+      wasFullscreen = active;
+    };
+    // Also honor Escape while a host control owns focus. Never cancel the browser's standard fullscreen exit.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && document.fullscreenElement === element) {
+        // The Studio dialog also closes on Escape. Exit fullscreen first, keeping the current run mounted.
+        event.stopPropagation();
+        void document.exitFullscreen().catch(() => {});
+      }
+    };
+    document.addEventListener('fullscreenchange', change);
+    window.addEventListener('keydown', escape, true);
+    return () => {
+      document.removeEventListener('fullscreenchange', change);
+      window.removeEventListener('keydown', escape, true);
+      if (document.fullscreenElement === element) void document.exitFullscreen().catch(() => {});
+    };
+  }, [game.id, instanceId, post]);
+
+  const toggleFullscreen = async () => {
+    const element = rootRef.current;
+    if (!element || fullscreenBusy.current) return;
+    if (!fullscreenSupported) { setFullscreenError('Plein écran indisponible dans ce navigateur.'); return; }
+    fullscreenBusy.current = true;
+    setFullscreenError('');
+    try {
+      if (document.fullscreenElement === element) await document.exitFullscreen();
+      else await element.requestFullscreen();
+      if (closedRef.current && document.fullscreenElement === element) await document.exitFullscreen();
+    } catch {
+      if (!closedRef.current) setFullscreenError('Le navigateur a refusé le plein écran. Le jeu reste disponible.');
+    } finally { fullscreenBusy.current = false; }
+  };
 
   useEffect(() => {
     if (!frameMounted) return;
@@ -124,6 +172,10 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
           readyRef.current = true;
           window.clearTimeout(readyTimer);
           post(buildArcadeHostCommand('ARCADE_INIT', game.id, instanceId, { reducedMotion: reducedMotionRef.current }));
+          post(buildArcadeFullscreenState(game.id, instanceId, document.fullscreenElement === rootRef.current));
+          return;
+        case 'ARCADE_FULLSCREEN_EXIT':
+          if (readyRef.current && document.fullscreenElement === rootRef.current) void document.exitFullscreen().catch(() => {});
           return;
         case 'ARCADE_STATE':
           if (readyRef.current) setPhase(message.payload.state);
@@ -200,6 +252,11 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         <p className="arc-alert" role="alert" data-testid="arcade-host-error">{error ? ERROR_TEXT[error] : 'Jeu fermé.'}</p>
       )}
       <div className="arc-controls" role="group" aria-label={`Commandes ${game.title}`}>
+        <button ref={fullscreenButton} type="button" className="arc-btn" data-testid="arcade-fullscreen"
+          aria-pressed={fullscreen} disabled={!fullscreenSupported || (!frameMounted && !fullscreen)}
+          onClick={() => void toggleFullscreen()}>
+          {fullscreen ? 'Quitter le plein écran' : fullscreenSupported ? 'Plein écran' : 'Plein écran indisponible'}
+        </button>
         {/* one toggle (not two buttons that disable each other) so keyboard focus stays put across pause/resume */}
         <button
           type="button"
@@ -213,6 +270,7 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         </button>
         <button type="button" className="arc-btn danger" data-testid="arcade-stop" onClick={stop}>Arrêter</button>
       </div>
+      {fullscreenError && <p className="arc-muted" role="status">{fullscreenError}</p>}
       <p className="arc-muted" role="status" data-testid="arcade-save-status">{saveNote ?? 'Sauvegarde locale : en attente du jeu'}</p>
       <p className="arc-muted">Clavier : cliquez dans le jeu ou atteignez-le avec Tab, puis ← → (ou A D) pour changer de couloir, ↑ / W / Espace pour sauter, ↓ / S pour glisser, Entrée pour démarrer ou rejouer. Tab en ressort.</p>
     </section>

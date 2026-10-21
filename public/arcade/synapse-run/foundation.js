@@ -118,7 +118,11 @@
   }
 
   // [GAME-5] write request from game.js: only {saveVersion: positive integer, data}; nothing else is forwarded
+  function exitFullscreen() {
+    if (state !== 'waiting' && state !== 'stopped') send('ARCADE_FULLSCREEN_EXIT', {});
+  }
   if (typeof document.addEventListener === 'function') {
+    document.addEventListener('synapse-run:fullscreen-exit', exitFullscreen);
     document.addEventListener('synapse-run:save-write', function (event) {
       var detail = event && event.detail;
       var ok = state !== 'waiting' && state !== 'stopped' && !!detail && typeof detail === 'object' &&
@@ -136,6 +140,7 @@
     var p = d.payload;
     if (!p || typeof p !== 'object' || Array.isArray(p)) return false;
     if (d.type === 'ARCADE_INIT') return keys(p) === 'reducedMotion' && typeof p.reducedMotion === 'boolean';
+    if (d.type === 'ARCADE_FULLSCREEN_STATE') return keys(p) === 'fullscreen' && typeof p.fullscreen === 'boolean';
     if (d.type === 'ARCADE_PAUSE' || d.type === 'ARCADE_RESUME' || d.type === 'ARCADE_STOP') return keys(p) === '';
     return false;
   }
@@ -144,7 +149,9 @@
     if (event.source !== window.parent || event.origin !== HOST_ORIGIN || !isHostCommand(event.data)) return;
     var d = event.data;
     if (state === 'stopped') return;
-    if (d.type === 'ARCADE_SAVE_RESULT') {
+    if (d.type === 'ARCADE_FULLSCREEN_STATE') {
+      root.setAttribute('data-host-fullscreen', d.payload.fullscreen ? 'true' : 'false');
+    } else if (d.type === 'ARCADE_SAVE_RESULT') {
       onSaveResult(d);
     } else if (d.type === 'ARCADE_INIT') {
       if (state !== 'waiting') return;
@@ -157,6 +164,8 @@
     } else if (d.type === 'ARCADE_RESUME') {
       if (state === 'paused') { setState('active'); notifyGame('RESUME'); }
     } else if (d.type === 'ARCADE_STOP') {
+      root.setAttribute('data-host-fullscreen', 'false');
+      if (typeof document.removeEventListener === 'function') document.removeEventListener('synapse-run:fullscreen-exit', exitFullscreen);
       setState('stopped');
       notifyGame('STOP');
     }

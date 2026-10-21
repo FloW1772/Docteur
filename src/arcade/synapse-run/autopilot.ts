@@ -18,12 +18,12 @@ export function createAutopilot(rngSeed: number): (state: SimState) => Command[]
     const next = ahead(state.laneProgress ? state.laneTo : state.lane);
     if (next && state.laneProgress === 0 && state.mode === 'RUN') {
       const d = next.z - state.distance;
-      if (next.type === 'BLOCK' && d <= 4 && d > 2.6) return ['JUMP'];
-      if (next.type === 'HIGH_GATE' && d <= 4 && d > 0.7) return ['SLIDE'];
+      if (next.type === 'BLOCK' && d <= state.speed / 3 && d > state.speed * 0.18) return ['JUMP'];
+      if (next.type === 'HIGH_GATE' && d <= state.speed / 3 && d > 0.7) return ['SLIDE'];
     }
     if (state.laneProgress === 0 && state.mode === 'RUN' && x % 97 === 0) {
       const target = state.lane + (x & 256 ? 1 : -1);
-      const clear = (lane: Lane) => { const o = ahead(lane); return !o || o.z - state.distance > 14; };
+      const clear = (lane: Lane) => { const o = ahead(lane); return !o || o.z - state.distance > state.speed * 1.2; };
       if (target >= 0 && target <= 2 && clear(state.lane) && clear(target as Lane)) return [target < state.lane ? 'LEFT' : 'RIGHT'];
     }
     return [];

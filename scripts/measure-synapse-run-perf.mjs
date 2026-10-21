@@ -41,6 +41,8 @@ try {
   await frame.evaluate(() => window.__synapseRunTest.setAutopilot(20261021));
   await frame.locator('#sr-action').focus();
   await page.keyboard.press('Enter');
+  // GAME-7 representative run includes every zone: warm up gameplay to 1200 m, then measure 180 real seconds.
+  await frame.evaluate(() => { const t = window.__synapseRunTest; t.setManual(true); while (t.snapshot().distance < 1200 && t.snapshot().status !== 'GAME_OVER') t.advance(300); t.setManual(false); });
   const cdp = await context.newCDPSession(page);
   await cdp.send('Performance.enable');
   const metric = async () => Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
@@ -49,28 +51,35 @@ try {
   const perfBefore = await frame.evaluate(() => window.__synapseRunTest.perf());
   const wallStart = Date.now();
   const samples = [];
+  const intervals = [];
+  let lastFrame = perfBefore.frames;
   for (let t = 0; t < seconds; t += 10) {
     await page.waitForTimeout(10_000);
-    const p = await frame.evaluate(() => window.__synapseRunTest.perf());
+    const p = await frame.evaluate(since => window.__synapseRunTest.perf(since), lastFrame);
+    lastFrame = p.frames; intervals.push(...p.recentFrameMs);
     const s = await frame.evaluate(() => window.__synapseRunTest.snapshot());
-    samples.push({ t: t + 10, fps: Number(p.fps.toFixed(1)), p95: Number(p.p95.toFixed(1)), status: s.status, distance: Math.floor(s.distance), entities: p.entities, heapMB: p.heapBytes ? Number((p.heapBytes / 1048576).toFixed(1)) : null });
+    samples.push({ t: t + 10, fps: Number(p.fps.toFixed(1)), p95: Number(p.p95.toFixed(1)), status: s.status, distance: Math.floor(s.distance), zone: s.zone, calls: p.view?.calls, geometries: p.view?.geometries, programs: p.view?.programs, entities: p.entities, heapMB: p.heapBytes ? Number((p.heapBytes / 1048576).toFixed(1)) : null });
   }
   const wallS = (Date.now() - wallStart) / 1000;
   const after = await metric();
   const perf = await frame.evaluate(() => window.__synapseRunTest.perf());
   const snap = await frame.evaluate(() => window.__synapseRunTest.snapshot());
+  intervals.sort((a,b)=>a-b);
+  const quantile = p => Number(intervals[Math.min(intervals.length-1,Math.floor(intervals.length*p))]?.toFixed(2));
+  const meanMs = intervals.reduce((a,b)=>a+b,0)/intervals.length;
   const result = {
     mode, seconds: Number(wallS.toFixed(1)), webglRenderer: gpu, viewport: perf.view ? { width: perf.view.width, height: perf.view.height, pixelRatio: perf.view.pixelRatio } : null,
-    fps: Number(perf.fps.toFixed(1)), frameMs: { mean: Number(perf.meanMs.toFixed(2)), p50: Number(perf.p50.toFixed(2)), p95: Number(perf.p95.toFixed(2)), p99: Number(perf.p99.toFixed(2)), max: Number(perf.maxMs.toFixed(2)), lastSamples: perf.samples },
-    simStepsPerSecond: Number(((perf.steps - perfBefore.steps) / wallS).toFixed(1)), droppedTicks: perf.dropped,
+    fps: Number((1000/meanMs).toFixed(1)), frameMs: { mean: Number(meanMs.toFixed(2)), p50: quantile(0.5), p95: quantile(0.95), p99: quantile(0.99), max: quantile(1), samples: intervals.length },
+    simStepsPerSecond: Number(((perf.steps - perfBefore.steps) / wallS).toFixed(1)), droppedTicks: perf.dropped - perfBefore.dropped,
     mainThreadCpuPercent: Number((((after.TaskDuration - before.TaskDuration) / wallS) * 100).toFixed(1)),
     scriptCpuPercent: Number((((after.ScriptDuration - before.ScriptDuration) / wallS) * 100).toFixed(1)),
     jsHeapMB: { start: Number((before.JSHeapUsedSize / 1048576).toFixed(1)), end: Number((after.JSHeapUsedSize / 1048576).toFixed(1)) },
     drawCalls: perf.view?.calls ?? null, triangles: perf.view?.triangles ?? null, geometries: perf.view?.geometries ?? null,
+    drawCallRange: [Math.min(...samples.map(s=>s.calls)),Math.max(...samples.map(s=>s.calls))], programs: perf.view?.programs ?? null,
     run: { status: snap.status, distance: Math.floor(snap.distance), shards: snap.shardsCollected }, samples, externalRequests: external.length,
   };
-  fs.mkdirSync('.tmp', { recursive: true });
-  fs.writeFileSync(`.tmp/synapse-run-perf-${mode}.json`, JSON.stringify(result, null, 2));
+  fs.mkdirSync('.tmp/game7', { recursive: true });
+  fs.writeFileSync(`.tmp/game7/perf-${mode}.json`, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } finally {
   await browser?.close(); await server?.close();

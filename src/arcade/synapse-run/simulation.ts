@@ -5,7 +5,7 @@
 // Lanes 0 / 1 / 2 = LEFT / CENTER / RIGHT, centres at x = (lane − 1) · LANE_WIDTH.
 //
 // Rules (each is unit-tested):
-//   * fixed step 1/60 s; speed constant SPEED (distance is derived from runTicks, never accumulated)
+//   * fixed step 1/60 s; bounded distance-based GAME-7 speed, integrated at each authoritative tick
 //   * commands are applied at the start of a tick, in order
 //   * lane change: exactly LANE_CHANGE_TICKS ticks of linear motion, the command tick being the first (x moves 1/8
 //     per tick, the lane is settled on the 8th); a lane command during a change is buffered (one slot, last command
@@ -18,11 +18,13 @@
 //
 // Course fairness invariants (tested over many seeds):
 //   1. the first obstacle row is at z ≥ START_SAFE_Z
-//   2. consecutive rows are MIN_ROW_GAP..MAX_ROW_GAP metres apart (whole metres)
+//   2. consecutive rows use a speed-cap-safe reaction window plus both collision envelopes
 //   3. a row holds 1 or 2 obstacles, never 3: at least one lane is always completely free
 //   4. every obstacle is also passable in its own lane: BLOCK by a jump, HIGH_GATE by a slide
 //   5. shards lie strictly inside a gap (≥ SHARD_MARGIN from both rows), one lane per gap
 //   6. rows are generated only up to distance + HORIZON; entities more than PRUNE_BEHIND behind are removed
+
+import { difficultyAt, rowGap } from './sections.ts';
 
 export const TICK_RATE = 60;
 export const DT = 1 / TICK_RATE;
@@ -36,8 +38,8 @@ export const SLIDE_TICKS = 36;
 export const HORIZON = 110;
 export const PRUNE_BEHIND = 6;
 export const START_SAFE_Z = 36;
-export const MIN_ROW_GAP = 16;
-export const MAX_ROW_GAP = 26;
+export const MIN_ROW_GAP = 25;
+export const MAX_ROW_GAP = 49;
 export const SHARD_MARGIN = 4;
 export const SHARD_SPACING = 2.5;
 export const SHARD_POINTS = 10;
@@ -133,7 +135,8 @@ function generateRow(state: SimState): void {
     for (let z = from, n = 0; z <= to && n < 5; z += SHARD_SPACING, n++) state.shards.push({ id: state.nextId++, lane, z, collected: false });
   }
   // 1 or 2 obstacles, never 3 (invariant 3)
-  const count = random(state) < 0.55 ? 1 : 2;
+  const difficulty = difficultyAt(rowZ);
+  const count = random(state) < difficulty.doubles ? 2 : 1;
   const lanes: Lane[] = [0, 1, 2];
   for (let i = lanes.length - 1; i > 0; i--) {
     const j = randomInt(state, 0, i);
@@ -143,7 +146,7 @@ function generateRow(state: SimState): void {
     state.obstacles.push({ id: state.nextId++, type: random(state) < 0.5 ? 'BLOCK' : 'HIGH_GATE', lane: lanes[i], z: rowZ });
   }
   state.lastRowZ = rowZ;
-  state.nextRowZ = rowZ + randomInt(state, MIN_ROW_GAP, MAX_ROW_GAP);
+  state.nextRowZ = rowZ + rowGap(rowZ, random(state));
 }
 
 /** Generates rows up to `untilZ` (no pruning). updateCourse uses it with distance + HORIZON. */
@@ -271,7 +274,9 @@ export function stepSim(state: SimState, commands: readonly Command[] = []): Sim
 
   state.runTicks += 1;
   state.tick += 1;
-  state.distance = (state.runTicks * SPEED) / TICK_RATE;
+  state.speed = difficultyAt(state.distance).speed;
+  // Retain exact introductory distances; later use fixed-tick integration (never render delta).
+  state.distance = state.distance < 120 ? (state.runTicks * SPEED) / TICK_RATE : state.distance + state.speed * DT;
   updateCourse(state);
   collide(state);
   return state;

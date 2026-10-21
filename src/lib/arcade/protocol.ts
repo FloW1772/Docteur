@@ -22,7 +22,7 @@ export const ARCADE_IFRAME_SANDBOX = 'allow-scripts';
 export const ARCADE_IFRAME_ALLOW = "camera 'none'; microphone 'none'; geolocation 'none'; display-capture 'none'; fullscreen 'none'; payment 'none'; usb 'none'; clipboard-read 'none'; clipboard-write 'none'";
 
 export type ArcadeHostCommandType = 'ARCADE_INIT' | 'ARCADE_PAUSE' | 'ARCADE_RESUME' | 'ARCADE_STOP';
-export type ArcadeGameEventType = 'ARCADE_READY' | 'ARCADE_STATE' | 'ARCADE_ERROR';
+export type ArcadeGameEventType = 'ARCADE_READY' | 'ARCADE_STATE' | 'ARCADE_ERROR' | 'ARCADE_FULLSCREEN_EXIT';
 export type ArcadeSaveRequestType = 'ARCADE_SAVE_LOAD' | 'ARCADE_SAVE_WRITE' | 'ARCADE_SAVE_DELETE';
 export type ArcadeSaveOperation = 'LOAD' | 'WRITE' | 'DELETE';
 export type ArcadeGameState = 'active' | 'paused' | 'stopped';
@@ -41,6 +41,7 @@ interface Envelope<T extends string, P> {
 }
 
 export type ArcadeHostCommand =
+  | Envelope<'ARCADE_FULLSCREEN_STATE', { fullscreen: boolean }>
   | Envelope<'ARCADE_INIT', { reducedMotion: boolean }>
   | Envelope<'ARCADE_PAUSE', EmptyPayload>
   | Envelope<'ARCADE_RESUME', EmptyPayload>
@@ -55,6 +56,7 @@ export type ArcadeSaveRequest =
   | RequestEnvelope<'ARCADE_SAVE_DELETE', EmptyPayload>;
 
 export type ArcadeGameEvent =
+  | Envelope<'ARCADE_FULLSCREEN_EXIT', EmptyPayload>
   | Envelope<'ARCADE_READY', EmptyPayload>
   | Envelope<'ARCADE_STATE', { state: ArcadeGameState }>
   | Envelope<'ARCADE_ERROR', { code: ArcadeErrorCode }>
@@ -141,6 +143,8 @@ export function parseArcadeGameEvent(data: unknown, expected: { gameId: ArcadeGa
     }
   }
   switch (data.type) {
+    case 'ARCADE_FULLSCREEN_EXIT':
+      return keySet(payload) === '' ? { ...base, type: 'ARCADE_FULLSCREEN_EXIT', payload: {} } : null;
     case 'ARCADE_READY':
       return keySet(payload) === '' ? { ...base, type: 'ARCADE_READY', payload: {} } : null;
     case 'ARCADE_STATE':
@@ -169,4 +173,10 @@ export function buildArcadeSaveResult(gameId: ArcadeGameId, instanceId: string, 
   if (!isArcadeInstanceId(instanceId)) throw new Error('ARCADE_BAD_INSTANCE_ID');
   if (!isArcadeRequestId(requestId)) throw new Error('ARCADE_BAD_REQUEST_ID');
   return { channel: ARCADE_CHANNEL, v: ARCADE_PROTOCOL_VERSION, type: 'ARCADE_SAVE_RESULT', gameId, instanceId, requestId, payload };
+}
+
+/** State only; the sandbox can request exit, never enter fullscreen or choose a target element. */
+export function buildArcadeFullscreenState(gameId: ArcadeGameId, instanceId: string, fullscreen: boolean): ArcadeHostCommand {
+  if (!isArcadeInstanceId(instanceId)) throw new Error('ARCADE_BAD_INSTANCE_ID');
+  return { channel: ARCADE_CHANNEL, v: ARCADE_PROTOCOL_VERSION, type: 'ARCADE_FULLSCREEN_STATE', gameId, instanceId, payload: { fullscreen } };
 }

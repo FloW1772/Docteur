@@ -283,7 +283,7 @@ test('T + long run: 10 simulated minutes, bounded entities, finite state, reprod
   const b = longRun(SEED, ticks);
   assert.equal(a.s.status, 'RUNNING', `bot crashed at tick ${a.s.tick}: ${JSON.stringify(a.s.crash)}`);
   assert.equal(a.s.tick, ticks);
-  assert.equal(a.s.distance, 10 * 60 * SPEED);
+  assert.ok(a.s.distance > 10 * 60 * SPEED, 'GAME-7 intentionally increases speed after the introduction');
   assert.equal(checksum(a.s), checksum(b.s));
   // bound: rows within [distance − PRUNE_BEHIND, distance + HORIZON + one gap], ≤ 2 obstacles and ≤ 5 shards each
   const rowBound = Math.ceil((HORIZON + PRUNE_BEHIND + MAX_ROW_GAP) / MIN_ROW_GAP) + 1;

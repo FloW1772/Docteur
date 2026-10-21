@@ -20,6 +20,7 @@ import { createRunRenderer, type RunRenderer } from './renderer.ts';
 import { browserAudioFactory, createAudioEngine, type SoundEffect } from './audio.ts';
 import { feedbackEvents, feedbackView, type FeedbackEvent } from './feedback.ts';
 import { createAutopilot } from './autopilot.ts';
+import { SECTIONS, sectionIndex } from './sections.ts';
 
 /** Build-time flag: true only in test bundles (deterministic control hooks); false and stripped in production. */
 declare const __SYNAPSE_TEST_HOOKS__: boolean;
@@ -61,6 +62,7 @@ function boot(): void {
   const hudDistance = byId('sr-distance');
   const hudShards = byId('sr-shards');
   const hudScore = byId('sr-score');
+  const hudZone = byId('sr-zone');
   const muteButton = byId('sr-mute') as HTMLButtonElement | null;
   const announcer = byId('sr-announce');
   const toast = byId('sr-toast');
@@ -146,7 +148,13 @@ function boot(): void {
   const tick = () => {
     if (__SYNAPSE_TEST_HOOKS__ && autopilot) for (const command of autopilot(sim)) queue.push(command);
     const before = feedbackView(sim);
+    const previousZone = sectionIndex(sim.distance);
     stepSim(sim, queue.take());
+    const zone = sectionIndex(sim.distance);
+    if (zone !== previousZone) {
+      const message = `Section ${zone + 1} : ${SECTIONS[zone].name}. Difficulté ${zone + 1} sur 5.`;
+      showToast(message); announce(message); audio.play('ui');
+    }
     steps += 1;
     settleIfOver();
     present(feedbackEvents(before, feedbackView(sim)));
@@ -203,9 +211,11 @@ function boot(): void {
 
   const profileText = (p: Profile) => `Record ${p.bestDistanceM} m · meilleur score ${p.bestScore} · ${plural(p.totalRuns, 'course')} · ${plural(p.totalShards, 'éclat')} au total`;
 
-  const hud = { distance: -1, shards: -1, score: -1, overlayKey: '' };
+  const hud = { distance: -1, shards: -1, score: -1, zone: -1, overlayKey: '' };
   const updateHud = () => {
     const d = Math.floor(sim.distance), s = score(sim);
+    const zone = sectionIndex(sim.distance);
+    if (zone !== hud.zone) { hud.zone = zone; if (hudZone) hudZone.textContent = `${zone + 1}/5 · ${SECTIONS[zone].name}`; }
     if (d !== hud.distance) { hud.distance = d; hudDistance.textContent = `${d} m`; }
     if (sim.shardsCollected !== hud.shards) { hud.shards = sim.shardsCollected; hudShards.textContent = plural(sim.shardsCollected, 'éclat'); }
     if (s !== hud.score) { hud.score = s; hudScore.textContent = `Score ${s}`; }
@@ -351,6 +361,11 @@ function boot(): void {
   const issue = (command: Command) => { if (canPlay()) queue.push(command); };
 
   const onKey = (event: KeyboardEvent) => {
+    // Exit the host-owned fullscreen without toggling player pause. The native browser Escape remains enabled.
+    if (event.code === 'Escape' && root.getAttribute('data-host-fullscreen') === 'true') {
+      document.dispatchEvent(new CustomEvent('synapse-run:fullscreen-exit'));
+      return;
+    }
     const mapped = actionForKey(event);
     if (!mapped) return;
     audio.unlock(); // a key press inside the focused game is a user gesture
@@ -492,7 +507,7 @@ function boot(): void {
       /** sanitized game-only state; never anything from Docteur */
       snapshot: () => ({
         seed: sim.seed, tick: sim.tick, status: sim.status, lane: sim.lane, laneTo: sim.laneTo, laneProgress: sim.laneProgress,
-        y: sim.y, mode: sim.mode, distance: sim.distance, shardsCollected: sim.shardsCollected, score: score(sim), crash: sim.crash,
+        y: sim.y, mode: sim.mode, distance: sim.distance, speed: sim.speed, zone: sectionIndex(sim.distance), shardsCollected: sim.shardsCollected, score: score(sim), crash: sim.crash,
         obstacles: sim.obstacles.map(o => ({ id: o.id, type: o.type, lane: o.lane, z: o.z })),
         shards: sim.shards.map(s => ({ id: s.id, lane: s.lane, z: s.z, collected: s.collected })),
         host, pause: pause.reasons(), manual, loopActive: frameHandle !== 0, renderer: view ? 'active' : 'none', listeners, frames, steps, dropped: stepper.dropped,
@@ -514,12 +529,14 @@ function boot(): void {
       },
       setAutopilot: (seed: number | null) => { autopilot = typeof seed === 'number' ? createAutopilot(seed) : null; },
       restart: (seed: number) => { restart(seed); render(performance.now()); },
-      perf: () => {
+      perf: (sinceFrame = 0) => {
         const n = Math.min(frames - 1, PERF_SAMPLES);
         const sorted = Array.from(frameTimes.subarray(0, Math.max(0, n))).sort((a, b) => a - b);
         const mean = sorted.reduce((a, b) => a + b, 0) / (sorted.length || 1);
         const memory = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
-        return { frames, steps, dropped: stepper.dropped, samples: sorted.length, meanMs: mean, fps: mean ? 1000 / mean : 0, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), p99: percentile(sorted, 0.99), maxMs: sorted[sorted.length - 1] ?? 0, heapBytes: memory?.usedJSHeapSize ?? null, view: view?.info() ?? null, entities: { obstacles: sim.obstacles.length, shards: sim.shards.length } };
+        const recentFrameMs = [];
+        for (let i = Math.max(1, sinceFrame, frames - PERF_SAMPLES); i < frames; i++) recentFrameMs.push(frameTimes[i % PERF_SAMPLES]);
+        return { frames, recentFrameMs, steps, dropped: stepper.dropped, samples: sorted.length, meanMs: mean, fps: mean ? 1000 / mean : 0, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), p99: percentile(sorted, 0.99), maxMs: sorted[sorted.length - 1] ?? 0, heapBytes: memory?.usedJSHeapSize ?? null, view: view?.info() ?? null, entities: { obstacles: sim.obstacles.length, shards: sim.shards.length } };
       },
     });
   }

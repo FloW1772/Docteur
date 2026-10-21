@@ -17,6 +17,10 @@
 .arc-host-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
 .arc-frame { box-sizing: border-box; display: block; width: 100%; height: clamp(240px, 52vh, 460px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #0a0814; }
 .arc-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.arc-controls .arc-btn { min-height: 44px; min-width: 44px; }
+.arc-host:fullscreen { box-sizing: border-box; width: 100%; height: 100%; padding: 12px; background: #0a0814; overflow: auto; }
+.arc-host:fullscreen .arc-frame { flex: 1 1 auto; min-height: 120px; height: 0; }
+.arc-host:fullscreen .arc-host-head, .arc-host:fullscreen .arc-controls, .arc-host:fullscreen > p { flex-shrink: 0; }
 .arc-alert { margin: 0; border-radius: 6px; padding: 10px 12px; font-size: 12px; border: 1px solid rgba(248,113,113,0.55); background: rgba(248,113,113,0.08); color: #fecaca; }
 /* [GAME-6] While a game frame is running or paused, the shell's glass blur would be recomputed on every game frame
    (its content changes 60 times a second); on CPU compositors that alone tripled the frame time. During play only,

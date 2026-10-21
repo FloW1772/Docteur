@@ -168,7 +168,8 @@ try {
     await page.keyboard.up('ArrowDown');
     await nextFrames(page);
     s = await snap(page);
-    eq([s.mode, s.view.player.scaleY], ['RUN', 1]);
+    eq(s.mode, 'RUN');
+    ok(s.view.player.scaleY >= 0.86 && s.view.player.scaleY <= 1, 'GAME-7 presentation-only landing compression');
   });
 
   await scenario('8 a known seeded obstacle ends the run (GAME_OVER with stats and Rejouer)', async page => {
@@ -297,9 +298,9 @@ try {
     eq((await snap(page)).lane, 0);
     // [GAME-5] Tab first visits the on-screen controls (5 buttons) [GAME-6] and the mute toggle, then leaves the frame
     let out = 0;
-    while (out < 8 && !(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement))) { await page.keyboard.press('Tab'); out++; }
+    while (out < 9 && !(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement))) { await page.keyboard.press('Tab'); out++; }
     eq(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement), true, 'Tab leaves the frame');
-    ok(out <= 7, `left the frame after ${out} Tab presses`);
+    ok(out <= 8, `left the frame after ${out} Tab presses (GAME-7 fullscreen control included)`);
     await page.keyboard.press('ArrowRight');
     await hook(page, 'advance', LANE_CHANGE_TICKS);
     eq((await snap(page)).lane, 0);
