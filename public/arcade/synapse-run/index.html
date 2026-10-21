@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<!-- [GAME-2] Page-specific policy: no network, no plugins, no frames, no forms; only this folder's own CSS/JS.
+     The page is always loaded inside <iframe sandbox="allow-scripts"> (opaque origin) by the Docteur Arcade host. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synapse Run — Arcade Docteur</title>
+<link rel="stylesheet" href="./foundation.css">
+</head>
+<body>
+<main class="sr-stage" aria-labelledby="sr-title">
+  <div class="sr-emblem" aria-hidden="true">
+    <span class="sr-node sr-node--a"></span>
+    <span class="sr-node sr-node--b"></span>
+    <span class="sr-node sr-node--c"></span>
+    <span class="sr-link sr-link--ab"></span>
+    <span class="sr-link sr-link--bc"></span>
+  </div>
+  <h1 id="sr-title" class="sr-title">Synapse Run</h1>
+  <p class="sr-badge">Bac à sable Arcade actif</p>
+  <p class="sr-lead">Fondation technique uniquement : le jeu arrivera avec GAME-4.</p>
+  <p class="sr-status" id="sr-status" role="status">État : en attente de Docteur</p>
+  <p class="sr-note">Projet original · aucun réseau · aucune donnée Docteur</p>
+</main>
+<script src="./foundation.js"></script>
+</body>
+</html>

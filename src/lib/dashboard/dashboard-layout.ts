@@ -44,6 +44,7 @@ export const DASHBOARD_CARDS: readonly DashboardCardDefinition[] = Object.freeze
   { id: 'prompt-generator', label: 'Générateur de prompts', defaultVisible: false, description: 'Prompts structurés' },
   { id: 'corpus', label: 'Corpus', defaultVisible: false, description: 'Import de corpus' },
   { id: 'todo', label: 'À faire', defaultVisible: false, description: 'Liste de tâches' },
+  { id: 'arcade', label: 'Arcade', defaultVisible: false, description: 'Jeux locaux isolés (fondation)' }, // [GAME-2]
   { id: 'rassilon', label: 'RASSILON', defaultVisible: false, description: 'Calcul local & LAN' },
   { id: 'devices', label: 'Appareils', defaultVisible: false, description: 'Inventaire Device Fabric' },
   { id: 'omega', label: 'OMEGA', defaultVisible: false, description: 'Écran distant (lecture seule)' },

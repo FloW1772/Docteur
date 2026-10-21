@@ -157,7 +157,8 @@ function sanitizeLimitations(text: string): string[] {
 }
 
 function buildFeatureDefinitionFromHelp(item: { name: string; description: string; category: string; feature: FeatureKey; keywords?: string[] }): FeatureDefinition {
-  const status = FEATURE_KIND_BY_STATE[item.feature === 'settings-models' ? 'disponible' : 'local'] ?? 'AVAILABLE';
+  // GAME-2 exposes a working launcher, while the game itself is still foundation-only.
+  const status = item.feature === 'arcade' ? 'PARTIAL' : FEATURE_KIND_BY_STATE[item.feature === 'settings-models' ? 'disponible' : 'local'] ?? 'AVAILABLE';
   const safeKeywords = item.keywords?.filter(Boolean) ?? [];
   const knownReferences = [
     `src/content/capabilities.ts`,
@@ -179,7 +180,7 @@ function buildFeatureDefinitionFromHelp(item: { name: string; description: strin
     prerequisites: safeKeywords.length > 0 ? safeKeywords.slice(0, 2) : ['Aucune'],
     relatedFeatures: [item.feature],
     status,
-    available: status === 'AVAILABLE',
+    available: status === 'AVAILABLE' || item.feature === 'arcade',
     verified: true,
     technicalReferences: knownReferences,
     routes: ['/', 'help'],

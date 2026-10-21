@@ -19,7 +19,7 @@ export type FeatureKey =
   | 'video-summary' | 'metagpt' | 'investment' | 'sherlock' | 'cyber-audit'
   | 'settings' | 'settings-models' | 'settings-memory' | 'settings-images'
   | 'settings-privacy' | 'settings-audio' | 'settings-files' | 'settings-vocal'
-  | 'settings-external' | 'settings-connections' | 'maitre' | 'code-intel' | 'sales' | 'agency' | 'document-toolbox' | 'media-studio' | 'recorder' | 'companion' | 'knowledge-graph';
+  | 'settings-external' | 'settings-connections' | 'maitre' | 'code-intel' | 'sales' | 'agency' | 'document-toolbox' | 'media-studio' | 'recorder' | 'companion' | 'knowledge-graph' | 'arcade';
 
 export type FeatureState = 'disponible' | 'local' | 'a_configurer' | 'partiel';
 
@@ -120,6 +120,14 @@ export const HELP_DIRECTORY: HelpCategory[] = [
       { name: 'Fichiers et dossiers surveillés', description: 'Import automatique depuis un dossier surveillé, gestion des fichiers.', feature: 'settings-files', state: 'disponible' },
       { name: 'Navigateur', description: 'Choix du navigateur que le serveur ouvre pour les liens externes (onglet Modèles).', feature: 'settings-models', state: 'disponible', keywords: ['browser', 'chrome', 'firefox', 'edge'] },
       { name: 'NotebookLM (préparation)', description: 'Clé optionnelle pour une intégration future — aucun appel réel n\'est fait aujourd\'hui (onglet Modèles).', feature: 'settings-models', state: 'a_configurer' },
+    ],
+  },
+  {
+    emoji: '🎮',
+    title: 'Loisirs',
+    items: [
+      // [GAME-2] Arcade foundation only: the sandbox and the launcher exist, no game is playable yet.
+      { name: 'Arcade', description: 'Arcade locale optionnelle : chaque jeu tourne dans un bac à sable isolé, sans accès aux données privées de Docteur (notes, mémoire, Companion, appareils) et sans réseau pendant le jeu. Ni publicité, ni pistage, ni achat, ni compte. Synapse Run est un projet de jeu original ; seule sa fondation technique est en place, le jeu n’est pas encore jouable.', feature: 'arcade', state: 'partiel', keywords: ['jeux', 'jeu', 'arcade', 'synapse run', 'loisirs', 'bac à sable'] },
     ],
   },
   {

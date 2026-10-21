@@ -99,8 +99,10 @@ export default defineConfig(({ command, isPreview }) => {
         globIgnores: ['**/esm-*.js', 'mediapipe/**', 'tesseract/**'],
 
         // SPA: any navigation that is not an API call falls back to index.html.
+        // [GAME-2] Arcade game pages (public/arcade/**) are real static documents with their own CSP: they are
+        // served (precached) as themselves and must never be rewritten to the Docteur app shell.
         navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/arcade\//],
 
         runtimeCaching: [
           // NB-3: Google Fonts runtime caching removed — fonts are no longer fetched from a third party.

@@ -1,6 +1,6 @@
 import { agentPageData } from './lib/agent-page';
 import { useState, useCallback, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
-import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen } from 'lucide-react';
+import { Trash2, MoreVertical, Plus, X, Link2, AlertTriangle, RefreshCw, Upload, ListVideo, Eye, Zap, FileText, BookOpen, Gamepad2 } from 'lucide-react';
 import { usePages } from './hooks/usePages';
 import { useCortex } from './hooks/useCortex';
 import { useModalOpenTracking, useAnyModalOpen } from './hooks/useModalRegistry';
@@ -60,6 +60,7 @@ const MediaStudioModal = lazy(() => import('./components/modals/MediaStudioModal
 const RecorderPanel = lazy(() => import('./components/recorder/RecorderPanel')); // [Native Recorder REC-WIRE-1]
 const CompanionPanel = lazy(() => import('./components/companion/CompanionPanel')); // [Companion V1 COMP-6B]
 const KnowledgeGraphModal = lazy(() => import('./components/modals/KnowledgeGraphModal')); // [Knowledge Graph V1]
+const ArcadePanel = lazy(() => import('./components/arcade/ArcadePanel')); // [GAME-2 Arcade]
 const InvestmentStudioModal = lazy(() => import('./components/modals/InvestmentStudioModal'));
 const SalesStudioModal = lazy(() => import('./components/modals/SalesStudioModal'));
 const SherlockStudioModal = lazy(() => import('./components/modals/SherlockStudioModal'));
@@ -2387,11 +2388,13 @@ export default function App() {
   const [recorderOpen, setRecorderOpen] = useState(false); // [Native Recorder REC-WIRE-1]
   const [companionOpen, setCompanionOpen] = useState(false); // [Companion V1 COMP-6B]
   const [knowledgeGraphOpen, setKnowledgeGraphOpen] = useState(false); // [Knowledge Graph V1]
+  const [arcadeOpen, setArcadeOpen] = useState(false); // [GAME-2 Arcade]
   const [mediaStudioImport, setMediaStudioImport] = useState<MediaStudioImportRequest | null>(null);
   const mediaStudioImportSeq = useRef(0);
   useModalOpenTracking(mediaStudioOpen);
   useModalOpenTracking(recorderOpen);
   useModalOpenTracking(companionOpen);
+  useModalOpenTracking(arcadeOpen);
   useModalOpenTracking(imageGeneratorOpen);
   const recorderPort = useMemo(() => createHttpRecorderPort({
     baseUrl: import.meta.env.VITE_RECORDER_SAME_ORIGIN === 'true'
@@ -2473,6 +2476,7 @@ export default function App() {
       case 'recorder':        setRecorderOpen(true); break;
       case 'companion':       setCompanionOpen(true); break;
       case 'knowledge-graph': setKnowledgeGraphOpen(true); break; // [Knowledge Graph V1]
+      case 'arcade':          setArcadeOpen(true); break; // [GAME-2 Arcade]
       case 'investment':      setInvestmentStudioOpen(true); break;
       case 'sales':           setSalesStudioOpen(true); break;
       case 'sherlock':        setSherlockStudioOpen(true); break;
@@ -5060,6 +5064,7 @@ export default function App() {
             'prompt-generator': () => handleOpenFeature('prompt-generator'),
             corpus: () => handleOpenFeature('corpus'),
             todo: () => handleOpenFeature('todo'),
+            arcade: () => handleOpenFeature('arcade'), // [GAME-2 Arcade] opt-in card, hidden by default
             rassilon: () => { setSettingsInitialTab('rassilon'); setSettingsOpen(true); },
             devices: () => { setSettingsInitialTab('devices'); setSettingsOpen(true); },
             omega: () => { setSettingsInitialTab('omega'); setSettingsOpen(true); },
@@ -5526,6 +5531,11 @@ export default function App() {
       {companionOpen && (
         <StudioShell icon={<BookOpen size={18} />} title="Companion" onClose={() => setCompanionOpen(false)} subtitle="Assistant local certifié · activation manuelle">
           <Suspense fallback={<LazyModalFallback />}><CompanionPanel port={companionPort} /></Suspense>
+        </StudioShell>
+      )}
+      {arcadeOpen && ( // [GAME-2 Arcade] sandboxed games only — no Docteur API, storage or data reaches them
+        <StudioShell icon={<Gamepad2 size={18} />} title="Arcade" onClose={() => setArcadeOpen(false)} subtitle="Jeux locaux isolés · sans réseau ni données Docteur">
+          <Suspense fallback={<LazyModalFallback />}><ArcadePanel /></Suspense>
         </StudioShell>
       )}
       {knowledgeGraphOpen && <Suspense fallback={null}><KnowledgeGraphModal onClose={() => setKnowledgeGraphOpen(false)} onOpenNeuron={(pageId) => setSelectedId(pageId)} onOpenUrl={(url, title) => openInDocteurReader({ url, title })} /></Suspense>}
