@@ -1,6 +1,9 @@
 /* [GAME-2] Synapse Run page — original CSS only, no images, no fonts, no remote assets.
    [GAME-4] Layout for the playable core: full-frame WebGL viewport, HUD, centred overlay, compact footer.
-   [GAME-5] Touch control bar (≥ 48 px targets), pause menu buttons, mission list and progression lines. */
+   [GAME-5] Touch control bar (≥ 48 px targets), pause menu buttons, mission list and progression lines.
+   [GAME-6] Mute toggle, mission toast, shard counter cue, visible focus on the play area, and a low-effects layout
+   (html[data-effects="low"], software renderers): no translucent gradients or transformed/translucent layers over
+   the canvas, which a CPU compositor redraws on every frame. Motion cues stop under reduced motion. */
 :root {
   color-scheme: dark;
   --sr-bg: #0a0814;
@@ -31,6 +34,26 @@ body {
 .sr-stats { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .sr-stats span:nth-child(2) { color: var(--sr-cyan); }
 .sr-stats span:nth-child(3) { color: var(--sr-green); }
+.sr-hud { padding-right: 116px; }
+.sr-mute {
+  position: absolute; top: 4px; right: 8px; min-height: 44px; min-width: 44px; padding: 6px 10px; font: inherit; font-size: 0.8rem; cursor: pointer;
+  color: var(--sr-text); background: rgba(16, 12, 32, 0.9); border: 1px solid var(--sr-muted); border-radius: 8px;
+}
+.sr-mute[hidden] { display: none; }
+.sr-mute[aria-pressed="true"] { border-style: dashed; color: var(--sr-muted); }
+.sr-mute:focus-visible, .sr-viewport:focus-visible { outline: 3px solid var(--sr-amber); outline-offset: -3px; }
+.sr-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.sr-toast {
+  position: absolute; left: 50%; top: 58px; transform: translateX(-50%); margin: 0; max-width: calc(100% - 24px);
+  padding: 6px 12px; font-size: 0.85rem; font-weight: 600; text-align: center; pointer-events: none;
+  color: var(--sr-bg); background: var(--sr-green); border-radius: 8px;
+}
+.sr-toast[hidden] { display: none; }
+@keyframes sr-bump { 0% { transform: scale(1); } 40% { transform: scale(1.25); } 100% { transform: scale(1); } }
+.sr-stats span { display: inline-block; }
+.sr-stats .sr-bump { animation: sr-bump 0.25s ease-out; }
+html[data-reduced-motion="true"] .sr-stats .sr-bump { animation: none; }
+@media (prefers-reduced-motion: reduce) { .sr-stats .sr-bump { animation: none; } }
 .sr-overlay {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   width: min(420px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto;
@@ -91,4 +114,12 @@ html[data-state="paused"] .sr-status { color: var(--sr-amber); }
 @media (max-width: 420px) {
   .sr-keys, .sr-note { display: none; }
   .sr-overlay { top: 46%; }
+  .sr-title { font-size: 0.9rem; }
 }
+/* low-effects layout: same information, opaque surfaces, no layer over the canvas that needs per-frame blending */
+html[data-effects="low"] .sr-hud,
+html[data-effects="low"] .sr-footer { background: none; }
+html[data-effects="low"] .sr-hud { text-shadow: none; }
+html[data-effects="low"] .sr-controls { left: 8px; right: 8px; transform: none; justify-content: center; background: none; opacity: 1; max-width: none; }
+html[data-effects="low"] .sr-control { background: #1c1638; }
+html[data-effects="low"] .sr-toast { left: 12px; right: 12px; transform: none; max-width: none; }

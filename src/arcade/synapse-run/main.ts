@@ -5,6 +5,9 @@
 // host / hidden page), local progression and missions. The profile is loaded and written ONLY through
 // foundation.js ("synapse-run:save-result" / "synapse-run:save-write" events) → host → GAME-3 save store; this file
 // never touches any storage or network API.
+// [GAME-6] Synthesised sound effects (audio.ts, unlocked by a gesture inside the game, session-only mute), visual and
+// screen-reader feedback derived from simulation events (feedback.ts; never fed back into the run), live mission
+// toasts, a low-effects layout for software renderers, focus restoration and WebGL context-loss handling.
 import { createSim, score, stepSim, type Command, type SimState } from './simulation.ts';
 import { createFixedStepper } from './loop.ts';
 import { actionForKey, commandForButton, createCommandQueue } from './input.ts';
@@ -14,6 +17,8 @@ import {
   MISSIONS, SYNAPSE_RUN_SAVE_VERSION, createSaveSession, missionProgress, type LoadResult, type MissionId, type Profile, type RunSummary,
 } from './progression.ts';
 import { createRunRenderer, type RunRenderer } from './renderer.ts';
+import { browserAudioFactory, createAudioEngine, type SoundEffect } from './audio.ts';
+import { feedbackEvents, feedbackView, type FeedbackEvent } from './feedback.ts';
 import { createAutopilot } from './autopilot.ts';
 
 /** Build-time flag: true only in test bundles (deterministic control hooks); false and stripped in production. */
@@ -24,6 +29,8 @@ interface HostCommandDetail { type: 'INIT' | 'PAUSE' | 'RESUME' | 'STOP'; reduce
 interface SaveResultDetail { op: 'LOAD' | 'WRITE'; status: string; code?: string; saveVersion?: unknown; data?: unknown }
 
 const PERF_SAMPLES = 1200;
+const TOAST_MS = 2600;
+const SOUND_FOR: Readonly<Record<FeedbackEvent, SoundEffect | null>> = { START: 'ui', LANE: 'lane', JUMP: 'jump', SLIDE: 'slide', SHARD: 'shard', CRASH: 'crash' };
 const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`;
 
 function newSeed(): number {
@@ -54,7 +61,10 @@ function boot(): void {
   const hudDistance = byId('sr-distance');
   const hudShards = byId('sr-shards');
   const hudScore = byId('sr-score');
-  if (!viewport || !overlay || !overlayTitle || !overlayText || !overlayDetail || !missionList || !profileLine || !progressSave || !action || !secondary || !controls || !pauseButton || !hudDistance || !hudShards || !hudScore) return;
+  const muteButton = byId('sr-mute') as HTMLButtonElement | null;
+  const announcer = byId('sr-announce');
+  const toast = byId('sr-toast');
+  if (!viewport || !overlay || !overlayTitle || !overlayText || !overlayDetail || !missionList || !profileLine || !progressSave || !action || !secondary || !controls || !pauseButton || !hudDistance || !hudShards || !hudScore || !muteButton || !announcer || !toast) return;
   const controlButtons = Array.from(controls.querySelectorAll<HTMLButtonElement>('button[data-control]'));
 
   let sim: SimState = createSim(newSeed());
@@ -74,6 +84,25 @@ function boot(): void {
   const session = createSaveSession();
   let lastRun: { summary: RunSummary; newRecords: { distance: boolean; score: boolean }; completedMissions: MissionId[] } | null = null;
   let writes = 0;
+  const audio = createAudioEngine(browserAudioFactory);
+  let glLost = false;
+  let toastTimer = 0;
+  const announced: string[] = [];
+  const missionsToastedThisRun = new Set<MissionId>();
+
+  /** concise, event-level screen-reader messages only (never per frame) */
+  const announce = (text: string) => {
+    announced.push(text);
+    if (announced.length > 20) announced.shift();
+    announcer.textContent = '';
+    announcer.textContent = text;
+  };
+  const showToast = (text: string) => {
+    toast.textContent = text;
+    toast.hidden = false;
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => { toast.hidden = true; toastTimer = 0; }, TOAST_MS);
+  };
 
   const sendWrite = (payload: Profile | null) => {
     if (!payload) return;
@@ -89,28 +118,62 @@ function boot(): void {
     if (!result.settled) return;
     lastRun = { summary, newRecords: result.newRecords, completedMissions: result.completedMissions };
     sendWrite(result.write);
+    const record = result.newRecords.distance || result.newRecords.score ? ' Nouveau record.' : '';
+    announce(`Fin de course : ${summary.distanceM} m, ${plural(summary.shards, 'éclat')}, score ${summary.score}.${record}`);
+  };
+
+  // presentation only: sounds, cues and announcements for what the simulation just did
+  const present = (events: FeedbackEvent[]) => {
+    for (const event of events) {
+      const sound = SOUND_FOR[event];
+      if (sound) audio.play(sound);
+      if (event === 'START') announce('Course lancée.');
+      if (event === 'SHARD') { hudShards.classList.remove('sr-bump'); void hudShards.offsetWidth; hudShards.classList.add('sr-bump'); }
+    }
+    if (sim.status !== 'RUNNING') return;
+    // a single-run mission reached during the run: visual toast + announcement + sound (saved at GAME_OVER)
+    for (const row of missionProgress(session.profile, runSummary(sim))) {
+      if (!row.completed || session.profile.missions[row.mission.id].completed || missionsToastedThisRun.has(row.mission.id)) continue;
+      missionsToastedThisRun.add(row.mission.id);
+      showToast(`✓ Mission accomplie : ${row.mission.label}`);
+      announce(`Mission accomplie : ${row.mission.label}.`);
+      audio.play('mission');
+    }
   };
 
   // test builds only: an autopilot can feed the queue before each tick (frame-rate measurements over minutes)
   let autopilot: ((state: SimState) => Command[]) | null = null;
   const tick = () => {
     if (__SYNAPSE_TEST_HOOKS__ && autopilot) for (const command of autopilot(sim)) queue.push(command);
+    const before = feedbackView(sim);
     stepSim(sim, queue.take());
     steps += 1;
     settleIfOver();
+    present(feedbackEvents(before, feedbackView(sim)));
   };
   const stepper = createFixedStepper(tick);
 
   let view: RunRenderer | null = null;
+  const onContextLost = () => {
+    // no recreation loop: the run is frozen and the player is told to relaunch
+    glLost = true;
+    root.setAttribute('data-webgl', 'lost');
+    stopLoop();
+    queue.clear();
+    announce('Affichage 3D interrompu : relancez Synapse Run depuis l’Arcade.');
+    render(performance.now());
+  };
   try {
-    view = createRunRenderer(viewport, { reducedMotion });
+    view = createRunRenderer(viewport, { reducedMotion, onContextLost });
     root.setAttribute('data-webgl', 'ready');
+    // software rasterisers composite every translucent layer on the CPU: flatter page layout, same game
+    root.setAttribute('data-effects', view.software ? 'low' : 'full');
   } catch {
     // no retry loop and no network fallback: a fixed message, the rest of the page (and Docteur) keeps working
     root.setAttribute('data-webgl', 'unavailable');
   }
 
-  const running = () => host === 'active' && !!view && sim.status === 'RUNNING';
+  const running = () => host === 'active' && !!view && !glLost && sim.status === 'RUNNING';
   const canPlay = () => running() && !pause.paused;
 
   const saveText = (): string => {
@@ -147,19 +210,26 @@ function boot(): void {
     if (sim.shardsCollected !== hud.shards) { hud.shards = sim.shardsCollected; hudShards.textContent = plural(sim.shardsCollected, 'éclat'); }
     if (s !== hud.score) { hud.score = s; hudScore.textContent = `Score ${s}`; }
     const p = session.profile;
-    const key = [view ? 1 : 0, host, sim.status, pause.reasons().join('+'), session.saveStatus, session.writeStatus, runId, p.totalRuns, p.bestScore, p.bestDistanceM].join('|');
+    const key = [view && !glLost ? 1 : 0, host, sim.status, pause.reasons().join('+'), session.saveStatus, session.writeStatus, runId, p.totalRuns, p.bestScore, p.bestDistanceM, audio.muted].join('|');
     if (key === hud.overlayKey) return;
     const previousKey = hud.overlayKey;
     hud.overlayKey = key;
+    // read before the overlay is hidden: the browser moves focus off a hidden button on its own
+    const menuHadFocus = !overlay.hidden && overlay.contains(document.activeElement);
     root.setAttribute('data-game-state', sim.status);
     root.setAttribute('data-pause', pause.reasons().join(' '));
     root.setAttribute('data-progress', session.saveStatus);
     controls.hidden = !running();
     pauseButton.setAttribute('aria-pressed', String(pause.has('PLAYER')));
     for (const button of controlButtons) button.disabled = !canPlay();
+    muteButton.hidden = host !== 'active' || !view;
+    muteButton.setAttribute('aria-pressed', String(audio.muted));
+    muteButton.setAttribute('aria-label', audio.muted ? 'Rétablir le son' : 'Couper le son');
+    muteButton.textContent = audio.muted ? 'Son coupé' : 'Son activé';
 
     let title = '', text = '', detail = '', primary = '', second = '', missions: 'none' | 'stored' | 'live' = 'none';
     if (!view) { title = 'Affichage 3D indisponible'; text = 'WebGL n’est pas disponible dans ce navigateur : Synapse Run ne peut pas s’afficher. Le reste de Docteur n’est pas affecté.'; }
+    else if (glLost) { title = 'Affichage 3D interrompu'; text = 'Le navigateur a interrompu l’affichage 3D. Arrêtez puis relancez Synapse Run depuis l’Arcade ; votre progression déjà enregistrée est conservée.'; }
     else if (host === 'waiting') { title = 'Synapse Run'; text = 'En attente de Docteur…'; }
     else if (host === 'stopped') { title = 'Partie arrêtée'; text = 'Relancez Synapse Run depuis l’Arcade.'; }
     else if (pause.has('PLAYER')) {
@@ -200,9 +270,11 @@ function boot(): void {
     action.textContent = primary;
     secondary.hidden = second === '';
     secondary.textContent = second;
-    // keep keyboard users on the main control when a menu opens, but never pull focus into an unfocused frame
+    // keep keyboard users on the main control when a menu opens, but never pull focus into an unfocused frame;
+    // when a menu closes (start, resume) focus moves to the play area instead of staying on a hidden button
     const opened = previousKey.split('|').slice(0, 4).join('|') !== key.split('|').slice(0, 4).join('|');
     if (primary && opened && document.hasFocus()) action.focus();
+    else if (overlay.hidden && document.hasFocus() && (menuHadFocus || document.activeElement === document.body)) viewport.focus({ preventScroll: true });
   };
 
   const render = (time: number) => {
@@ -241,6 +313,7 @@ function boot(): void {
     queue.clear();
     runId += 1;
     lastRun = null;
+    missionsToastedThisRun.clear();
     sim = createSim(seed);
   };
 
@@ -260,17 +333,27 @@ function boot(): void {
     syncPause();
   };
   const togglePlayerPause = () => {
-    if (host !== 'active' || !view) return;
+    if (host !== 'active' || !view || glLost) return;
     if (pause.has('PLAYER')) pause.remove('PLAYER');
     else if (sim.status === 'RUNNING') pause.add('PLAYER');
     else return;
+    audio.play('ui');
+    if (pause.has('PLAYER')) announce('Jeu en pause.');
+    else announce(pause.paused ? 'Pause du joueur levée ; Docteur garde le jeu en pause.' : 'Reprise.');
     syncPause();
+  };
+  const toggleMute = () => {
+    audio.unlock();
+    audio.setMuted(!audio.muted);
+    announce(audio.muted ? 'Son coupé.' : 'Son activé.');
+    render(performance.now());
   };
   const issue = (command: Command) => { if (canPlay()) queue.push(command); };
 
   const onKey = (event: KeyboardEvent) => {
     const mapped = actionForKey(event);
     if (!mapped) return;
+    audio.unlock(); // a key press inside the focused game is a user gesture
     // Enter / Space on a focused button are that button's own activation (keyboard-operable controls)
     const onButton = event.target instanceof HTMLButtonElement && (event.code === 'Enter' || event.code === 'NumpadEnter' || event.code === 'Space');
     if (onButton) return;
@@ -282,8 +365,9 @@ function boot(): void {
     if (sim.status === 'READY') { if (mapped === 'JUMP') queue.push('START'); return; }
     issue(mapped);
   };
-  const onAction = () => confirm();
-  const onSecondary = () => abandon();
+  const onAction = () => { audio.unlock(); confirm(); };
+  const onSecondary = () => { audio.unlock(); abandon(); };
+  const onMute = () => toggleMute();
 
   // on-screen buttons: pointer → command at once without moving focus; keyboard activation → click with detail 0
   const onControlPointer = (event: PointerEvent) => {
@@ -291,6 +375,7 @@ function boot(): void {
     if (!button || !controls.contains(button)) return;
     event.preventDefault();
     if (!event.isPrimary) return;
+    audio.unlock();
     if (button === pauseButton) { togglePlayerPause(); return; }
     const command = commandForButton(button.getAttribute('data-control'));
     if (command) issue(command);
@@ -306,7 +391,11 @@ function boot(): void {
 
   // swipes on the play area (buttons live outside it, so a tap on a button is never a swipe)
   const sample = (event: PointerEvent) => ({ pointerId: event.pointerId, x: event.clientX, y: event.clientY, t: event.timeStamp });
-  const onPointerDown = (event: PointerEvent) => { if (event.isPrimary && canPlay()) swipes.down(sample(event)); };
+  const onPointerDown = (event: PointerEvent) => {
+    if (!event.isPrimary) return;
+    audio.unlock();
+    if (canPlay()) swipes.down(sample(event));
+  };
   const onPointerMove = (event: PointerEvent) => { const command = swipes.move(sample(event)); if (command) issue(command); };
   const onPointerUp = (event: PointerEvent) => { const command = swipes.up(sample(event)); if (command) issue(command); };
   const onPointerCancel = (event: PointerEvent) => swipes.cancel(event.pointerId);
@@ -331,6 +420,7 @@ function boot(): void {
       if (detail.status === 'EMPTY') result = { status: 'EMPTY' };
       else if (detail.status === 'FOUND') result = { status: 'FOUND', saveVersion: detail.saveVersion, data: detail.data };
       sendWrite(session.onLoad(result));
+      if (session.saveStatus === 'UNAVAILABLE' || session.saveStatus === 'PROTECTED') announce('Progression locale non enregistrée pour cette session.');
     } else if (detail.op === 'WRITE') {
       sendWrite(session.onWriteResult(detail.status === 'SAVED'));
     }
@@ -364,6 +454,7 @@ function boot(): void {
     [window, 'keydown', onKey as EventListener],
     [action, 'click', onAction],
     [secondary, 'click', onSecondary],
+    [muteButton, 'click', onMute],
     [controls, 'pointerdown', onControlPointer as EventListener],
     [controls, 'click', onControlClick as EventListener],
     [viewport, 'pointerdown', onPointerDown as EventListener],
@@ -376,6 +467,10 @@ function boot(): void {
     stopLoop();
     queue.clear();
     pause.clear();
+    audio.dispose();
+    window.clearTimeout(toastTimer);
+    toastTimer = 0;
+    toast.hidden = true;
     sim.status = 'STOPPED';
     for (const [target, type, listener] of bindings) target.removeEventListener(type, listener);
     listeners = 0;
@@ -404,6 +499,10 @@ function boot(): void {
         canvas: document.querySelectorAll('canvas').length, overlay: overlay.hidden ? '' : overlayTitle.textContent, view: view?.info() ?? null,
         runId, profile: JSON.parse(JSON.stringify(session.profile)), saveStatus: session.saveStatus, writeStatus: session.writeStatus, writes,
         controlsVisible: !controls.hidden,
+        audio: { state: audio.state, muted: audio.muted, activeVoices: audio.activeVoices, played: audio.played, unlockAttempts: audio.unlockAttempts, history: audio.history() },
+        effects: root.getAttribute('data-effects'), webgl: root.getAttribute('data-webgl'), announced: [...announced],
+        toast: toast.hidden ? '' : toast.textContent, toastTimer: toastTimer !== 0,
+        focus: document.activeElement?.id || document.activeElement?.tagName || null,
       }),
       /** manual clock: the loop keeps rendering but only advance() moves the simulation */
       setManual: (value: boolean) => { manual = value === true; stepper.reset(); },

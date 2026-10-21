@@ -12,12 +12,14 @@
 </head>
 <body>
 <main class="sr-app" aria-labelledby="sr-title">
-  <div class="sr-viewport" id="sr-viewport"></div>
+  <div class="sr-viewport" id="sr-viewport" role="img" tabindex="-1" aria-label="Vue 3D de Synapse Run : un personnage lumineux court sur trois couloirs vers des blocs bas à sauter, des portiques à franchir en glissade et des éclats d’énergie à ramasser."></div>
   <header class="sr-hud">
     <h1 id="sr-title" class="sr-title">Synapse Run</h1>
     <p class="sr-stats"><span id="sr-distance">0 m</span><span id="sr-shards">0 éclat</span><span id="sr-score">Score 0</span></p>
   </header>
-  <section class="sr-overlay" id="sr-overlay" aria-live="polite">
+  <p class="sr-toast" id="sr-toast" hidden></p>
+  <p class="sr-visually-hidden" id="sr-announce" role="status" aria-live="polite" aria-atomic="true"></p>
+  <section class="sr-overlay" id="sr-overlay" aria-labelledby="sr-overlay-title">
     <p class="sr-overlay-title" id="sr-overlay-title">Synapse Run</p>
     <p class="sr-overlay-text" id="sr-overlay-text">Chargement…</p>
     <p class="sr-overlay-detail" id="sr-overlay-detail" hidden></p>
@@ -37,6 +39,8 @@
     <button type="button" class="sr-control" data-control="jump" aria-label="Saut"><span aria-hidden="true">▲</span></button>
     <button type="button" class="sr-control" data-control="right" aria-label="Couloir de droite"><span aria-hidden="true">▶</span></button>
   </nav>
+  <!-- after the menus and controls in tab order (the main action comes first); shown top-right by CSS -->
+  <button type="button" class="sr-mute" id="sr-mute" aria-pressed="false" aria-label="Couper le son" hidden>Son activé</button>
   <footer class="sr-footer">
     <p class="sr-status" id="sr-status" role="status">État : en attente de Docteur</p>
     <p class="sr-save" id="sr-save">Sauvegarde locale : non vérifiée</p>

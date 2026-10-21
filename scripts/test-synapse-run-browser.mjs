@@ -126,7 +126,8 @@ try {
     await page.keyboard.press('Enter');
     await frameOf(page).waitForFunction(() => window.__synapseRunTest.snapshot().status === 'RUNNING');
     const a = await snap(page);
-    await page.waitForTimeout(700);
+    // [GAME-6] wait for real progress instead of a fixed 700 ms window (software rendering warms up for ~1 s)
+    await frameOf(page).waitForFunction(t => window.__synapseRunTest.snapshot().tick > t + 10, a.tick);
     const b = await snap(page);
     ok(b.tick > a.tick + 10 && b.distance > a.distance && b.score >= a.score, JSON.stringify({ a: a.tick, b: b.tick }));
     eq(await frameOf(page).locator('#sr-distance').innerText(), `${Math.floor((await snap(page)).distance)} m`);
@@ -245,10 +246,13 @@ try {
     await page.getByTestId('arcade-pause-toggle').click();
     await waitPhase(page, 'active');
     const c = await snap(page);
-    await page.waitForTimeout(300);
+    const resumedAt = Date.now();
+    // [GAME-6] wait for progress, then bound it by the real time elapsed (no catch-up of the paused 800 ms)
+    await frameOf(page).waitForFunction(t => window.__synapseRunTest.snapshot().tick > t + 3, c.tick);
     const d = await snap(page);
+    const elapsed = Date.now() - resumedAt;
     ok(c.tick - b.tick <= 6, `no jump on resume (${c.tick - b.tick})`);
-    ok(d.tick > c.tick && d.tick - c.tick < 40, `continues at real speed (${d.tick - c.tick} ticks in 300 ms)`);
+    ok(d.tick > c.tick && d.tick - c.tick <= Math.ceil((elapsed * 60) / 1000) + 6, `continues at real speed (${d.tick - c.tick} ticks in ${elapsed} ms)`);
     eq(d.status, 'RUNNING');
   });
 
@@ -291,11 +295,11 @@ try {
     await page.keyboard.press('ArrowLeft');
     await hook(page, 'advance', LANE_CHANGE_TICKS);
     eq((await snap(page)).lane, 0);
-    // [GAME-5] Tab first visits the on-screen controls (5 buttons), then leaves the frame
+    // [GAME-5] Tab first visits the on-screen controls (5 buttons) [GAME-6] and the mute toggle, then leaves the frame
     let out = 0;
     while (out < 8 && !(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement))) { await page.keyboard.press('Tab'); out++; }
     eq(await page.getByTestId('arcade-pause-toggle').evaluate(el => el === document.activeElement), true, 'Tab leaves the frame');
-    ok(out <= 6, `left the frame after ${out} Tab presses`);
+    ok(out <= 7, `left the frame after ${out} Tab presses`);
     await page.keyboard.press('ArrowRight');
     await hook(page, 'advance', LANE_CHANGE_TICKS);
     eq((await snap(page)).lane, 0);
@@ -328,7 +332,7 @@ try {
     await frameOf(page).locator('#sr-action').focus();
     await page.keyboard.press('Enter');
     await page.waitForTimeout(300);
-    eq((await snap(page)).listeners, 10); // [GAME-5] keyboard, 2 overlay buttons, 2 control-bar, 4 pointer, visibility
+    eq((await snap(page)).listeners, 11); // [GAME-5] keyboard, 2 overlay buttons, 2 control-bar, 4 pointer, visibility; [GAME-6] mute
     // the host's own STOP command, delivered while the frame still exists
     await page.evaluate(() => {
       const frame = document.querySelector('[data-testid="arcade-frame"]');
@@ -366,8 +370,11 @@ try {
     const s = await snap(page);
     const frameBox = await page.getByTestId('arcade-frame').boundingBox();
     const canvas = await frameOf(page).evaluate(() => { const c = document.querySelector('canvas'); return { w: c.width, h: c.height, cw: c.clientWidth, ch: c.clientHeight, sw: document.documentElement.scrollWidth, iw: innerWidth }; });
-    eq(s.view.pixelRatio, 2);
-    eq([canvas.w, canvas.h], [canvas.cw * 2, canvas.ch * 2]);
+    // [GAME-6] DPR 3 is capped at 2 on hardware and at 1 on a software renderer (these tests run on SwiftShader)
+    eq(s.view.software, /swiftshader/i.test(s.view.renderer), 'software renderer detected from the WebGL renderer string');
+    const cap = s.view.software ? 1 : 2;
+    eq(s.view.pixelRatio, cap);
+    eq([canvas.w, canvas.h], [canvas.cw * cap, canvas.ch * cap]);
     ok(canvas.cw <= Math.ceil(frameBox.width) && canvas.sw <= canvas.iw);
     eq(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     const overlay = await frameOf(page).locator('#sr-overlay').boundingBox();

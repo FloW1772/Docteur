@@ -18,6 +18,13 @@
 .arc-frame { box-sizing: border-box; display: block; width: 100%; height: clamp(240px, 52vh, 460px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: #0a0814; }
 .arc-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .arc-alert { margin: 0; border-radius: 6px; padding: 10px 12px; font-size: 12px; border: 1px solid rgba(248,113,113,0.55); background: rgba(248,113,113,0.08); color: #fecaca; }
+/* [GAME-6] While a game frame is running or paused, the shell's glass blur would be recomputed on every game frame
+   (its content changes 60 times a second); on CPU compositors that alone tripled the frame time. During play only,
+   the shell uses an almost opaque surface instead. Other studios and the idle Arcade keep the glass look. */
+.studio-shell:has(.arc-host[data-phase="active"]),
+.studio-shell:has(.arc-host[data-phase="paused"]) { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(10, 8, 20, 0.94); }
+.modal-backdrop:has(.arc-host[data-phase="active"]),
+.modal-backdrop:has(.arc-host[data-phase="paused"]) { backdrop-filter: none; -webkit-backdrop-filter: none; }
 /* [GAME-3] local save status + two-step reset inside a game card */
 .arc-save, .arc-confirm { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; max-width: 100%; }
 .arc-save .arc-muted:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
