@@ -1,4 +1,6 @@
-// [GAME-2] Synapse Run — foundation screen only (no gameplay; GAME-4 adds it).
+// [GAME-2] Synapse Run — host protocol shell. [GAME-4] The game itself is game.js (bundled from
+// src/arcade/synapse-run/), loaded just before this file; each validated host command is forwarded to it as a
+// same-document "synapse-run:host" event. The game never sees raw host messages.
 // Runs inside <iframe sandbox="allow-scripts"> with an opaque origin and the page CSP (connect-src 'none').
 // The only channel is the Docteur Arcade postMessage protocol v1 (src/lib/arcade/protocol.ts):
 //   host → game : ARCADE_INIT {reducedMotion} · ARCADE_PAUSE {} · ARCADE_RESUME {} · ARCADE_STOP {}
@@ -59,6 +61,12 @@
 
   function keys(o) { return Object.keys(o).sort().join(','); }
 
+  // [GAME-4] hand a validated command to game.js (absent in the Node test harness: no DOM events there)
+  function notifyGame(type, reducedMotion) {
+    if (typeof document.dispatchEvent !== 'function' || typeof CustomEvent !== 'function') return;
+    document.dispatchEvent(new CustomEvent('synapse-run:host', { detail: { type: type, reducedMotion: reducedMotion === true } }));
+  }
+
   // Strict shape check: anything else is ignored (no dynamic dispatch, no eval).
   function isLoadResult(d) {
     if (keys(d) !== 'channel,gameId,instanceId,payload,requestId,type,v' || d.type !== 'ARCADE_SAVE_RESULT') return false;
@@ -92,14 +100,16 @@
       if (state !== 'waiting') return;
       root.setAttribute('data-reduced-motion', d.payload.reducedMotion ? 'true' : 'false');
       setState('active');
+      notifyGame('INIT', d.payload.reducedMotion);
       pendingLoad = nextRequestId();
       send('ARCADE_SAVE_LOAD', {}, pendingLoad);
     } else if (d.type === 'ARCADE_PAUSE') {
-      if (state === 'active') setState('paused');
+      if (state === 'active') { setState('paused'); notifyGame('PAUSE'); }
     } else if (d.type === 'ARCADE_RESUME') {
-      if (state === 'paused') setState('active');
+      if (state === 'paused') { setState('active'); notifyGame('RESUME'); }
     } else if (d.type === 'ARCADE_STOP') {
       setState('stopped');
+      notifyGame('STOP');
     }
   });
 

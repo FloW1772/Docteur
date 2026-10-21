@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { arcadeGameBundlePlugin } from './vite-arcade-game-bundle.mjs';
 
 const GAME = 'synapse-run', KEY = 'arcade:v1:synapse-run', MARKER = 'SYNTHETIC-SAVE-MARKER';
 let browser, server, origin, assertions = 0;
@@ -32,7 +33,7 @@ async function scenario(name, run, { init, viewport = { width: 1280, height: 900
     const request = route.request(), url = new URL(request.url());
     network.requests++;
     if (fromGame(request)) {
-      if (url.origin !== origin || !/^\/arcade\/synapse-run\/(index\.html|foundation\.(js|css))$/.test(url.pathname)) { network.unexpectedGameRequests.push(url.href); return route.abort('blockedbyclient'); }
+      if (url.origin !== origin || !/^\/arcade\/synapse-run\/(index\.html|foundation\.(js|css)|game\.js)$/.test(url.pathname)) { network.unexpectedGameRequests.push(url.href); return route.abort('blockedbyclient'); }
       network.gameAssets++;
       return route.continue();
     }
@@ -135,10 +136,10 @@ async function dropped(page, send) {
 }
 
 try {
-  server = await createServer({ configFile: false, plugins: [react()], cacheDir: '.tmp/vite-arcade-save-tests', optimizeDeps: { entries: ['scripts/arcade-save-harness.jsx'] }, server: { watch: null, host: '127.0.0.1', port: 0, hmr: false }, logLevel: 'error' });
+  server = await createServer({ configFile: false, plugins: [react(), arcadeGameBundlePlugin()], cacheDir: '.tmp/vite-arcade-save-tests', optimizeDeps: { entries: ['scripts/arcade-save-harness.jsx'] }, server: { watch: null, host: '127.0.0.1', port: 0, hmr: false }, logLevel: 'error' });
   await server.listen();
   origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
   await scenario('1-2 foundation launches under the unchanged GAME-2 sandbox (no allow-same-origin)', async page => {
     await launch(page);

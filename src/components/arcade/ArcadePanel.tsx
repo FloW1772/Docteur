@@ -1,5 +1,5 @@
 // [GAME-2] Docteur Arcade — opt-in module: the fixed game list (src/lib/arcade/registry.ts) and, once launched,
-// the sandboxed host. No gameplay yet (GAME-4); the panel says so instead of pretending.
+// the sandboxed host. [GAME-4] The badges follow the registry status, so a foundation-only game never looks playable.
 // [GAME-3] Each savable game's card shows its local save status (never its contents) and offers an explicit,
 // two-step reset of THAT game's save only.
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -116,8 +116,8 @@ export default function ArcadePanel() {
             <li key={game.id} className="arc-card" data-testid={`arcade-game-${game.id}`} data-status={game.status}>
               <div className="arc-card-head">
                 <h3>{game.title}</h3>
-                <span className="arc-badge">Fondation technique</span>
-                <span className="arc-badge muted">Jeu à venir ({game.nextMilestone})</span>
+                <span className="arc-badge">{game.status === 'PLAYABLE_CORE' ? 'Jouable' : 'Fondation technique'}</span>
+                <span className="arc-badge muted">{game.availability === 'PLAYABLE_PREVIEW' ? `Version préliminaire · suite : ${game.nextMilestone}` : `Jeu à venir (${game.nextMilestone})`}</span>
               </div>
               <p className="arc-muted">{game.description}</p>
               {game.save && <GameSaveControls game={game} />}
@@ -128,7 +128,7 @@ export default function ArcadePanel() {
                 ref={el => { if (el) launchButtons.current.set(game.id, el); else launchButtons.current.delete(game.id); }}
                 onClick={() => launch(game.id)}
               >
-                Lancer la fondation {game.title}
+                {game.status === 'PLAYABLE_CORE' ? `Jouer à ${game.title}` : `Lancer la fondation ${game.title}`}
               </button>
             </li>
           ))}

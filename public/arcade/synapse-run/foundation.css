@@ -1,4 +1,5 @@
-/* [GAME-2] Synapse Run foundation screen — original CSS geometry only, no images, no fonts, no remote assets. */
+/* [GAME-2] Synapse Run page — original CSS only, no images, no fonts, no remote assets.
+   [GAME-4] Layout for the playable core: full-frame WebGL viewport, HUD, centred overlay, compact footer. */
 :root {
   color-scheme: dark;
   --sr-bg: #0a0814;
@@ -14,64 +15,46 @@ body {
   background: radial-gradient(120% 90% at 50% 0%, #1b1436 0%, var(--sr-bg) 62%);
   color: var(--sr-text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  display: grid;
-  place-items: center;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
 }
-.sr-stage {
-  width: min(520px, 100%);
-  padding: 20px 16px;
-  text-align: center;
+.sr-app { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.sr-viewport { position: absolute; inset: 0; }
+.sr-canvas { display: block; width: 100%; height: 100%; }
+.sr-hud {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px;
+  padding: 8px 12px; pointer-events: none;
+  background: linear-gradient(180deg, rgba(10, 8, 20, 0.85), rgba(10, 8, 20, 0));
 }
-.sr-emblem { position: relative; width: 132px; height: 76px; margin: 0 auto 14px; }
-.sr-node {
-  position: absolute;
-  width: 22px;
-  height: 22px;
-  background: var(--sr-cyan);
-  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+.sr-title { margin: 0; font-size: 1rem; letter-spacing: 0.06em; }
+.sr-stats { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.sr-stats span:nth-child(2) { color: var(--sr-cyan); }
+.sr-stats span:nth-child(3) { color: var(--sr-green); }
+.sr-overlay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(420px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto;
+  padding: 14px 16px; text-align: center;
+  background: rgba(16, 12, 32, 0.88); border: 1px solid rgba(94, 231, 255, 0.35); border-radius: 10px;
 }
-.sr-node--a { left: 0; top: 46px; }
-.sr-node--b { left: 55px; top: 4px; background: var(--sr-green); }
-.sr-node--c { right: 0; top: 46px; }
-.sr-link {
-  position: absolute;
-  height: 2px;
-  width: 64px;
-  background: linear-gradient(90deg, var(--sr-cyan), var(--sr-green));
-  transform-origin: 0 50%;
-  opacity: 0.8;
+.sr-overlay[hidden] { display: none; }
+.sr-overlay-title { margin: 0; font-size: 1.2rem; font-weight: 700; }
+.sr-overlay-text { margin: 8px 0 0; color: var(--sr-muted); line-height: 1.45; overflow-wrap: anywhere; }
+.sr-action {
+  margin-top: 12px; padding: 8px 18px; font: inherit; font-weight: 700; cursor: pointer;
+  color: var(--sr-bg); background: var(--sr-cyan); border: 0; border-radius: 6px;
 }
-.sr-link--ab { left: 14px; top: 52px; transform: rotate(-36deg); }
-.sr-link--bc { left: 70px; top: 15px; transform: rotate(36deg); }
-.sr-title { margin: 0; font-size: clamp(1.6rem, 7vw, 2.4rem); letter-spacing: 0.04em; }
-.sr-badge {
-  display: inline-block;
-  margin: 10px 0 0;
-  padding: 4px 10px;
-  border: 1px solid var(--sr-green);
-  border-radius: 999px;
-  color: var(--sr-green);
-  font-size: 0.85rem;
+.sr-action[hidden] { display: none; }
+.sr-action:focus-visible { outline: 3px solid var(--sr-amber); outline-offset: 2px; }
+.sr-keys { margin: 10px 0 0; color: var(--sr-muted); font-size: 0.75rem; line-height: 1.4; }
+.sr-footer {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 6px 12px;
+  font-size: 0.72rem; color: var(--sr-muted); pointer-events: none;
+  background: linear-gradient(0deg, rgba(10, 8, 20, 0.85), rgba(10, 8, 20, 0));
 }
-.sr-lead { margin: 14px 0 0; color: var(--sr-muted); line-height: 1.45; }
-.sr-status { margin: 12px 0 0; font-weight: 600; }
-.sr-save { margin: 6px 0 0; color: var(--sr-muted); font-size: 0.85rem; }
-.sr-note { margin: 16px 0 0; color: var(--sr-muted); font-size: 0.78rem; }
-
+.sr-footer p { margin: 0; }
+.sr-status { font-weight: 600; color: var(--sr-text); }
 html[data-state="paused"] .sr-status { color: var(--sr-amber); }
-html[data-state="stopped"] .sr-status { color: var(--sr-muted); }
-
-/* Decorative pulse only while active, never under reduced motion (OS setting or the host's INIT flag). */
-@media (prefers-reduced-motion: no-preference) {
-  html[data-state="active"]:not([data-reduced-motion="true"]) .sr-node {
-    animation: sr-pulse 2.4s ease-in-out infinite;
-  }
-  .sr-node--b { animation-delay: 0.4s; }
-  .sr-node--c { animation-delay: 0.8s; }
-}
-@keyframes sr-pulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
+@media (max-width: 420px) {
+  .sr-keys, .sr-note { display: none; }
 }

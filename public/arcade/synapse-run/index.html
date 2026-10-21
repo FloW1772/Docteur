@@ -11,21 +11,26 @@
 <link rel="stylesheet" href="./foundation.css">
 </head>
 <body>
-<main class="sr-stage" aria-labelledby="sr-title">
-  <div class="sr-emblem" aria-hidden="true">
-    <span class="sr-node sr-node--a"></span>
-    <span class="sr-node sr-node--b"></span>
-    <span class="sr-node sr-node--c"></span>
-    <span class="sr-link sr-link--ab"></span>
-    <span class="sr-link sr-link--bc"></span>
-  </div>
-  <h1 id="sr-title" class="sr-title">Synapse Run</h1>
-  <p class="sr-badge">Bac à sable Arcade actif</p>
-  <p class="sr-lead">Fondation technique uniquement : le jeu arrivera avec GAME-4.</p>
-  <p class="sr-status" id="sr-status" role="status">État : en attente de Docteur</p>
-  <p class="sr-save" id="sr-save">Sauvegarde locale : non vérifiée</p>
-  <p class="sr-note">Projet original · aucun réseau · aucune donnée Docteur</p>
+<main class="sr-app" aria-labelledby="sr-title">
+  <div class="sr-viewport" id="sr-viewport"></div>
+  <header class="sr-hud">
+    <h1 id="sr-title" class="sr-title">Synapse Run</h1>
+    <p class="sr-stats"><span id="sr-distance">0 m</span><span id="sr-shards">0 éclat</span><span id="sr-score">Score 0</span></p>
+  </header>
+  <section class="sr-overlay" id="sr-overlay" aria-live="polite">
+    <p class="sr-overlay-title" id="sr-overlay-title">Synapse Run</p>
+    <p class="sr-overlay-text" id="sr-overlay-text">Chargement…</p>
+    <button type="button" class="sr-action" id="sr-action" hidden>Démarrer</button>
+    <p class="sr-keys">← → ou A D : couloir · ↑, W ou Espace : saut · ↓ ou S : glissade · Entrée : démarrer / rejouer</p>
+  </section>
+  <footer class="sr-footer">
+    <p class="sr-status" id="sr-status" role="status">État : en attente de Docteur</p>
+    <p class="sr-save" id="sr-save">Sauvegarde locale : non vérifiée</p>
+    <p class="sr-note">Projet original · aucun réseau · aucune donnée Docteur</p>
+  </footer>
 </main>
+<!-- [GAME-4] game.js (bundled game + three, built locally) runs first; foundation.js (host protocol) then sends READY. -->
+<script src="./game.js"></script>
 <script src="./foundation.js"></script>
 </body>
 </html>

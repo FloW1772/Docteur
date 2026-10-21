@@ -34,7 +34,7 @@ try {
     for (const key of await caches.keys()) for (const req of await (await caches.open(key)).keys()) urls.push(req.url);
     return urls;
   });
-  for (const file of ['index.html', 'foundation.js', 'foundation.css']) ok(cached.some(url => new URL(url).pathname === `/arcade/synapse-run/${file}`), `${file} precached`);
+  for (const file of ['index.html', 'foundation.js', 'foundation.css', 'game.js']) ok(cached.some(url => new URL(url).pathname === `/arcade/synapse-run/${file}`), `${file} precached`);
   eq(cached.some(url => new URL(url).pathname.startsWith('/api/') || new URL(url).port === '3001'), false, 'no API cache');
 
   // The production App.tsx (not the focused harness) uses its central opener and lazy StudioShell mount.

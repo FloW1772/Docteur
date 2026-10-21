@@ -3,6 +3,8 @@ import { resolve } from 'path';
 import { defineConfig, type ViteDevServer, type PreviewServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+// [GAME-4] bundles the Synapse Run game + local three into /arcade/synapse-run/game.js (classic script, no CDN)
+import { arcadeGameBundlePlugin } from './scripts/vite-arcade-game-bundle.mjs';
 
 // LOCAL_NETWORK=true → Vite binds to 0.0.0.0 so mobile devices can connect.
 const localNetwork = process.env.LOCAL_NETWORK === 'true';
@@ -56,6 +58,7 @@ export default defineConfig(({ command, isPreview }) => {
   plugins: [
     react(),
     ...(localNetwork ? [] : [loopbackOnlyPlugin()]),
+    arcadeGameBundlePlugin(),
     VitePWA({
       // 'prompt' (not 'autoUpdate'): an update must never force a silent
       // window.location.reload() while the user has an operation in flight

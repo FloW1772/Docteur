@@ -17,7 +17,7 @@ const event = (type, payload = {}) => ({ channel: 'docteur-arcade', v: 1, ...exp
 test('registry: exactly one immutable original foundation, local approved route only', () => {
   assert.equal(ARCADE_GAMES.length, 1);
   const game = ARCADE_GAMES[0];
-  assert.deepEqual([game.id, game.title, game.route, game.status, game.availability], ['synapse-run', 'Synapse Run', '/arcade/synapse-run/index.html', 'FOUNDATION_ONLY', 'COMING_NEXT']);
+  assert.deepEqual([game.id, game.title, game.route, game.status, game.availability], ['synapse-run', 'Synapse Run', '/arcade/synapse-run/index.html', 'PLAYABLE_CORE', 'PLAYABLE_PREVIEW']);
   assert.ok(Object.isFrozen(ARCADE_GAMES) && Object.isFrozen(game) && Object.isFrozen(game.capabilities));
   assert.equal(getArcadeGame('synapse-run'), game);
   for (const bad of [null, {}, '../synapse-run', 'https://example.invalid', 'other']) assert.equal(getArcadeGame(bad), null);
@@ -39,7 +39,7 @@ test('standalone page keeps the exact restrictive page CSP and only local bootst
   const html = fs.readFileSync(new URL('../public/arcade/synapse-run/index.html', import.meta.url), 'utf8');
   const policy = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)[1];
   assert.equal(policy, "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'");
-  assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]), ['./foundation.css', './foundation.js']);
+  assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]), ['./foundation.css', './game.js', './foundation.js']);
 });
 
 test('game protocol accepts every exact allowed payload', () => {

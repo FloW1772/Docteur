@@ -4,11 +4,14 @@
 
 export type ArcadeGameId = 'synapse-run';
 
-/** FOUNDATION_ONLY = the sandboxed page and the host protocol exist, there is no gameplay yet. */
-export type ArcadeGameStatus = 'FOUNDATION_ONLY';
+/**
+ * FOUNDATION_ONLY = the sandboxed page and the host protocol exist, no gameplay.
+ * PLAYABLE_CORE [GAME-4] = a real run can be played (keyboard), without progression or saved results yet.
+ */
+export type ArcadeGameStatus = 'FOUNDATION_ONLY' | 'PLAYABLE_CORE';
 
-/** What the player can expect next; COMING_NEXT = announced, not playable. */
-export type ArcadeGameAvailability = 'COMING_NEXT';
+/** What the player can expect; COMING_NEXT = announced, not playable; PLAYABLE_PREVIEW = playable early version. */
+export type ArcadeGameAvailability = 'COMING_NEXT' | 'PLAYABLE_PREVIEW';
 
 /**
  * What the page may do with the host. Nothing here grants network or Docteur data. LOCAL_SAVE_V1 [GAME-3] lets the
@@ -42,11 +45,11 @@ export const ARCADE_GAMES: readonly ArcadeGameEntry[] = Object.freeze([
   Object.freeze({
     id: 'synapse-run',
     title: 'Synapse Run',
-    description: 'Course sans fin en 3D low-poly, projet original de Docteur. Seule la fondation technique est en place : le bac à sable démarre, le jeu n’est pas encore jouable.',
+    description: 'Course sans fin en 3D low-poly, projet original de Docteur : trois couloirs, sauts, glissades, éclats à ramasser. Version préliminaire jouable au clavier ; pas encore de progression ni de résultats conservés.',
     route: '/arcade/synapse-run/index.html',
-    status: 'FOUNDATION_ONLY',
-    availability: 'COMING_NEXT',
-    nextMilestone: 'GAME-4',
+    status: 'PLAYABLE_CORE',
+    availability: 'PLAYABLE_PREVIEW',
+    nextMilestone: 'GAME-5',
     capabilities: Object.freeze(['HOST_PROTOCOL_V1', 'PAUSE_RESUME', 'REDUCED_MOTION', 'LOCAL_SAVE_V1'] as const),
     save: Object.freeze({ currentVersion: 1, minSupportedVersion: 1 }),
   }),

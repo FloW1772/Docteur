@@ -1,9 +1,11 @@
 // A-L, O-P; M-N are exercised against the built service worker by test-arcade-production.mjs.
+// [GAME-4] The page now also loads game.js (bundled by scripts/vite-arcade-game-bundle.mjs, production flags).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright';
+import { arcadeGameBundlePlugin } from './vite-arcade-game-bundle.mjs';
 
 let browser, server, assertions = 0;
 const scenarios = [];
@@ -14,10 +16,10 @@ const html = '<!doctype html><meta name="viewport" content="width=device-width,i
 const network = { requests: [], responses: [], failed: [], routedProbes: [], unexpectedGameRequests: [] };
 const watchdog = setTimeout(() => { console.error('Arcade browser deadline'); process.exit(1); }, 120_000);
 try {
-  server = await createServer({ configFile: false, plugins: [react()], cacheDir: '.tmp/vite-arcade-tests', optimizeDeps: { entries: ['scripts/arcade-harness.jsx'] }, server: { watch: null, host: '127.0.0.1', port: 0, hmr: false }, logLevel: 'error' });
+  server = await createServer({ configFile: false, plugins: [react(), arcadeGameBundlePlugin()], cacheDir: '.tmp/vite-arcade-tests', optimizeDeps: { entries: ['scripts/arcade-harness.jsx'] }, server: { watch: null, host: '127.0.0.1', port: 0, hmr: false }, logLevel: 'error' });
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
@@ -46,7 +48,7 @@ try {
   });
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
-    if (fromGame(request) && (url.origin !== origin || !/^\/arcade\/synapse-run\/(index\.html|foundation\.(js|css))$/.test(url.pathname))) {
+    if (fromGame(request) && (url.origin !== origin || !/^\/arcade\/synapse-run\/(index\.html|foundation\.(js|css)|game\.js)$/.test(url.pathname))) {
       network.unexpectedGameRequests.push(url.href); return route.abort('blockedbyclient');
     }
     if (url.pathname === '/__arcade_test') return route.fulfill({ contentType: 'text/html', body: html });
@@ -84,8 +86,8 @@ try {
   });
   await scenario('B fixed registry foundation only', async () => {
     eq(await page.getByTestId('arcade-game-list').locator('li').count(), 1);
-    eq(await page.getByTestId('arcade-game-synapse-run').getAttribute('data-status'), 'FOUNDATION_ONLY');
-    ok((await page.getByTestId('arcade-game-list').innerText()).includes('GAME-4'));
+    eq(await page.getByTestId('arcade-game-synapse-run').getAttribute('data-status'), 'PLAYABLE_CORE');
+    ok((await page.getByTestId('arcade-game-list').innerText()).includes('GAME-5'));
     baseline = await resources();
   });
   await scenario('C actual sandbox foundation and pause/resume', async () => {

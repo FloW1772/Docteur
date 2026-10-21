@@ -53,7 +53,7 @@ type HostError = 'NO_RESPONSE' | 'UNEXPECTED_NAVIGATION' | 'GAME_RUNTIME_ERROR';
 
 const PHASE_STATUS: Record<HostPhase, { label: string; tone: StudioStatusTone }> = {
   loading: { label: 'Démarrage du bac à sable…', tone: 'neutral' },
-  active: { label: 'Fondation active', tone: 'active' },
+  active: { label: 'Jeu actif', tone: 'active' },
   paused: { label: 'En pause', tone: 'warning' },
   stopped: { label: 'Arrêté', tone: 'neutral' },
   error: { label: 'Fermé par sécurité', tone: 'error' },
@@ -214,7 +214,7 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         <button type="button" className="arc-btn danger" data-testid="arcade-stop" onClick={stop}>Arrêter</button>
       </div>
       <p className="arc-muted" role="status" data-testid="arcade-save-status">{saveNote ?? 'Sauvegarde locale : en attente du jeu'}</p>
-      <p className="arc-muted">Fondation technique : aucune partie à jouer pour l’instant. Tab entre dans le cadre du jeu et en ressort.</p>
+      <p className="arc-muted">Clavier : cliquez dans le jeu ou atteignez-le avec Tab, puis ← → (ou A D) pour changer de couloir, ↑ / W / Espace pour sauter, ↓ / S pour glisser, Entrée pour démarrer ou rejouer. Tab en ressort.</p>
     </section>
   );
 }
