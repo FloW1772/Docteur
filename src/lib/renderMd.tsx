@@ -9,6 +9,7 @@
 
 import React from 'react';
 import MediaOpenButton from '../components/media/MediaOpenButton';
+import VideoDownloadButton from '../components/media/VideoDownloadButton';
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
@@ -123,8 +124,8 @@ export function renderInline(
     } else if (m[11]) {
       // [text](url) — only http/https
       nodes.push(onOpenMedia
-        ? <span key={k}><InlineLink href={m[13]}>{m[12]}</InlineLink><MediaOpenButton href={m[13]} onOpen={onOpenMedia} /></span>
-        : <InlineLink key={k} href={m[13]}>{m[12]}</InlineLink>); // legacy callers: unchanged DOM
+        ? <span key={k}><InlineLink href={m[13]}>{m[12]}</InlineLink><MediaOpenButton href={m[13]} onOpen={onOpenMedia} /><VideoDownloadButton href={m[13]} /></span>
+        : <span key={k}><InlineLink href={m[13]}>{m[12]}</InlineLink><VideoDownloadButton href={m[13]} /></span>);
     } else if (m[14]) {
       // raw URL
       const href = stripTrail(m[14]);
@@ -135,6 +136,7 @@ export function renderInline(
           <InlineLink href={href}>{href}</InlineLink>
           {ytId && onPlayVideo && <YtButton ytId={ytId} onPlayVideo={onPlayVideo} />}
           {onOpenMedia && <MediaOpenButton href={href} onOpen={onOpenMedia} />}
+          <VideoDownloadButton href={href} />
           {after || null}
         </span>,
       );
