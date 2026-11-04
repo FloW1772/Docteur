@@ -8,6 +8,7 @@ function startNativeDownload(url: string, filename: string): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
+  anchor.target = '_blank';
   anchor.rel = 'noopener noreferrer';
   anchor.style.display = 'none';
   document.body.appendChild(anchor);
@@ -40,12 +41,13 @@ export default function VideoDownloadButton({ href }: { href: string }) {
   }
 
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 5, verticalAlign: 'middle' }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 5, verticalAlign: 'middle', flexWrap: 'wrap' }}>
       <button
         type="button"
         data-testid="video-download-button"
         data-download-state={state}
-        onClick={handleClick}
+        onClick={e => { e.stopPropagation(); handleClick(); }}
+        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
         disabled={unavailable || state === 'STARTED'}
         aria-busy={false}
         aria-label={`${label} : ${availability.descriptor.title}`}
@@ -57,12 +59,12 @@ export default function VideoDownloadButton({ href }: { href: string }) {
           background: unavailable ? 'rgba(148,163,184,0.08)' : 'rgba(61,255,170,0.08)',
           color: unavailable ? '#8f86a8' : '#9fffc9',
           fontSize: 11, cursor: unavailable || state === 'STARTED' ? 'not-allowed' : 'pointer',
-          opacity: unavailable ? 0.82 : 1,
+          opacity: unavailable ? 0.82 : 1, whiteSpace: 'nowrap', flexShrink: 0,
         }}
       >
         <Download size={13} aria-hidden="true" />{label}
       </button>
-      {status && <span role="status" data-testid="video-download-status" style={{ fontSize: 11, color: state === 'ERROR' ? '#ff9b9b' : '#968bad' }}>{status}</span>}
+      {status && <span role="status" data-testid="video-download-status" style={{ minWidth: 0, fontSize: 11, color: state === 'ERROR' ? '#ff9b9b' : '#968bad' }}>{status}</span>}
     </span>
   );
 }
