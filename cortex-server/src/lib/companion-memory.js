@@ -105,6 +105,19 @@ export class CompanionMemory {
     return { memoryId, category, origin };
   }
 
+  /**
+   * [PAI-1] Preview-time check of a statement the person wants the Companion to remember. Writes nothing; the same
+   * rules are enforced again by rememberExplicit at execution. Returns a reason code, never the text.
+   */
+  rememberCheck(value) {
+    if (!this.preferences().memoryEnabled) return freezeDeep({ ok: false, reason: 'MEMORY_OFF' });
+    let text;
+    try { text = cleanText(value, limit('proposalValueChars'), 'value', { required: true }); } catch { return freezeDeep({ ok: false, reason: 'INVALID_TEXT' }); }
+    if (text.trim().replace(/\s+/g, ' ').length < 8) return freezeDeep({ ok: false, reason: 'INVALID_TEXT' });
+    if (detectSecretMemory(text).refused) return freezeDeep({ ok: false, reason: 'SECRET_SHAPE' });
+    return freezeDeep({ ok: true, privacyScope: defaultScopeFor('SENSITIVE') });
+  }
+
   // ── durable path 1: USER_EXPLICIT ────────────────────────────────────────
   /**
    * The user states a memory. provenance = { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT', sessionId?, evidenceRefs? }.
@@ -124,7 +137,8 @@ export class CompanionMemory {
       category, value: text, type, scope, sensitivity, confirmSensitive, origin: 'USER_EXPLICIT', approvalSource: NB5_APPROVAL_SOURCE.USER_EXPLICIT,
       metadata: (memoryId) => {
         this.#store.insertMetadata({ memoryId, category, privacyScope: scopeTo, origin: 'USER_EXPLICIT', sourceType: prov.sourceType, sessionId: prov.sessionId, evidenceRefs: prov.evidenceRefs, at: this.#store.at(), reviewAfter });
-        this.#store.audit('MEMORY_ADDED', 'MEMORY', memoryId, { details: { category, origin: 'USER_EXPLICIT', nb5Type: type, privacyScope: scopeTo, valueSha256: sha256Hex(text) } });
+        // [PAI-1] no hash of the statement: this audit outlives a forget, and a plain hash of a short text can be confirmed by guessing
+        this.#store.audit('MEMORY_ADDED', 'MEMORY', memoryId, { details: { category, origin: 'USER_EXPLICIT', nb5Type: type, privacyScope: scopeTo } });
       },
     });
     return this.view(out.memoryId);

@@ -16,7 +16,7 @@ import Database from 'better-sqlite3';
 
 import { initSqlite, getDatabase } from './src/lib/sqlite.js';
 import { createNotebookDocumentService } from './src/lib/notebook-documents.js';
-import { createMemoryService } from './src/lib/notebook-memory.js';
+import { createMemoryService, MIN_STATEMENT_CHARS } from './src/lib/notebook-memory.js';
 import { ensureMemorySchema } from './src/lib/notebook-memory-schema.js';
 import { COMPANION_MIGRATIONS, COMPANION_SCHEMA_VERSION, runCompanionMigrations, companionSchemaVersion, assertAdditiveSql } from './src/lib/companion-schema.js';
 import { CompanionStore } from './src/lib/companion-store.js';
@@ -25,6 +25,10 @@ import { COMPANION_ACTIVATION, COMPANION_CERTIFIED } from './src/lib/companion-b
 import { detectSecretMemory } from './src/lib/companion-secrets.js';
 import * as R from './src/lib/companion-action-registry.js';
 import { createCompanionActions, ACTION_AUDIT_EVENTS, ACTION_STATUS } from './src/lib/companion-actions.js';
+import { createCompanionUiService } from './src/lib/companion-ui-service.js';
+import { createCompanionUiRoute } from './src/routes/companion.js';
+import { createCompanionContextEngine } from './src/lib/companion-context.js';
+import { wireCompanionConversation } from './src/lib/wire-companion-conversation.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'comp5-'));
@@ -76,6 +80,194 @@ function fresh({ wrap = null, vectorProbe = null, vectorPurge = null, approvalTt
   return { store, mem, svc, vec, A, port };
 }
 const USER = { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT' };
+const REMEMBER = 'COMPANION.MEMORY.REMEMBER';
+
+test('REMEMBER: real NB-5 public service, UI gesture, preview, exact digest, one write, local retrieval, content-free audit', async () => {
+  const { store, mem, svc } = fresh();
+  const actions = createCompanionActions({ store, companion: mem });
+  const ui = createCompanionUiService({ store, companion: mem, actions });
+  const parameters = { category: 'USER_PREFERENCE', value: 'Je préfère les diagrammes violets sur le banc synthétique orchidée.' };
+  const count = () => getDatabase().prepare('SELECT COUNT(*) n FROM dmem_items').get().n;
+  const before = count();
+  const p = await ui.propose(REMEMBER, parameters);
+  assert.equal(p.proposedBy, 'USER'); assert.equal(p.confirmationKind, 'SIMPLE_CONFIRM');
+  assert.deepEqual(p.preview.parameters, parameters); assert.equal(count(), before);
+  assert.equal(actionText(store).includes(parameters.value), false, 'immutable action tables hold no raw text, even while pending');
+  await assert.rejects(actions.user.execute({ actionId: REMEMBER, parameters }), code('APPROVAL_REQUIRED'));
+  assert.throws(() => actions.user.approve(p.proposalId, { approvedBy: 'USER', digest: p.digest }), code('APPROVAL_REQUIRED'));
+  const session = await ui.openUiSession(); const ch = await ui.issueChallenge(session.uiSessionId, p.proposalId);
+  const intent = { proposalId: ch.proposalId, actionDigest: ch.actionDigest, confirmationKind: ch.confirmationKind, uiSessionId: ch.uiSessionId, nonce: ch.nonce, createdAt: new Date(clock()).toISOString(), gesture: { kind: 'KEYBOARD', trusted: true } };
+  const ap = await ui.submitIntent(intent);
+  await assert.rejects(ui.submitIntent(intent));
+  await assert.rejects(actions.user.execute({ actionId: REMEMBER, parameters: { ...parameters, value: 'Contenu différent après aperçu.' }, approvalId: ap.approvalId }), code('APPROVAL_DIGEST_MISMATCH'));
+  assert.equal(count(), before);
+  const results = await Promise.allSettled([1, 2].map(i => ui.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId, executionId: `remember-exec-${i}` })));
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  const result = results.find(r => r.status === 'fulfilled').value;
+  assert.equal(result.status, 'EXECUTED'); assert.equal(result.resultCode, 'MEMORY_REMEMBERED');
+  assert.equal(count(), before + 1);
+  const id = result.resultMetadata.memoryId; assert.equal(svc.getMemory(id).statement, parameters.value);
+  assert.equal(mem.view(id).companion.companionEnabled, true);
+  const ctx = createCompanionContextEngine({ companion: mem, memoryPort: svc });
+  const out = await ctx.assemble({ requestId: 'remember-query', userRequest: 'diagrammes violets orchidée', cloudAllowed: false });
+  assert.ok(out.localContext.blocks.find(b => b.type === 'MEMORY').items.some(i => i.provenance.primary.memoryId === id), JSON.stringify(out.exclusions));
+  assert.equal(JSON.stringify(actions.audit.list()).includes(parameters.value), false);
+  assert.equal(actions.audit.verify().ok, true);
+  const forgotten = await mem.forget(id); assert.equal(forgotten.status, 'COMPLETE');
+  assert.equal(actionText(store).includes(parameters.value), false, 'forget leaves no text in immutable action history');
+});
+
+test('REMEMBER: raw drafts are ephemeral, decided/expired proposals contain hashes only, restart fails closed without losing NB-5 memory', async () => {
+  const parameters = { category: 'USER_PREFERENCE', value: 'Le brouillon synthétique lavande reste temporaire.' };
+  for (const decision of ['cancel', 'reject', 'expire']) {
+    const { A, store } = fresh(); const p = A.user.propose({ actionId: REMEMBER, parameters });
+    assert.equal(actionText(store).includes(parameters.value), false);
+    if (decision === 'expire') { advance(R.ACTION_LIMITS.proposalTtlMs.value + 1); A.user.expireStale(); } else A.user[decision](p.proposalId);
+    assert.equal(JSON.stringify(A.user.getProposal(p.proposalId)).includes(parameters.value), false);
+    assert.equal(store.listMetadata().length, 0);
+  }
+  const { A, store, mem } = fresh(); const { p, ap } = await approved(A, REMEMBER, parameters);
+  const restarted = createCompanionActions({ store, companion: mem, approvalChannel: 'DIRECT_TEST_ONLY' });
+  assert.equal(restarted.user.getProposal(p.proposalId).previewStale, true);
+  await assert.rejects(restarted.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId }), code('PREVIEW_STALE', 'DRAFT_UNAVAILABLE'));
+  assert.equal(store.listMetadata().length, 0);
+  assert.equal(actionText(store).includes(parameters.value), false);
+});
+
+test('REMEMBER: no plain (guessable) hash of the text is persisted — digest, preview hash and stored binding are keyed per process; the Companion audit holds no text hash', async () => {
+  const parameters = { category: 'USER_FACT', value: 'Le code synthétique du casier est 4821.' };
+  const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  const { A, store, mem } = fresh();
+  const { p, ap } = await approved(A, REMEMBER, parameters);
+  const plainDigest = R.computeActionDigest({ ownerId: store.ownerId, actionId: REMEMBER, actionVersion: 1, riskClass: 'LOCAL_MUTATION', target: { kind: 'MEMORY_STORE', id: store.ownerId }, parameters });
+  const plainPreview = R.previewSha256(A.user.getProposal(p.proposalId).preview);
+  const guesses = [sha(parameters.value), sha(JSON.stringify(parameters.value)), sha(R.canonicalJson(parameters)), plainDigest, plainPreview];
+  const done = await A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId });
+  assert.equal(done.status, 'EXECUTED');
+  await mem.forget(done.resultMetadata.memoryId);
+  const persisted = actionText(store) + JSON.stringify(store.db.prepare('SELECT * FROM companion_audit').all());
+  for (const g of guesses) assert.equal(persisted.includes(g), false, `a guessable hash of the statement is persisted (${g.slice(0, 12)}…)`);
+  assert.equal(persisted.includes(parameters.value), false);
+  assert.equal(JSON.parse(store.db.prepare('SELECT parameters_json FROM companion_action_proposals WHERE proposal_id = ?').get(p.proposalId).parameters_json).valueSha256, undefined);
+  // same statement, another process (fresh key) ⇒ another digest: nothing stable to match across restarts
+  const other = fresh(); const q = other.A.user.propose({ actionId: REMEMBER, parameters });
+  assert.notEqual(q.digest, p.digest); assert.notEqual(q.digest, plainDigest);
+});
+
+test('REMEMBER → answer: the remembered statement is what the model receives and what the answer lists as a transmitted source; disabled or forgotten, it disappears', async () => {
+  const parameters = { category: 'USER_PREFERENCE', value: 'Je préfère les itinéraires synthétiques passant par le pont Céladon.' };
+  const { A, mem, svc } = fresh();
+  const seen = [];
+  const model = { async executeCompanionLocal({ requestId, context }) {
+    const items = context.localContext.blocks.flatMap(b => b.items ?? []);
+    seen.push(items.filter(i => i.kind === 'MEMORY').map(i => i.text));
+    return { text: 'Réponse synthétique.', effectiveModel: 'fake-local', durationMs: 1, contextItems: items.length, requestId };
+  } };
+  const { conversation } = wireCompanionConversation({ companion: mem, memoryPort: svc, model, env: {} });
+  const ask = () => conversation.answer({ text: 'Quel itinéraire par le pont Céladon ?' });
+  const empty = await ask();
+  assert.deepEqual(empty.contextSources, [], 'no memory yet: no personal source');
+  const { ap } = await approved(A, REMEMBER, parameters);
+  const done = await A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId });
+  const id = done.resultMetadata.memoryId;
+  const used = await ask();
+  assert.deepEqual(used.contextSources.map(s => [s.kind, s.ref, s.excerpt, s.stage, s.citationStatus, s.authority]), [['MEMORY', id, parameters.value, 'TRANSMITTED', 'NOT_ASSESSED', 'NONE']]);
+  assert.deepEqual(seen.at(-1), [parameters.value], 'the listed source is exactly what reached the model');
+  mem.setCompanionEnabled(id, false);
+  const disabled = await ask();
+  assert.deepEqual(disabled.contextSources, []); assert.deepEqual(seen.at(-1), [], 'a disabled memory reaches neither the model nor the source list');
+  mem.setCompanionEnabled(id, true);
+  assert.equal((await ask()).contextSources.length, 1);
+  assert.equal((await mem.forget(id)).status, 'COMPLETE');
+  const forgotten = await ask();
+  assert.deepEqual(forgotten.contextSources, []); assert.equal(JSON.stringify(forgotten).includes(parameters.value), false);
+});
+
+test('REMEMBER: invalid category/text/extra fields, secrets and memory OFF refuse before persistence; HTTP duplicate keys and forged origin refused', async () => {
+  const { A, mem, store } = fresh();
+  const good = { category: 'USER_FACT', value: 'Le banc synthétique du test est bleu.' };
+  assert.equal(R.lookupAction(REMEMBER).inputSchema.value.minChars, MIN_STATEMENT_CHARS);
+  for (const parameters of [null, [], {}, { ...good, category: 'SESSION_CONTEXT' }, { ...good, category: 'user_fact' },
+    ...['', ' ', 'court', 'a       b', 'x'.repeat(401), ' '.repeat(401) + 'x', 'abc\u0000def', 'abc\ndef'].map(value => ({ ...good, value })),
+    { ...good, value: 42 }, { ...good, origin: 'USER_EXPLICIT' }, JSON.parse('{"category":"USER_FACT","value":"x","__proto__":{}}')]) {
+    assert.throws(() => A.user.propose({ actionId: REMEMBER, parameters }), code('INVALID_ACTION_PAYLOAD'));
+  }
+  assert.throws(() => A.user.propose({ actionId: REMEMBER, parameters: { ...good, value: 'api_key=sk-abcdefghijklmnopqrstuvwxyz12345678901234567890' } }));
+  mem.setPreferences({ memoryEnabled: false });
+  assert.throws(() => A.user.propose({ actionId: REMEMBER, parameters: good }), code('ACTION_NOT_ALLOWED', 'MEMORY_OFF'));
+  const ui = createCompanionUiService({ store, companion: mem, actions: createCompanionActions({ store, companion: mem }) }); const app = createCompanionUiRoute({ service: ui });
+  for (const body of [JSON.stringify({ actionId: REMEMBER, parameters: good, proposedBy: 'USER' }), '{"actionId":"x","actionId":"COMPANION.MEMORY.REMEMBER","parameters":{}}']) {
+    assert.equal((await app.request('/companion/proposals', { method: 'POST', body, headers: { 'content-type': 'application/json' } })).status, 400);
+  }
+  assert.equal(A.user.listProposals().length, 0); assert.equal(store.listMetadata().length, 0);
+});
+
+test('REMEMBER: USER_FACT becomes a sensitive PERSONAL_NOTE through the real NB-5 confirmation contract', async () => {
+  const { A, mem, svc } = fresh();
+  const parameters = { category: 'USER_FACT', value: 'Le personnage fictif Camille travaille dans la serre expérimentale Safran.' };
+  const { ap } = await approved(A, REMEMBER, parameters);
+  const r = await A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId });
+  assert.equal(r.status, 'EXECUTED');
+  const v = svc.getMemory(r.resultMetadata.memoryId);
+  assert.equal(v.type, 'PERSONAL_NOTE'); assert.equal(v.sensitivity, 'SENSITIVE');
+  assert.equal(mem.view(v.memoryId).companion.category, 'USER_FACT');
+  assert.equal(mem.view(v.memoryId).privacyScope, 'PRIVATE_LOCAL');
+});
+
+test('REMEMBER: cancel, reject, proposal/approval expiry, stale preview and late memory OFF cause no NB-5 writes', async () => {
+  const parameters = { category: 'USER_FACT', value: 'Le laboratoire synthétique utilise un éclairage turquoise.' };
+  const before = getDatabase().prepare('SELECT COUNT(*) n FROM dmem_items').get().n;
+  for (const decision of ['cancel', 'reject']) {
+    const { A } = fresh(); const { p, ap } = await approved(A, REMEMBER, parameters);
+    A.user[decision](p.proposalId);
+    await assert.rejects(A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId }), code('ACTION_NOT_ALLOWED'));
+  }
+  {
+    const { A } = fresh(); const p = A.user.propose({ actionId: REMEMBER, parameters }); advance(R.ACTION_LIMITS.proposalTtlMs.value + 1);
+    assert.throws(() => A.user.approve(p.proposalId, { approvedBy: 'USER', digest: p.digest }), code('PROPOSAL_EXPIRED'));
+  }
+  {
+    const { A } = fresh(); const { ap } = await approved(A, REMEMBER, parameters); advance(R.ACTION_LIMITS.approvalTtlMs.value + 1);
+    await assert.rejects(A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId }), code('APPROVAL_EXPIRED'));
+  }
+  {
+    const { A, mem } = fresh(); const { ap } = await approved(A, REMEMBER, parameters); mem.setPreferences({ memoryEnabled: false });
+    await assert.rejects(A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId }), code('ACTION_NOT_ALLOWED', 'MEMORY_OFF'));
+  }
+  {
+    const { A } = fresh(); const { ap } = await approved(A, REMEMBER, parameters); const ctl = new AbortController(); ctl.abort();
+    assert.equal((await A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId, signal: ctl.signal })).status, 'CANCELLED');
+  }
+  assert.equal(getDatabase().prepare('SELECT COUNT(*) n FROM dmem_items').get().n, before);
+});
+
+test('REMEMBER: even a persisted MODEL proposal is neither reviewable, approvable nor executable; failed storage never reports success', async () => {
+  const parameters = { category: 'USER_FACT', value: 'La simulation emploie un robot orange nommé Tulipe.' };
+  for (const decided of [false, true]) {
+    const { A, store } = fresh(); const p = A.user.propose({ actionId: REMEMBER, parameters });
+    const ap = decided ? A.user.approve(p.proposalId, { approvedBy: 'USER', digest: p.digest }) : null;
+    // The live schema prevents this alteration. Simulate a legacy/corrupt row only after proving that invariant,
+    // by temporarily removing its immutable trigger in this disposable fixture DB (never the product schema).
+    assert.throws(() => store.db.prepare('UPDATE companion_action_proposals SET proposed_by = ? WHERE proposal_id = ?').run('MODEL', p.proposalId), /COMP_IMMUTABLE/);
+    const triggers = store.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'companion_action_proposals'").all().filter(t => t.sql.includes('BEFORE UPDATE'));
+    for (const t of triggers) store.db.exec(`DROP TRIGGER "${t.name}"`);
+    store.db.prepare('UPDATE companion_action_proposals SET proposed_by = ? WHERE proposal_id = ?').run('MODEL', p.proposalId);
+    for (const t of triggers) store.db.exec(t.sql);
+    assert.throws(() => A.user.getProposal(p.proposalId), code('ACTION_NOT_ALLOWED', 'MODEL_NOT_ALLOWED'));
+    assert.throws(() => A.user.approve(p.proposalId, { approvedBy: 'USER', digest: p.digest }), code('ACTION_NOT_ALLOWED', 'MODEL_NOT_ALLOWED'));
+    if (ap) await assert.rejects(A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId }), code('ACTION_NOT_ALLOWED', 'MODEL_NOT_ALLOWED'));
+    assert.equal(store.listMetadata().length, 0);
+  }
+  const { store, mem } = fresh();
+  const companion = { ...port(mem), rememberCheck: value => mem.rememberCheck(value), rememberExplicit: async () => { throw new Error(parameters.value); } };
+  const A = createCompanionActions({ store, companion, approvalChannel: 'DIRECT_TEST_ONLY' });
+  const { ap } = await approved(A, REMEMBER, parameters);
+  const result = await A.user.execute({ actionId: REMEMBER, parameters, approvalId: ap.approvalId });
+  assert.equal(result.status, 'FAILED'); assert.equal(result.effectApplied, 'UNKNOWN');
+  assert.equal(JSON.stringify(result).includes(parameters.value), false);
+  assert.equal(JSON.stringify(A.audit.list()).includes(parameters.value), false);
+  assert.equal(store.listMetadata().length, 0);
+});
 const rw = () => Array.from(crypto.randomBytes(7), b => 'abcdefghijklmnopqrstuvwxyz'[b % 26]).join('');
 /** Lexically distinct statements (NB-5 refuses near-duplicates by shingle Jaccard). */
 const remember = (mem, opts = {}) => mem.rememberExplicit({ category: 'USER_PREFERENCE', value: `Je préfère thème ${++uniq} ${rw()} ${rw()} ${rw()} ${rw()} ${rw()} ${rw()}.`, provenance: USER, ...opts });
@@ -101,7 +293,8 @@ async function approved(A, actionId, parameters, extra = {}) {
 test('registry: closed, frozen, versioned; only READ_ONLY + LOCAL_MUTATION enabled; EXTERNAL / HIGH_IMPACT defined but disabled; unknown → DENY', () => {
   assert.deepEqual(R.ENABLED_CLASSES, ['READ_ONLY', 'LOCAL_MUTATION']);
   assert.deepEqual(R.CLASS_STATUS, { READ_ONLY: 'ENABLED', LOCAL_MUTATION: 'ENABLED', EXTERNAL_ACTION: 'DEFINED_BUT_DISABLED', HIGH_IMPACT_ACTION: 'DEFINED_BUT_DISABLED' });
-  assert.deepEqual([...R.ACTION_IDS].sort(), ['COMPANION.CONTEXT.EXPLAIN', 'COMPANION.MEMORY.EXPLAIN', 'COMPANION.MEMORY.FORGET', 'COMPANION.MEMORY.LIST', 'COMPANION.MEMORY.SET_ENABLED', 'COMPANION.MEMORY.SET_PRIVACY', 'COMPANION.PREFERENCES.UPDATE']);
+  // [PAI-1] COMPANION.MEMORY.REMEMBER added (user-only "remember this", LOCAL_MUTATION with human approval)
+  assert.deepEqual([...R.ACTION_IDS].sort(), ['COMPANION.CONTEXT.EXPLAIN', 'COMPANION.MEMORY.EXPLAIN', 'COMPANION.MEMORY.FORGET', 'COMPANION.MEMORY.LIST', 'COMPANION.MEMORY.REMEMBER', 'COMPANION.MEMORY.SET_ENABLED', 'COMPANION.MEMORY.SET_PRIVACY', 'COMPANION.PREFERENCES.UPDATE']);
   const d = R.describeRegistry();
   for (const a of d.actions) {
     assert.ok(['READ_ONLY', 'LOCAL_MUTATION'].includes(a.class), a.actionId);
@@ -150,8 +343,16 @@ test('strict payload: unknown field, wrong type, missing field, non-object, free
   assert.deepEqual(R.validateParameters(L, {}), { includeDisabled: true, limit: 50 });
   assert.throws(() => R.validateParameters(L, { limit: 101 }), code('INVALID_ACTION_PAYLOAD', 'INTEGER_OUT_OF_RANGE'));
   assert.throws(() => R.validateParameters(L, { limit: 1.5 }), code('INVALID_ACTION_PAYLOAD', 'INTEGER_OUT_OF_RANGE'));
-  // no schema field accepts free text: every field is boolean / enum / id / bounded integer
-  for (const a of R.describeRegistry().actions) for (const spec of Object.values(a.inputSchema)) assert.ok(['boolean', 'enum', 'id', 'integer'].includes(spec.type), a.actionId);
+  // no MODEL-proposable schema field accepts free text: every field is boolean / enum / id / bounded integer.
+  // [PAI-1] Free text exists only in a user-only action (COMPANION.MEMORY.REMEMBER: the statement the person types),
+  // bounded by the NB-5 statement size; a model can never propose it (test-companion-model-actions).
+  for (const a of R.describeRegistry().actions) for (const spec of Object.values(a.inputSchema)) {
+    if (spec.type === 'text') {
+      assert.equal(R.lookupAction(a.actionId).modelProposable, false, `${a.actionId}: a free-text field is never model-proposable`);
+      assert.ok(Number.isSafeInteger(spec.maxChars) && spec.maxChars <= 400, a.actionId);
+    } else assert.ok(['boolean', 'enum', 'id', 'integer'].includes(spec.type), a.actionId);
+  }
+  assert.deepEqual(R.describeRegistry().actions.filter(a => Object.values(a.inputSchema).some(s => s.type === 'text')).map(a => a.actionId), ['COMPANION.MEMORY.REMEMBER']);
 });
 
 test('canonical digest: deterministic, key-order independent, defaults equal; any change of actionId / version / class / target / parameter / installation → different', () => {

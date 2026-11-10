@@ -8,14 +8,19 @@
 // Diagnostics and logs carry ids, codes and counts only — never the request, the answer or any context text.
 
 import crypto from 'node:crypto';
-import { CompanionError, freezeDeep } from './companion-contracts.js';
+import { detectSecretMemory } from './companion-secrets.js';
+import { CompanionError, freezeDeep, parseStrictJson } from './companion-contracts.js';
 
 export const CONVERSATION_LIMITS = freezeDeep({
   maxRequestChars: { value: 16_000, status: 'ACTIVE', basis: 'same bound as the COMP-3 current user intent' },
   maxKgProvenanceItems: { value: 4, status: 'ACTIVE', basis: 'COMP-7 maxResults' },
   maxKgEvidenceRefs: { value: 8, status: 'ACTIVE', basis: 'COMP-7 maxProvenanceItems' },
   timeoutMs: { value: 60_000, status: 'PROVISIONAL', basis: 'COMP-4 default local answer timeout' },
+  maxContextSources: { value: 12, status: 'ACTIVE', basis: '8 memory items + 4 graph items, after context budgeting' },
+  maxSourceExcerptChars: { value: 160, status: 'ACTIVE', basis: 'enough to recognise a source; same order as the UI memory summary' },
 });
+/** Item flags worth showing next to a source (anything else stays internal). */
+const SHOWN_SOURCE_FLAGS = Object.freeze(['CONFLICT', 'STALE_REVIEW_REQUIRED', 'NO_SUPPORTED_KG_FACT']);
 /** Operator switch for the graph context: unset / on → wired when the graph is open; off → never wired. */
 export const COMPANION_KG_CONTEXT_ENV = 'DOCTEUR_COMPANION_KG_CONTEXT';
 const ON = new Set(['on', '1', 'true', 'enabled']);
@@ -79,6 +84,49 @@ export function kgContextProvenance(assembly) {
   }));
 }
 
+/**
+ * [PAI-1] The personal sources the model actually received for this answer (after the context engine's gates and
+ * truncation): Docteur Memory items and graph items, each with a short excerpt so the person can recognise it. The
+ * excerpts come from item texts the context engine already secret-screened; they are shown only to the person's own
+ * local UI. An empty list means the answer used no personal source. Never instructions: display data only.
+ */
+export function answerContextSources(assembly, { canShowMemorySource = null } = {}) {
+  const blocks = safeArray(assembly?.localContext?.blocks ?? assembly?.blocks);
+  const valid = i => typeof i?.id === 'string' && i.id.length > 0 && typeof i.text === 'string'
+    && !detectSecretMemory(i.text).refused;
+  const memory = safeArray(blocks.find(b => b?.type === 'MEMORY')?.items).filter(i => {
+    if (i?.kind !== 'MEMORY' || !valid(i)) return false;
+    if (canShowMemorySource) {
+      try { return canShowMemorySource(i.provenance?.primary?.memoryId) === true; } catch { return false; }
+    }
+    return true;
+  });
+  const max = CONVERSATION_LIMITS.maxSourceExcerptChars.value;
+  const excerptOf = (t) => {
+    const s = typeof t === 'string' ? t.replace(/\s+/g, ' ').trim() : '';
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  };
+  const readableText = (i, kind) => {
+    if (kind === 'KNOWLEDGE_GRAPH') {
+      // The certified read port transmits JSON. Use its actual label when intact; never reconstruct a truncated one.
+      try { const data = parseStrictJson(i.text); if (typeof data?.label === 'string' && data.label.trim()) return data.label; } catch { /* keep the transmitted excerpt */ }
+    }
+    return i.text;
+  };
+  const toSource = (i, kind) => ({
+    kind,
+    itemId: i.id,
+    ref: kind === 'MEMORY' ? (i.provenance?.primary?.memoryId ?? i.id) : (i.provenance?.primary?.sourceRef ?? i.id),
+    excerpt: excerptOf(readableText(i, kind)),
+    stage: 'TRANSMITTED',
+    citationStatus: 'NOT_ASSESSED',
+    authority: 'NONE',
+    flags: safeArray(i.flags).filter(f => SHOWN_SOURCE_FLAGS.includes(f)),
+  });
+  return freezeDeep([...memory.map(i => toSource(i, 'MEMORY')), ...kgItems(assembly).filter(valid).map(i => toSource(i, 'KNOWLEDGE_GRAPH'))]
+    .slice(0, CONVERSATION_LIMITS.maxContextSources.value));
+}
+
 /** Strict answer request: { text } only, a non-empty string within the COMP-3 user-intent bound. */
 export function parseAnswerRequest(input) {
   if (!isPlain(input)) fail('COMP_CONVERSATION_INVALID', 'a JSON object is required', { reason: 'NOT_AN_OBJECT' });
@@ -95,7 +143,7 @@ export function parseAnswerRequest(input) {
  *   kgGate         resolveCompanionKgGate(...) result, reported in diagnostics
  *   logger         optional; receives ids / codes / counts only
  */
-export function createCompanionConversation({ contextEngine, model, kgGate = null, logger = null, timeoutMs = CONVERSATION_LIMITS.timeoutMs.value, newRequestId = () => `cans_${crypto.randomBytes(12).toString('hex')}` } = {}) {
+export function createCompanionConversation({ contextEngine, model, kgGate = null, logger = null, canShowMemorySource = null, timeoutMs = CONVERSATION_LIMITS.timeoutMs.value, newRequestId = () => `cans_${crypto.randomBytes(12).toString('hex')}` } = {}) {
   if (typeof contextEngine?.assemble !== 'function') fail('COMP_CONVERSATION_PORT_REQUIRED', 'a Companion context engine is required');
   if (typeof model?.executeCompanionLocal !== 'function') fail('COMP_CONVERSATION_PORT_REQUIRED', 'a Companion local model is required');
   // same bounds as COMP-4 (MODEL_TIMEOUT_BOUNDS 1 s..120 s); the model module re-validates it
@@ -137,6 +185,7 @@ export function createCompanionConversation({ contextEngine, model, kgGate = nul
         actionProposalIgnored: Boolean(result.actionProposal || result.actionProposalRejected),
         diagnostics,
         kgProvenance: kgContextProvenance(context),
+        contextSources: answerContextSources(context, { canShowMemorySource }),
       });
     },
   });

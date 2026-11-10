@@ -88,6 +88,15 @@ export const limit = (name) => LIMITS[name].value;
 export const newId = () => crypto.randomUUID();
 export const nowIso = (t = Date.now()) => new Date(t).toISOString();
 export const sha256Hex = (data) => crypto.createHash('sha256').update(data).digest('hex');
+/**
+ * [PAI-1] Process-local keyed hash (HMAC-SHA256, random 32-byte key that never leaves memory). Binds an ephemeral value
+ * (a REMEMBER draft) to persisted rows without leaving a plain hash of a short text on disk, which could be confirmed by
+ * guessing. After a restart the key is gone: every binding becomes unverifiable, so the old proposal fails closed.
+ */
+export const createEphemeralBinder = () => {
+  const key = crypto.randomBytes(32);
+  return (data) => crypto.createHmac('sha256', key).update(data).digest('hex');
+};
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
 export function assertId(v, what = 'id') { if (!isUuid(v)) fail('COMP_INVALID_ID', `invalid ${what}`); return v; }

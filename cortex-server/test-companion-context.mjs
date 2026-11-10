@@ -11,6 +11,7 @@ import { CompanionError } from './src/lib/companion-contracts.js';
 import { CompanionStore } from './src/lib/companion-store.js';
 import { CompanionMemory } from './src/lib/companion-memory.js';
 import { CONTEXT_LIMITS, TRUNCATION_ORDER, createCompanionContextEngine } from './src/lib/companion-context.js';
+import { answerContextSources } from './src/lib/companion-conversation.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'comp3-'));
@@ -47,6 +48,35 @@ function fixture({ results = [], views = {}, sessions = {}, preferences = {}, no
 }
 const assemble = (engine, patch = {}) => engine.assemble({ requestId: 'req-1', userRequest: 'Prépare mon voyage à Kyoto.', ...patch });
 const block = (out, type) => out.blocks.find(b => b.type === type);
+
+test('readable sources: actual budgeted context only, scopes/OFF/secrets/missing filtered, complete ids and no invented citations', async () => {
+  const results = [memResult('ok', 'Une préférence synthétique pour le thé.'), memResult('hidden', 'Interdit'),
+    memResult('secret', 'password=syntheticCredential12345'), memResult('missing', 'Absente'), memResult('other', 'Autre projet', { scopeKind: 'PROJECT', projectId: 'other' })];
+  const f = fixture({ results, views: { hidden: baseView('hidden', { companion: { ...baseView('x').companion, companionEnabled: false } }), missing: baseView('missing', { state: 'MISSING' }) } });
+  const context = await assemble(f.make()); const sources = answerContextSources(context);
+  assert.deepEqual(sources.map(s => s.ref), ['ok']);
+  assert.deepEqual(sources.map(s => [s.itemId, s.stage, s.citationStatus, s.authority]), [['memory:ok', 'TRANSMITTED', 'NOT_ASSESSED', 'NONE']]);
+  assert.deepEqual(answerContextSources(context, { canShowMemorySource: () => false }), [], 'revoked during answer');
+  assert.deepEqual(answerContextSources(context, { canShowMemorySource: () => { throw Error('missing'); } }), []);
+  assert.deepEqual(answerContextSources(await assemble(fixture({ results, preferences: { memoryEnabled: false } }).make())), []);
+  assert.deepEqual(answerContextSources(await assemble(fixture().make())), []);
+  for (const s of sources) for (const field of ['title', 'url', 'date', 'verified', 'cited']) assert.equal(Object.hasOwn(s, field), false);
+});
+
+test('readable sources: truncated text and dropped KG candidates never reappear from retrieval metadata', async () => {
+  const f = fixture({ results: Array.from({ length: 8 }, (_, i) => memResult(`m${i}`, (`texte synthétique numéro ${i} `).repeat(180))) });
+  const knowledgePort = { retrieve: async () => ({ authority: 'NONE', status: 'OK', items: Array.from({ length: 4 }, (_, i) => ({ id: `real-kg-${i}`, text: (`extrait graphe numéro ${i} `).repeat(180), provenance: [{ kind: 'SOURCE', ref: `source-${i}` }] })) }) };
+  const engine = createCompanionContextEngine({ companion: f.companion, memoryPort: f.memoryPort, knowledgePort });
+  const context = await assemble(engine, { userRequest: 'Question synthétique '.repeat(650) });
+  const sources = answerContextSources(context);
+  const sent = context.localContext.blocks.flatMap(b => b.items).filter(i => ['MEMORY', 'KG_RESULT'].includes(i.kind));
+  assert.deepEqual(sources.map(s => s.itemId).sort(), sent.map(s => s.id).sort());
+  assert.ok(sent.length < 12, 'budget dropped candidates');
+  for (const s of sources) { assert.ok(s.excerpt.length <= 161); assert.ok(sent.find(i => i.id === s.itemId).text.startsWith(s.excerpt.replace(/…$/, ''))); }
+  const ordinary = await assemble(createCompanionContextEngine({ companion: fixture().companion, memoryPort: fixture().memoryPort, knowledgePort }));
+  assert.equal(answerContextSources(ordinary).filter(s => s.kind === 'KNOWLEDGE_GRAPH').length, 4);
+  assert.deepEqual(answerContextSources(ordinary).map(s => s.ref).sort(), ['real-kg-0', 'real-kg-1', 'real-kg-2', 'real-kg-3']);
+});
 
 test('empty retrieved context keeps exactly POLICY + current USER_INTENT; requestId is stable and strict', async () => {
   const f = fixture(); const out = await assemble(f.make());
