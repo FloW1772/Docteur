@@ -65,7 +65,8 @@ const memory = new CompanionMemory({ store, nb5, vectorProbe: async (id) => vect
 // lifetime (no wall-clock wait); the UI-side countdown expiry is covered by test-companion-ui-browser.mjs (§8).
 let serverClockOffsetMs = 0;
 const actions = createCompanionActions({ store, companion: memory, now: () => Date.now() + serverClockOffsetMs });
-const service = createCompanionUiService({ actions, companion: memory, store });
+// Active temporary fixture; the closed production gate is exercised separately above and in chat-browser.
+const service = createCompanionUiService({ actions, companion: memory, store, activation: 'ACTIVE' });
 const route = createCompanionUiRoute({ service });
 const normal = await memory.rememberExplicit({ category: 'USER_PREFERENCE', value: `Préférence produit ${randomWords()}.`, provenance: { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT' } });
 const forgetMe = await memory.rememberExplicit({ category: 'USER_FACT', value: `Souvenir à oublier ${randomWords()}.`, sensitivity: 'SENSITIVE', confirmSensitive: true, provenance: { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT' } });
@@ -120,13 +121,46 @@ try {
   await page.keyboard.press('F1');
   const search = page.getByLabel('Rechercher une fonctionnalité'); await search.waitFor(); await search.fill('Companion');
   const row = page.locator('div').filter({ has: page.getByText('Companion', { exact: true }) }).filter({ has: page.getByRole('button', { name: 'Ouvrir' }) }).last();
-  ok((await row.innerText()).includes('Certifié ; il reste désactivé tant que vous ne l’avez pas activé explicitement'), 'Help state is honest');
+  ok((await row.innerText()).includes('Activation explicite requise'), 'Help state is honest');
   await row.getByRole('button', { name: 'Ouvrir' }).click();
   await page.getByTestId('cmp-panel').waitFor(); await page.getByTestId('cmp-status').waitFor();
-  ok((await page.getByTestId('cmp-status').innerText()).includes('DISABLED_PENDING_HUMAN_ACTIVATION'), 'activation state visible');
+  ok((await page.getByTestId('cmp-status').innerText()).includes('ACTIVE'), 'active temporary fixture state visible');
   eq(actions.audit.list().filter(e => e.event === 'ACTION_PROPOSED').length, 0, 'no automatic action proposal');
   eq(store.listModelAudit().length, 0, 'no automatic model call');
   await card(normal.memoryId).waitFor(); eq(await page.locator('article[data-memory-id]').count(), 3, 'temporary memories visible');
+
+  // User-only remember: keyboard entry, full preview, no write before execution, cancel/refuse, duplicate submit guard.
+  const rememberButton = page.getByRole('button', { name: 'Saisir une information' });
+  await rememberButton.focus(); await page.keyboard.press('Enter');
+  const memoryInput = page.getByLabel('Information à retenir', { exact: true });
+  await memoryInput.fill('Brouillon synthétique annulé.');
+  await page.getByRole('button', { name: 'Annuler la saisie' }).click();
+  eq(actions.user.listProposals().length, 0, 'cancel draft creates no proposal');
+  ok(await rememberButton.evaluate(el => el === document.activeElement), 'draft cancel restores keyboard focus');
+  await rememberButton.click();
+  await memoryInput.fill('x'.repeat(401)); ok(await page.getByRole('button', { name: 'Vérifier avant de retenir' }).isDisabled(), 'overlong draft disabled');
+  const rememberedText = 'Je préfère les cartes illustrées du laboratoire synthétique Magnolia.';
+  await memoryInput.fill(rememberedText);
+  const beforeRemember = store.listMetadata().length;
+  await page.getByRole('button', { name: 'Vérifier avant de retenir' }).focus(); await page.keyboard.press('Enter');
+  await page.getByTestId('cmp-remember-preview').waitFor();
+  ok((await page.getByTestId('cmp-remember-preview').innerText()).includes(rememberedText), 'full text reviewed');
+  eq(store.listMetadata().length, beforeRemember, 'preview writes no memory');
+  eq(await page.getByText('Information retenue', { exact: true }).count(), 0, 'no premature success');
+  await page.getByRole('button', { name: 'Refuser', exact: true }).click(); ok(await waitState('REJECTED'), 'refused'); await closeReview();
+  eq(store.listMetadata().length, beforeRemember, 'refusal writes no memory');
+  await rememberButton.click(); await memoryInput.fill(rememberedText);
+  await page.getByRole('button', { name: 'Vérifier avant de retenir' }).dblclick();
+  await page.getByTestId('cmp-digest').waitFor();
+  eq(actions.user.listProposals().filter(p => p.actionId === 'COMPANION.MEMORY.REMEMBER' && p.status === 'PENDING').length, 1, 'one proposal after double click');
+  eq(await page.getByTestId('cmp-proposed-by').getAttribute('data-proposed-by'), 'USER');
+  await page.getByTestId('cmp-btn-confirm').focus(); await page.keyboard.press('Enter'); ok(await waitState('APPROVED'), 'remember keyboard approved');
+  eq(store.listMetadata().length, beforeRemember, 'approval alone writes no memory');
+  await page.keyboard.press('Enter'); ok(await waitState('EXECUTED'), 'remember keyboard executed');
+  ok((await page.getByTestId('cmp-result').innerText()).includes('Information retenue'), 'success only after confirmed result');
+  eq(store.listMetadata().length, beforeRemember + 1, 'one memory written');
+  await closeReview();
+  await page.getByTestId('cmp-memories').getByText(rememberedText, { exact: true }).waitFor();
 
   await card(normal.memoryId).getByRole('button', { name: /Pourquoi tu sais ça/ }).click();
   const why = page.getByTestId('cmp-why'); await why.waitFor();
@@ -237,6 +271,7 @@ try {
   // Memory OFF remains an approved action; forget stays available.
   await page.locator('button[data-pref="memoryEnabled"]').click(); await page.getByTestId('cmp-digest').waitFor(); await approveExecute(); await closeReview();
   await page.getByTestId('cmp-memory-off').waitFor();
+  ok(await rememberButton.isDisabled(), 'memory OFF disables human remember form');
   for (const key of ['durableRetrieval', 'sessionMemory', 'proposals', 'contextMemory']) eq(await page.locator(`[data-contract="${key}"]`).innerText(), 'OFF', `${key} OFF`);
   eq(await page.locator('[data-contract="forget"]').innerText(), 'Disponible'); eq(memory.preferences().memoryEnabled, false);
 

@@ -55,7 +55,23 @@ function AssistantTurn({ turn, onCancel, onRetry, onExplain, canRetry }: Readonl
           Le modèle a aussi suggéré une action : elle n’a pas été enregistrée (la conversation ne crée ni n’exécute aucune action).
         </p>
       )}
-      {answer.kgProvenance.length > 0 && (
+      {answer.contextSources && (answer.contextSources.length > 0 ? (
+        <details className="cmp-chat-sources" data-testid="cmp-chat-context-sources">
+          <summary>Contexte transmis au modèle ({answer.contextSources.length})</summary>
+          <p className="cmp-muted">Ces extraits ont été transmis pour cette réponse. Leur présence ne prouve pas que le modèle les a cités ni que ses affirmations sont vérifiées.</p>
+          <ul className="cmp-list">
+            {answer.contextSources.map(s => <li key={s.itemId} className="cmp-card">
+              <strong>{s.kind === 'MEMORY' ? 'Souvenir' : 'Graphe de connaissances'}</strong>
+              <p className="cmp-summary">{displayText(s.excerpt, 161)}</p>
+              <small className="cmp-muted">Référence : {displayText(s.ref, 200)}</small>
+              {s.flags.includes('CONFLICT') && <p className="cmp-muted">En conflit avec un autre souvenir.</p>}
+              {s.flags.includes('STALE_REVIEW_REQUIRED') && <p className="cmp-muted">À revoir : ce souvenir peut être périmé.</p>}
+              {s.flags.includes('NO_SUPPORTED_KG_FACT') && <p className="cmp-muted">Aucun fait étayé identifié dans cet extrait du graphe.</p>}
+            </li>)}
+          </ul>
+        </details>
+      ) : <p className="cmp-muted" data-testid="cmp-chat-no-personal-source">Aucune source personnelle à afficher pour cette réponse.</p>)}
+      {!answer.contextSources && answer.kgProvenance.length > 0 && (
         <details className="cmp-chat-sources" data-testid="cmp-chat-sources">
           <summary>Sources du graphe de connaissances ({answer.kgProvenance.length})</summary>
           <ul className="cmp-list">
