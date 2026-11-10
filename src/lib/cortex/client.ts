@@ -3015,13 +3015,13 @@ export interface KgRelationView {
 }
 export interface KgTimeline { entityId: string; items: KgClaimSummary[]; totalDated: number; truncated: boolean; undatedCount: number; buckets: { year: string; count: number; disputed: number }[] | null; range: { min: string | null; max: string | null }; now: string }
 export interface KgSearchHit { resultType: 'entity' | 'claim' | 'source'; id: string; label?: string; entityType?: string; status?: string; score: number; whyMatched: string[]; ambiguity?: { status: string } | null }
-export type KgViewError = Error & { code?: string; status?: number };
+export type KgViewError = Error & { code?: string; status?: number; reason?: string };
 
 /** KG read calls (POST = structured read query; nothing is ever written). Errors keep the server code (KG_DISABLED, KG_NOT_FOUND…). */
 async function kgRead<T>(path: string, body: unknown): Promise<T> {
   const res = await fetchTimeout(`${BASE}/api/kg${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 20_000);
   const data = await res.json().catch(() => ({})) as { error?: string; reason?: string; message?: string };
-  if (!res.ok) throw Object.assign(new Error(data.message ?? data.reason ?? data.error ?? `HTTP ${res.status}`), { code: data.error, status: res.status }) as KgViewError;
+  if (!res.ok) throw Object.assign(new Error(data.message ?? data.reason ?? data.error ?? `HTTP ${res.status}`), { code: data.error, status: res.status, reason: data.reason }) as KgViewError;
   return data as T;
 }
 // ── [/Knowledge Graph V1] types ───────────────────────────────────────────────────────────────────────────────────
