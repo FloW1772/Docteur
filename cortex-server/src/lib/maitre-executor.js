@@ -446,7 +446,7 @@ function isFirewallOrRegistryAccessDenied(envelope) {
   return /access.*denied|accès.*refusé|non autorisé/i.test(detail);
 }
 
-async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
+async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPowerShell, checkPlatform = isWindows, disabledPersistenceDir } = {}) {
   if (!checkPlatform()) return { persistenceStatus: 'UNKNOWN', reason: 'NOT_SUPPORTED' };
 
   const { persistenceItemId, persistenceType } = action.target;
@@ -482,7 +482,7 @@ async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPower
       data: { SERVICE_NAME: item.name },
     });
   } else if (item.type === 'STARTUP_FILE') {
-    return disableStartupFileEntry(item, rollbackMetadata);
+    return disableStartupFileEntry(item, rollbackMetadata, disabledPersistenceDir);
   } else {
     return { persistenceStatus: 'NOT_SUPPORTED', reason: 'persistence_type_not_implemented', rollbackMetadata };
   }
@@ -513,15 +513,44 @@ async function disablePersistenceEntryExecutor(action, { exec = runReadOnlyPower
 // notes MA-9 need not expose an automated restore yet, but the file
 // itself must not be destroyed), requires no elevation (confirmed via
 // real-machine probing during this phase), and never a delete.
-function disableStartupFileEntry(item, rollbackMetadata) {
+// The holding directory is injectable for tests only (executeApprovedAction's
+// disabledPersistenceDir option, never request-supplied); production uses
+// the default below.
+const defaultDisabledPersistenceDir = () => path.join(os.tmpdir(), DISABLED_PERSISTENCE_DIR_NAME);
+
+// [MAITRE-STARTUP-1] Test-harness guard, same convention as the registry's
+// LIVE_AUTORUN_REGISTRY_FORBIDDEN_IN_TEST: with DOCTEUR_TEST_MODE=1 (set by
+// test-setup.mjs) a STARTUP_FILE disable may only move a file that lives in
+// the OS temp directory (a test sandbox) — so never a real Startup folder,
+// wherever it is redirected — and never into the production holding
+// directory. Checked before any filesystem access. Production (flag unset)
+// is unaffected.
+export const LIVE_STARTUP_FOLDER_FORBIDDEN_IN_TEST = 'LIVE_STARTUP_FOLDER_FORBIDDEN_IN_TEST';
+export const PRODUCTION_DISABLED_PERSISTENCE_DIR_FORBIDDEN_IN_TEST = 'PRODUCTION_DISABLED_PERSISTENCE_DIR_FORBIDDEN_IN_TEST';
+
+export function startupFileMoveViolationInTest(sourcePath, holdingDir, env = process.env) {
+  if (env.DOCTEUR_TEST_MODE !== '1') return null;
+  const norm = p => path.resolve(p).toLowerCase();
+  const inside = (p, root) => norm(p).startsWith(norm(root) + path.sep);
+  const startupFolders = [
+    env.APPDATA && path.join(env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
+    env.ProgramData && path.join(env.ProgramData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
+  ].filter(Boolean);
+  if (!inside(sourcePath, os.tmpdir()) || startupFolders.some(folder => inside(sourcePath, folder))) return LIVE_STARTUP_FOLDER_FORBIDDEN_IN_TEST;
+  if (norm(holdingDir) === norm(defaultDisabledPersistenceDir()) || !inside(holdingDir, os.tmpdir())) return PRODUCTION_DISABLED_PERSISTENCE_DIR_FORBIDDEN_IN_TEST;
+  return null;
+}
+
+function disableStartupFileEntry(item, rollbackMetadata, holdingDir = defaultDisabledPersistenceDir()) {
   const sourcePath = item.sourceLocation;
   if (!isLocalPathAllowed(sourcePath)) fail('persistence_target_path_not_allowed');
+  const violation = startupFileMoveViolationInTest(sourcePath, holdingDir);
+  if (violation) fail(violation);
 
   if (!fs.existsSync(sourcePath)) {
     return { persistenceStatus: 'UNKNOWN', reason: 'file_already_gone', rollbackMetadata };
   }
 
-  const holdingDir = path.join(os.tmpdir(), DISABLED_PERSISTENCE_DIR_NAME);
   try {
     fs.mkdirSync(holdingDir, { recursive: true });
     const destPath = path.join(holdingDir, `${Date.now()}-${path.basename(sourcePath)}`);
@@ -617,7 +646,7 @@ function nowIso() {
  *    CONFIRM (i.e. status AWAITING_APPROVAL/APPROVED); ignored for an
  *    ALLOW-decision action already in READY status.
  */
-export async function executeApprovedAction(actionId, { approvalId = null, exec = runReadOnlyPowerShell, checkPlatform = isWindows } = {}) {
+export async function executeApprovedAction(actionId, { approvalId = null, exec = runReadOnlyPowerShell, checkPlatform = isWindows, disabledPersistenceDir } = {}) {
   const action = getActionProposal(actionId);
   if (!action) fail('action_not_found');
 
@@ -678,7 +707,7 @@ export async function executeApprovedAction(actionId, { approvalId = null, exec 
 
   try {
     const executor = EXECUTORS[action.actionType];
-    const rawResult = await executor(action, { exec, checkPlatform });
+    const rawResult = await executor(action, { exec, checkPlatform, disabledPersistenceDir });
 
     // Bound + redact result metadata before persistence (mission §7/§18)
     // — never raw shell output, never a secret, never unbounded.
