@@ -1,0 +1,161 @@
+/* [FILAMENT-1] Filament page — original CSS only, no images, no fonts, no remote assets.
+   Full-frame Canvas 2D stage, HUD on top, centred overlay for menus, large cut button for touch and keyboard users.
+   Surfaces over the canvas are almost opaque and never blurred (no backdrop-filter): a translucent layer over a
+   per-frame canvas costs a full recomposition on CPU compositors. No CSS animation: motion lives in the canvas, where
+   reduced motion turns it off.
+   [FILAMENT-2] Art pass: warmer night panels with a thin dawn accent, a level grid, pill-shaped HUD chips; same
+   contrast targets (text ≥ 4.5:1 on the panels) and the same 44–48 px touch targets. */
+:root {
+  color-scheme: dark;
+  --fl-bg: #050817;
+  --fl-panel: rgba(12, 12, 38, 0.95);
+  --fl-panel-edge: rgba(255, 214, 170, 0.28);
+  --fl-chip: rgba(10, 12, 34, 0.86);
+  --fl-text: #f1efff;
+  --fl-muted: #bcbde6;
+  --fl-gold: #ffe3a1;
+  --fl-teal: #8cf2e2;
+  --fl-rose: #f4b3a8;
+  --fl-violet: #c9baff;
+  --fl-focus: #ffd27a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--fl-bg);
+  color: var(--fl-text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+.fl-app { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.fl-stage { position: absolute; inset: 0; }
+.fl-canvas { display: block; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; }
+.fl-canvas:focus-visible { outline: 3px solid var(--fl-focus); outline-offset: -3px; }
+
+/* ── HUD ──────────────────────────────────────────────────────────────────────────────────────────────────────── */
+.fl-hud {
+  position: absolute; top: 0; left: 0; right: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  padding: 8px 12px; pointer-events: none;
+}
+.fl-title { margin: 0; font-size: 1rem; font-weight: 700; letter-spacing: 0.08em; text-shadow: 0 1px 3px #000; }
+.fl-subtitle { font-weight: 400; font-size: 0.74rem; color: var(--fl-rose); letter-spacing: 0.12em; text-transform: uppercase; margin-left: 4px; }
+.fl-level, .fl-stars {
+  margin: 0; padding: 3px 10px; border-radius: 999px;
+  background: var(--fl-chip); border: 1px solid rgba(201, 186, 255, 0.25);
+}
+.fl-level { font-size: 0.76rem; color: var(--fl-muted); }
+.fl-stars { font-weight: 700; color: var(--fl-gold); font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+.fl-hud-buttons { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: auto; }
+.fl-small {
+  min-height: 44px; min-width: 44px; padding: 6px 14px; font: inherit; font-size: 0.8rem; cursor: pointer;
+  color: var(--fl-text); background: var(--fl-chip); border: 1px solid rgba(201, 186, 255, 0.5); border-radius: 999px;
+}
+.fl-small:hover { border-color: var(--fl-violet); }
+.fl-small[hidden], .fl-cut[hidden], .fl-overlay[hidden], .fl-kicker[hidden], .fl-overlay-detail[hidden],
+.fl-action[hidden], .fl-secondary[hidden], .fl-levels[hidden] { display: none; }
+.fl-small[aria-pressed="true"] { border-color: var(--fl-focus); color: var(--fl-focus); }
+
+/* ── cut button ───────────────────────────────────────────────────────────────────────────────────────────────── */
+.fl-cut {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%);
+  min-height: 48px; min-width: 168px; padding: 10px 24px; font: inherit; font-weight: 700; letter-spacing: 0.03em; cursor: pointer;
+  color: #1c1430; background: linear-gradient(180deg, #fff0c4, #ffd889); border: 1px solid #fff6dc; border-radius: 999px;
+  touch-action: manipulation;
+}
+.fl-cut:disabled { opacity: 0.4; cursor: default; }
+/* [FILAMENT-4] fan switch, next to the cut button */
+.fl-fan {
+  position: absolute; right: 16px; bottom: 40px;
+  min-height: 48px; min-width: 48px; padding: 10px 18px; font: inherit; font-weight: 700; cursor: pointer;
+  color: var(--fl-text); background: var(--fl-chip); border: 1px solid var(--fl-teal); border-radius: 999px;
+  touch-action: manipulation;
+}
+.fl-fan[hidden] { display: none; }
+.fl-fan[aria-pressed="true"] { color: #1c1430; background: linear-gradient(180deg, #fff0c4, #ffd889); border-color: #fff6dc; }
+.fl-fan:disabled { opacity: 0.4; cursor: default; }
+.fl-fan:focus-visible { outline: 3px solid var(--fl-focus); outline-offset: 2px; }
+/* mouse screens: the button stays available, the canvas is the main surface */
+@media (hover: hover) and (pointer: fine) { .fl-cut { opacity: 0.82; } .fl-cut:hover, .fl-cut:focus-visible { opacity: 1; } }
+
+/* ── overlay (menus, pause, victory, defeat) ──────────────────────────────────────────────────────────────────── */
+.fl-overlay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(480px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto;
+  padding: 18px 20px 16px; text-align: center;
+  background: linear-gradient(180deg, rgba(26, 22, 64, 0.97), var(--fl-panel) 55%);
+  border: 1px solid var(--fl-panel-edge); border-top: 2px solid var(--fl-gold); border-radius: 14px;
+}
+.fl-kicker { margin: 0 0 6px; font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fl-teal); }
+.fl-overlay-title { margin: 0; font-size: 1.3rem; font-weight: 700; letter-spacing: 0.03em; }
+.fl-overlay-text { margin: 10px 0 0; color: var(--fl-text); line-height: 1.55; overflow-wrap: anywhere; }
+.fl-overlay-detail { margin: 8px 0 0; color: var(--fl-muted); font-size: 0.85rem; line-height: 1.45; overflow-wrap: anywhere; }
+.fl-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+.fl-action, .fl-secondary { min-height: 44px; padding: 8px 18px; font: inherit; cursor: pointer; border-radius: 999px; }
+.fl-action { font-weight: 700; color: #071a1a; background: linear-gradient(180deg, #b6fff3, var(--fl-teal)); border: 0; }
+.fl-secondary { color: var(--fl-text); background: transparent; border: 1px solid var(--fl-muted); }
+.fl-secondary:hover { border-color: var(--fl-violet); }
+
+/* level grid: 4 columns, 2 on narrow screens. [FILAMENT-4] .fl-levels holds the chapter tabs and one .fl-grid each */
+.fl-levels { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.fl-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.fl-grid[hidden] { display: none; }
+.fl-chapters { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.fl-chapter-tab {
+  min-height: 40px; padding: 6px 12px; font: inherit; font-size: 0.78rem; cursor: pointer;
+  color: var(--fl-muted); background: transparent; border: 1px solid rgba(201, 186, 255, 0.35); border-radius: 999px;
+}
+.fl-chapter-tab[aria-selected="true"] { color: var(--fl-text); border-color: var(--fl-gold); background: rgba(255, 227, 161, 0.1); }
+.fl-chapter-tab:focus-visible { outline: 3px solid var(--fl-focus); outline-offset: 2px; }
+/* pending level: visible, clearly not playable */
+.fl-level-btn[data-pending="true"] { cursor: default; border-style: dashed; opacity: 0.72; }
+.fl-level-btn[data-pending="true"] .fl-level-num { color: var(--fl-muted); }
+.fl-level-btn[data-pending="true"] .fl-level-stars { color: var(--fl-muted); letter-spacing: 0; font-style: italic; }
+.fl-level-btn[data-pending="true"]:hover { background: rgba(255, 255, 255, 0.04); border-color: rgba(201, 186, 255, 0.32); }
+.fl-level-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-height: 64px; padding: 8px 4px; font: inherit; cursor: pointer;
+  color: var(--fl-text); background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(201, 186, 255, 0.32); border-radius: 12px;
+}
+.fl-level-btn:hover { border-color: var(--fl-violet); background: rgba(201, 186, 255, 0.08); }
+.fl-level-btn[data-done="true"] { border-color: rgba(255, 227, 161, 0.55); }
+/* [FILAMENT-3] the advised next level (first one not won yet, from the saved progression) */
+.fl-level-btn[data-next="true"] { border-color: var(--fl-teal); background: rgba(140, 242, 226, 0.08); }
+.fl-level-num { font-size: 1.05rem; font-weight: 700; color: var(--fl-gold); }
+.fl-level-name { font-size: 0.72rem; color: var(--fl-muted); line-height: 1.2; overflow-wrap: anywhere; }
+.fl-level-stars { min-height: 1em; font-size: 0.72rem; color: var(--fl-gold); letter-spacing: 0.08em; }
+
+.fl-small:focus-visible, .fl-cut:focus-visible, .fl-action:focus-visible, .fl-secondary:focus-visible, .fl-level-btn:focus-visible {
+  outline: 3px solid var(--fl-focus); outline-offset: 2px;
+}
+.fl-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ── footer ───────────────────────────────────────────────────────────────────────────────────────────────────── */
+.fl-footer {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-wrap: wrap; gap: 2px 12px; padding: 5px 12px;
+  font-size: 0.7rem; color: var(--fl-muted); pointer-events: none; text-shadow: 0 1px 2px #000;
+}
+.fl-footer p { margin: 0; }
+.fl-status { font-weight: 600; color: var(--fl-text); }
+html[data-state="paused"] .fl-status { color: var(--fl-focus); }
+/* [FILAMENT-3] discreet progression line; only the two "not saved" states are highlighted */
+html[data-progress="UNAVAILABLE"] .fl-save, html[data-progress="PROTECTED"] .fl-save { color: var(--fl-rose); }
+
+@media (max-width: 520px) {
+  .fl-subtitle, .fl-note { display: none; }
+  .fl-hud { padding: 6px 8px; }
+  .fl-hud-buttons { width: 100%; margin-left: 0; }
+  .fl-small { flex: 1 1 auto; font-size: 0.75rem; padding: 6px 8px; }
+  .fl-cut { bottom: 28px; min-width: 140px; }
+  .fl-overlay { padding: 12px; }
+  .fl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fl-fan { right: 50%; transform: translateX(50%); bottom: 84px; }
+}
+@media (max-height: 380px) {
+  .fl-footer { display: none; }
+  .fl-cut { bottom: 8px; }
+  .fl-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .fl-fan { bottom: 8px; }
+  .fl-level-btn { min-height: 48px; }
+}
