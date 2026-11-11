@@ -77,6 +77,21 @@ async function scenario(name, fn) {
 }
 
 try {
+  await scenario('PAI readable context: bounded plain text, real references, no links/citation claims; empty context explicit', async () => {
+    const sources = [{ kind: 'MEMORY', itemId: 'memory:m-test', ref: 'm-test', excerpt: 'Je préfère les schémas violets.', flags: [], stage: 'TRANSMITTED', citationStatus: 'NOT_ASSESSED', authority: 'NONE' },
+      { kind: 'KNOWLEDGE_GRAPH', itemId: 'kg:test', ref: 'source-test', excerpt: '<script>window.injected = true</script> Source de laboratoire', flags: ['NO_SUPPORTED_KG_FACT'], stage: 'TRANSMITTED', citationStatus: 'NOT_ASSESSED', authority: 'NONE' }];
+    const { page, context } = await openPage({ memoryEnabled: true, answers: n => ({ value: answerDto({ contextSources: n === 1 ? sources : [] }) }) });
+    await ask(page, 'Quels schémas ?');
+    const panel = page.getByTestId('cmp-chat-context-sources');
+    await panel.locator('summary').click();
+    ok((await panel.innerText()).includes('Je préfère les schémas violets.'));
+    ok((await panel.innerText()).includes('source-test'));
+    ok((await panel.innerText()).includes('ne prouve pas'));
+    eq(await panel.locator('a,script').count(), 0, 'no invented link or interpreted HTML');
+    eq(await page.evaluate(() => window.injected), undefined);
+    await ask(page, 'Sans source ?'); await page.getByTestId('cmp-chat-no-personal-source').waitFor();
+    await context.close();
+  });
   await scenario('1. empty chat: explanatory empty state, memory state stated, Send disabled until there is text', async () => {
     const { page, context, errors } = await openPage();
     await page.getByTestId('cmp-chat-empty').waitFor();

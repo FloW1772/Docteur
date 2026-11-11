@@ -9,7 +9,7 @@ export type ConfirmationKind = 'NONE' | 'SIMPLE_CONFIRM' | 'TYPED_CONFIRM' | 'RE
 export type ProposalUiState = 'PENDING' | 'APPROVED' | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'INCOMPLETE' | 'CANCELLED' | 'EXPIRED' | 'REJECTED' | 'SUPERSEDED' | 'UNKNOWN';
 export type ModelUiStatus = 'LOCAL_AVAILABLE' | 'LOCAL_UNAVAILABLE' | 'NOT_RUN' | 'RUNNING' | 'TIMEOUT' | 'CANCELLED' | 'ERROR';
 export type Tone = 'ok' | 'info' | 'warn' | 'danger' | 'muted' | 'model';
-export type LocalMutationActionId = 'COMPANION.PREFERENCES.UPDATE' | 'COMPANION.MEMORY.SET_ENABLED' | 'COMPANION.MEMORY.SET_PRIVACY' | 'COMPANION.MEMORY.FORGET';
+export type LocalMutationActionId = 'COMPANION.PREFERENCES.UPDATE' | 'COMPANION.MEMORY.SET_ENABLED' | 'COMPANION.MEMORY.SET_PRIVACY' | 'COMPANION.MEMORY.FORGET' | 'COMPANION.MEMORY.REMEMBER';
 
 export interface CompanionPreferences { memoryEnabled: boolean; sessionMemoryEnabled: boolean; proposalEnabled: boolean; cloudContextEnabled: boolean }
 export interface CompanionStatusDto {
@@ -90,12 +90,18 @@ export interface CompanionUiPort {
 
 // ── [COMP-9 CHAT] answer contract (cortex-server/src/lib/companion-conversation.js) ──
 export interface AnswerKgProvenanceDto { itemId: string; sourceRef: string | null; evidenceRefs: { kind: string; ref: string }[]; authority: string }
+export interface AnswerContextSourceDto {
+  kind: 'MEMORY' | 'KNOWLEDGE_GRAPH'; itemId: string; ref: string; excerpt: string; flags: string[];
+  stage: 'TRANSMITTED'; citationStatus: 'NOT_ASSESSED'; authority: 'NONE';
+}
 export interface AnswerDto {
   requestId: string; text: string; truncated: boolean; local: boolean; model: string | null; durationMs: number | null; contextItems: number | null;
   /** The model also returned an action proposal: it was NOT registered (the answer path creates no action). */
   actionProposalIgnored: boolean;
   diagnostics: { kgContextUsed: boolean; kg: { gate: string; state: string; status: string; authority: string; retrieved: number; used: number; dropped: number; chars: number; excluded: string[] } };
   kgProvenance: AnswerKgProvenanceDto[];
+  /** Actual transmitted context, never a claim that the model cited or verified these sources. Optional for older servers. */
+  contextSources?: AnswerContextSourceDto[];
 }
 
 // ── privacy ──
@@ -321,6 +327,9 @@ export function resultView(r: ActionResultDto): { state: ProposalUiState; tone: 
       : state === 'CANCELLED' ? `Annulée${r.cancellation?.stage ? ` (${r.cancellation.stage})` : ''} : effet ${r.effectApplied}.`
         : state === 'EXECUTED' ? `Effet ${r.effectApplied}${r.cancellation?.requested && !r.cancellation.honored ? ' — annulation demandée trop tard : l’action était déjà appliquée.' : '.'}`
           : 'Résultat inconnu : considéré comme non réussi.';
+  if (r.actionId === 'COMPANION.MEMORY.REMEMBER' && state === 'EXECUTED' && r.resultCode === 'MEMORY_REMEMBERED' && r.effectApplied === 'FULL') {
+    return { state, tone: s.tone, title: 'Information retenue', detail: 'Le souvenir est enregistré localement et peut servir aux prochaines réponses du Companion.', success: true };
+  }
   return { state, tone: s.tone, title: s.label, detail, success: state === 'EXECUTED' };
 }
 

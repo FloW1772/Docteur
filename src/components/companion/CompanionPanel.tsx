@@ -8,6 +8,7 @@ import {
 } from '../../lib/companion/ui-contracts';
 import { CompanionStatusPanel } from './CompanionStatusPanel';
 import { CompanionMemoryPanel } from './CompanionMemoryPanel';
+import { CompanionRememberForm } from './CompanionRememberForm';
 import { CompanionWhyPanel } from './CompanionWhyPanel';
 import { CompanionActionReview } from './CompanionActionReview';
 import { CompanionChat } from './CompanionChat';
@@ -28,6 +29,7 @@ export function CompanionPanel({ port, pendingProposals = [], contextRequestId =
   const [backendProposals, setBackendProposals] = useState<ProposalDto[]>([]); // [COMP-REMED-1] e.g. model proposals received by the backend
   const [error, setError] = useState<string | null>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const proposing = useRef(false);
 
   const load = useCallback(async () => {
     try { setStatus(await port.getStatus()); } catch (e) { setError(codeOf(e)); }
@@ -43,8 +45,12 @@ export function CompanionPanel({ port, pendingProposals = [], contextRequestId =
 
   const remember = () => { opener.current = document.activeElement as HTMLElement | null; };
   async function requestAction(actionId: LocalMutationActionId, parameters: Record<string, unknown>) {
+    if (proposing.current || review || !uiSessionId) return false;
+    proposing.current = true;
     remember(); setError(null);
-    try { setReview(await port.propose(actionId, parameters)); } catch (e) { setError(codeOf(e)); }
+    try { setReview(await port.propose(actionId, parameters)); return true; }
+    catch (e) { setError(codeOf(e)); return false; }
+    finally { proposing.current = false; }
   }
   async function explain(memoryId: string) {
     setError(null);
@@ -54,7 +60,14 @@ export function CompanionPanel({ port, pendingProposals = [], contextRequestId =
     setError(null);
     try { setWhy({ explain: null, context: await port.explainContext(requestId) }); } catch (e) { setError(codeOf(e)); }
   }
-  function closeReview() { setReview(null); void load(); opener.current?.focus?.(); }
+  function closeReview() {
+    setReview(null); void load();
+    // focus the opener at once; an opener disabled during the review (the remember form trigger) is focusable only after
+    // the next render, so retry once on the next frame in that case
+    const el = opener.current;
+    el?.focus?.();
+    if (el && document.activeElement !== el) requestAnimationFrame(() => el.focus?.());
+  }
   // props first (fixtures / future chat feed), then what the backend holds; one entry per proposal
   const shown = [...pendingProposals, ...backendProposals].filter((p, i, all) => all.findIndex(x => x.proposalId === p.proposalId) === i);
 
@@ -64,6 +77,8 @@ export function CompanionPanel({ port, pendingProposals = [], contextRequestId =
       {/* [COMP-9 CHAT] conversation over the existing answer path; "why" reuses the context explanation (memory ON only) */}
       <CompanionChat port={port} active={status?.activation === 'ACTIVE'} memoryEnabled={status?.preferences?.memoryEnabled === true} onExplain={id => { remember(); void explainContext(id); }} />
       <CompanionStatusPanel status={status} onRequestPreferences={(patch: Partial<CompanionPreferences>) => void requestAction('COMPANION.PREFERENCES.UPDATE', patch)} />
+      <CompanionRememberForm enabled={status?.activation === 'ACTIVE' && status.preferences.memoryEnabled && Boolean(uiSessionId) && !review}
+        onPropose={p => requestAction('COMPANION.MEMORY.REMEMBER', p)} />
       {shown.length > 0 && (
         <section className="cmp-card" aria-labelledby="cmp-pending-title" data-testid="cmp-pending">
           <h2 id="cmp-pending-title">Actions proposées</h2>

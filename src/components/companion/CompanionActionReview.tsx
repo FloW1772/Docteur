@@ -31,6 +31,7 @@ export function CompanionActionReview({ port, uiSessionId, initial, onClose, clo
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(clock());
   const executionRef = useRef<string | null>(null);
+  const confirmingRef = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
@@ -52,7 +53,7 @@ export function CompanionActionReview({ port, uiSessionId, initial, onClose, clo
   const ready = confirmationReady(kind, challenge, typed, acks);
   const controls = availableControls(state, {
     confirmationReady: ready && !busy, challengeReady: Boolean(challenge) && !challengeExpired,
-    cancellableWhileExecuting: typeof proposal.preview?.pointOfNoReturn === 'string' && proposal.preview.pointOfNoReturn.startsWith('NB5_DELETE'),
+    cancellableWhileExecuting: typeof proposal.preview?.pointOfNoReturn === 'string' && /^NB5_(DELETE|WRITE)/.test(proposal.preview.pointOfNoReturn),
   });
   const pb = proposedByLabel(proposal.proposedBy);
   const pv = proposal.preview ?? {};
@@ -71,19 +72,20 @@ export function CompanionActionReview({ port, uiSessionId, initial, onClose, clo
   const refresh = async () => { try { setProposal(await port.getProposal(proposal.proposalId)); } catch { /* keep the last known state */ } };
 
   async function confirm(e: MouseEvent<HTMLButtonElement>) {
-    if (!challenge) return;
+    if (!challenge || confirmingRef.current) return;
     const intent = buildApprovalIntent(challenge, e.nativeEvent, { typed, acknowledgements: acks }, clock());
     if (!intent) { setError('APPROVAL_REQUIRED'); return; }
-    setBusy(true); setError(null);
+    confirmingRef.current = true; setBusy(true); setError(null);
     try {
       setApproval(await port.submitIntent(intent)); setApprovalDead(false); setChallenge(null);
       await refresh();
     } catch (err) {
       const c = codeOf(err); setError(c);
       if (BURNS_CHALLENGE.includes(c)) { setChallenge(null); await refresh(); }
-    } finally { setBusy(false); }
+    } finally { confirmingRef.current = false; setBusy(false); }
   }
   async function execute(e: MouseEvent<HTMLButtonElement>) {
+    if (executionRef.current) return;
     if (!approval || e.nativeEvent.isTrusted !== true) { setError('APPROVAL_REQUIRED'); return; }
     const executionId = newExecutionId(); executionRef.current = executionId;
     setExecuting(true); setError(null);
@@ -96,6 +98,7 @@ export function CompanionActionReview({ port, uiSessionId, initial, onClose, clo
   }
   /** [COMP-REMED-1] READ_ONLY (COMP-5: no approval): a trusted gesture runs it with its proposalId; the server checks the digest. */
   async function runReadOnly(e: MouseEvent<HTMLButtonElement>) {
+    if (executionRef.current) return;
     if (kind !== 'NONE' || proposal.riskClass !== 'READ_ONLY' || e.nativeEvent.isTrusted !== true) { setError('APPROVAL_REQUIRED'); return; }
     const executionId = newExecutionId(); executionRef.current = executionId;
     setExecuting(true); setError(null);
@@ -147,6 +150,12 @@ export function CompanionActionReview({ port, uiSessionId, initial, onClose, clo
         </div>
         {pb.model && <p className="cmp-alert info" data-testid="cmp-model-note">Cette action a été proposée par le modèle local. Le modèle ne peut ni l’approuver ni l’exécuter : seule votre confirmation le peut.</p>}
         {proposal.previewStale && <CompanionErrorAlert code="PREVIEW_STALE" />}
+
+        {proposal.actionId === 'COMPANION.MEMORY.REMEMBER' && <div className="cmp-card" data-testid="cmp-remember-preview">
+          <h3>Texte à retenir</h3>
+          <p className="cmp-chat-text">{displayText(proposal.parameters.value, 400)}</p>
+          <p className="cmp-muted">Ce souvenir sera enregistré localement. Vous pourrez ensuite désactiver son utilisation ou l’oublier.</p>
+        </div>}
 
         <table className="cmp-preview" aria-label="Aperçu de l’action" data-testid="cmp-preview">
           <tbody>{previewRows(proposal).map(r => <tr key={r.key} data-row={r.key}><th scope="row">{r.label}</th><td>{displayText(r.value, 600)}</td></tr>)}</tbody>
