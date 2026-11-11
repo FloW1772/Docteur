@@ -9,6 +9,13 @@
 //   * a software WebGL renderer (SwiftShader, llvmpipe, …) is detected once at start-up: buffers are then capped at
 //     DPR 1 and main.ts switches the page to its low-effects layout; nothing about obstacles or the course changes
 //   * a lost WebGL context is reported once (no recreation loop)
+// [VISUAL-1] Section 1 wears its own universe, « Aube numérique » (world-dawn.ts): dawn haze, sky, sun, spires, light
+// lines and lane tint; it hands back to the original colours over the existing 90 m blend into section 2. Obstacles,
+// shards, the player, the rails and the dividers keep their meshes and materials. If the universe cannot be built, the
+// original look is kept (decoration never stops the game).
+// [VISUAL-2] Universes are now chosen and kept alive by the world director (worlds.ts): section 2 wears « Cité des
+// impulsions » (world-city.ts); at most one universe exists at a time and hands over at the middle of the 90 m blend.
+// Zone colours and lane palettes come from the director's table; sections without a universe keep the originals.
 import {
   AmbientLight, Box3, BoxGeometry, Color, ConeGeometry, DirectionalLight, Fog, Group, HemisphereLight, IcosahedronGeometry,
   InstancedMesh, Mesh, MeshLambertMaterial, Object3D, OctahedronGeometry, PerspectiveCamera, PlaneGeometry, Scene,
@@ -17,6 +24,7 @@ import {
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { positionRunCamera } from './camera.ts';
 import { SECTIONS, sectionIndex } from './sections.ts';
+import { createWorldDirector, type WorldDirector } from './worlds.ts';
 import {
   BLOCK, HIGH_GATE, LANE_WIDTH, PLAYER_HEIGHT, PLAYER_SLIDE_HEIGHT, SHARD, laneX, playerX, type SimState,
 } from './simulation.ts';
@@ -327,6 +335,36 @@ export function createRunRenderer(container: HTMLElement, options: { reducedMoti
   observer?.observe(container);
   resize();
 
+  let worlds: WorldDirector | null = null;
+  try {
+    const fog = scene.fog as Fog;
+    worlds = createWorldDirector(scene, { reducedMotion, software, fogNear: fog.near, fogFar: fog.far });
+  } catch {
+    worlds = null;
+  }
+  const hazeOf = (section: number) => worlds ? worlds.haze(section) : SECTIONS[section].background;
+  // lane colours follow the universes: each section's palette, blended over the same 90 m as the zone colour
+  const ORIGINAL_LANES = [COLORS.lane, COLORS.laneAlt, COLORS.lane];
+  const laneFrom = [new Color(), new Color(), new Color()], laneTo = [new Color(), new Color(), new Color()];
+  const activeFrom = new Color(), activeTo = new Color();
+  const readPalette = (section: number, lanes: Color[], active: Color) => {
+    const palette = worlds?.palette(section) ?? null;
+    lanes.forEach((c, i) => c.setHex(palette ? palette.lanes[i] : ORIGINAL_LANES[i]));
+    active.setHex(palette ? palette.active : COLORS.laneActive);
+  };
+  let tintedKey = -1;
+  const tintLanes = (zone: number, blend: number) => {
+    // zone + blend: the end of one blend and the start of the next section give the same colours
+    if (zone + blend === tintedKey) return;
+    tintedKey = zone + blend;
+    readPalette(Math.max(0, zone - 1), laneFrom, activeFrom);
+    readPalette(zone, laneTo, activeTo);
+    const t = zone === 0 ? 1 : blend;
+    laneMat.forEach((m, i) => { if (t >= 1) m.color.copy(laneTo[i]); else m.color.lerpColors(laneFrom[i], laneTo[i], t); });
+    if (t >= 1) laneActiveMat.color.copy(activeTo); else laneActiveMat.color.lerpColors(activeFrom, activeTo, t);
+    laneActiveMat.emissive.copy(laneActiveMat.color);
+  };
+
   let cameraX = 0;
   let activeLane = -1;
   let crashed = false;
@@ -372,8 +410,11 @@ export function createRunRenderer(container: HTMLElement, options: { reducedMoti
       zone = sectionIndex(z);
       const current = SECTIONS[zone], previous = SECTIONS[Math.max(0, zone - 1)];
       const blend = Math.min(1, Math.max(0, (z - current.start) / 90));
-      zoneColor.setHex(previous.background).lerp(oldColor.setHex(current.background), blend);
+      // each section is drawn in its universe's haze (or its original background), blended over the same 90 m
+      zoneColor.setHex(hazeOf(Math.max(0, zone - 1))).lerp(oldColor.setHex(hazeOf(zone)), blend);
       (scene.background as Color).copy(zoneColor); (scene.fog as Fog).color.copy(zoneColor);
+      tintLanes(zone, blend);
+      worlds?.update(z, timeMs, zone, blend, zoneColor);
       archMat.color.setHex(previous.accent).lerp(oldColor.setHex(current.accent), blend);
       archMat.emissive.copy(archMat.color);
       // stable runner camera: follows z exactly; lateral follow is damped, and locked to the centre under reduced motion
@@ -381,7 +422,7 @@ export function createRunRenderer(container: HTMLElement, options: { reducedMoti
       positionRunCamera(camera, z, cameraX);
       renderer.render(scene, camera);
     },
-    setReducedMotion(value) { reducedMotion = value; },
+    setReducedMotion(value) { reducedMotion = value; worlds?.setReducedMotion(value); },
     resize,
     dispose() {
       observer?.disconnect();
@@ -390,6 +431,7 @@ export function createRunRenderer(container: HTMLElement, options: { reducedMoti
       for (const entry of shardMeshes.values()) scene.remove(entry.mesh);
       obstacleMeshes.clear(); shardMeshes.clear();
       for (const decor of [stripes, cones, nodes, shardHalos, ...scenery]) { scene.remove(decor); decor.dispose(); }
+      worlds?.dispose(); worlds = null;
       obstaclePool.BLOCK.length = 0; obstaclePool.HIGH_GATE.length = 0; shardPool.length = 0;
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();

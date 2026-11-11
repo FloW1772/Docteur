@@ -215,7 +215,8 @@ function boot(): void {
   const updateHud = () => {
     const d = Math.floor(sim.distance), s = score(sim);
     const zone = sectionIndex(sim.distance);
-    if (zone !== hud.zone) { hud.zone = zone; if (hudZone) hudZone.textContent = `${zone + 1}/5 · ${SECTIONS[zone].name}`; }
+    // [VISUAL-1] html[data-zone] lets the page take the colours of the current universe (CSS only)
+    if (zone !== hud.zone) { hud.zone = zone; root.setAttribute('data-zone', String(zone)); if (hudZone) hudZone.textContent = `${zone + 1}/5 · ${SECTIONS[zone].name}`; }
     if (d !== hud.distance) { hud.distance = d; hudDistance.textContent = `${d} m`; }
     if (sim.shardsCollected !== hud.shards) { hud.shards = sim.shardsCollected; hudShards.textContent = plural(sim.shardsCollected, 'éclat'); }
     if (s !== hud.score) { hud.score = s; hudScore.textContent = `Score ${s}`; }

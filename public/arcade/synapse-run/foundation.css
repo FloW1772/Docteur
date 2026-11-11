@@ -117,6 +117,34 @@ html[data-state="paused"] .sr-status { color: var(--sr-amber); }
   .sr-overlay { top: 46%; }
   .sr-title { font-size: 0.9rem; }
 }
+/* [VISUAL-1] « Aube numérique » (section 1): the HUD, footer and menus take the dawn blues of the scene.
+   html[data-zone] is set by game.js from the section index; sections 2–5 keep the look above. Colours only: no
+   animation, no new layer; text colours and contrast are unchanged. Placed before the low-effects rules so they still
+   win (same specificity, later in the file). */
+html[data-zone="0"] .sr-hud { background: linear-gradient(180deg, rgba(5, 14, 36, 0.86), rgba(5, 14, 36, 0)); }
+html[data-zone="0"] .sr-footer { background: linear-gradient(0deg, rgba(5, 14, 36, 0.85), rgba(5, 14, 36, 0)); }
+html[data-zone="0"] .sr-zone { color: #9fe3ee; }
+html[data-zone="0"] .sr-overlay { background: rgba(7, 16, 38, 0.9); border-color: rgba(143, 227, 238, 0.45); }
+/* [VISUAL-2] « Cité des impulsions » (section 2): deep violet surfaces and a neon-lilac zone label, same rules. */
+html[data-zone="1"] .sr-hud { background: linear-gradient(180deg, rgba(16, 8, 38, 0.86), rgba(16, 8, 38, 0)); }
+html[data-zone="1"] .sr-footer { background: linear-gradient(0deg, rgba(16, 8, 38, 0.85), rgba(16, 8, 38, 0)); }
+html[data-zone="1"] .sr-zone { color: #e3a8ff; }
+html[data-zone="1"] .sr-overlay { background: rgba(18, 9, 40, 0.9); border-color: rgba(211, 140, 255, 0.45); }
+/* [VISUAL-3] « Forêt synaptique » (section 3): deep teal surfaces and a turquoise-green zone label, same rules. */
+html[data-zone="2"] .sr-hud { background: linear-gradient(180deg, rgba(3, 22, 24, 0.86), rgba(3, 22, 24, 0)); }
+html[data-zone="2"] .sr-footer { background: linear-gradient(0deg, rgba(3, 22, 24, 0.85), rgba(3, 22, 24, 0)); }
+html[data-zone="2"] .sr-zone { color: #8ff5d2; }
+html[data-zone="2"] .sr-overlay { background: rgba(4, 22, 26, 0.9); border-color: rgba(110, 240, 200, 0.45); }
+/* [VISUAL-4] « Horizon fracturé » (section 4): bordeaux surfaces, a warm dusk zone label and a discreet gold edge. */
+html[data-zone="3"] .sr-hud { background: linear-gradient(180deg, rgba(30, 8, 22, 0.86), rgba(30, 8, 22, 0)); }
+html[data-zone="3"] .sr-footer { background: linear-gradient(0deg, rgba(30, 8, 22, 0.85), rgba(30, 8, 22, 0)); }
+html[data-zone="3"] .sr-zone { color: #ffb08a; }
+html[data-zone="3"] .sr-overlay { background: rgba(32, 10, 26, 0.9); border-color: rgba(217, 168, 90, 0.5); }
+/* [VISUAL-5] « Cœur du Cortex » (section 5): deep violet and indigo surfaces, a champagne-gold zone label, a gold edge. */
+html[data-zone="4"] .sr-hud { background: linear-gradient(180deg, rgba(16, 8, 36, 0.86), rgba(16, 8, 36, 0)); }
+html[data-zone="4"] .sr-footer { background: linear-gradient(0deg, rgba(16, 8, 36, 0.85), rgba(16, 8, 36, 0)); }
+html[data-zone="4"] .sr-zone { color: #f0d090; }
+html[data-zone="4"] .sr-overlay { background: rgba(18, 10, 40, 0.9); border-color: rgba(232, 200, 140, 0.5); }
 /* low-effects layout: same information, opaque surfaces, no layer over the canvas that needs per-frame blending */
 html[data-effects="low"] .sr-hud,
 html[data-effects="low"] .sr-footer { background: none; }
