@@ -4,6 +4,7 @@ import { BLOCK_PLACEHOLDERS } from '../../lib/types';
 import { MarkdownContent } from '../../lib/renderMd';
 import { getImageUrl } from '../../lib/cortex/client';
 import MediaOpenButton from '../media/MediaOpenButton';
+import VideoDownloadButton from '../media/VideoDownloadButton';
 // [EETF-8] « Depuis EETF » in an empty image block (loaded only when opened; uses the block's own onUploadImage)
 const EetfNeuronPicker = lazy(() => import('../eetf/EetfNeuronPicker'));
 
@@ -113,6 +114,7 @@ function renderWithLinks(
           </button>
         )}
         {onOpenMedia && <MediaOpenButton href={href} onOpen={onOpenMedia} />}
+        <VideoDownloadButton href={href} />
       </span>,
     );
     if (after) parts.push(after);

@@ -9,6 +9,7 @@
   "scripts": {
     "test:external-agents": "node scripts/test-external-agents-browser.mjs",
     "test:video": "node --test scripts/test-video-polling.mjs",
+    "test:video-download": "node --test scripts/test-video-download.mjs",
     "test:browser": "node scripts/test-frontend-browser.mjs",
     "test:article-capture": "node --test scripts/test-article-capture-pipeline.mjs",
     "test:article-capture-browser": "node scripts/test-article-capture-browser.mjs",
