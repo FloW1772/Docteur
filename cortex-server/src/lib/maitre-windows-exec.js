@@ -78,6 +78,23 @@ export function buildPowerShellChildEnv(data = {}, parentEnv = process.env) {
   return childEnv;
 }
 
+// [MAITRE-REG-1] Test-harness hard guard, same convention as EXTERNAL_CALL_BLOCKED_IN_TEST: with
+// DOCTEUR_TEST_MODE=1 (set by test-setup.mjs) a registry-mutating script aimed at a live autorun key
+// (HKCU/HKLM ...\CurrentVersion\Run or RunOnce, WOW6432Node included) throws before anything is spawned.
+// Reads stay allowed. Production (flag unset) is unaffected. Tests use an injected in-memory registry or a
+// disposable non-autorun key instead (test-maitre-executor-level2.mjs).
+export const LIVE_AUTORUN_REGISTRY_FORBIDDEN_IN_TEST = 'LIVE_AUTORUN_REGISTRY_FORBIDDEN_IN_TEST';
+// Hive prefix optional: .NET's Registry.CurrentUser.OpenSubKey('Software\...\Run') names no hive.
+const LIVE_AUTORUN_KEY = /Software[\\/]+(?:WOW6432Node[\\/]+)?Microsoft[\\/]+Windows[\\/]+CurrentVersion[\\/]+Run(?:Once)?(?!\w)/i;
+const REGISTRY_MUTATION = /\b(?:New|Set|Remove|Rename|Clear|Move|Copy)-Item(?:Property)?\b|\breg(?:\.exe)?\s+(?:add|delete|import|copy|restore|load)\b|\.(?:SetValue|DeleteValue|DeleteSubKey(?:Tree)?|CreateSubKey)\s*\(/i;
+
+export function isLiveAutorunMutationInTest(script, data = {}, env = process.env) {
+  if (env.DOCTEUR_TEST_MODE !== '1') return false;
+  const text = String(script ?? '');
+  if (!REGISTRY_MUTATION.test(text)) return false;
+  return [text, ...Object.values(data ?? {}).map(String)].some(value => LIVE_AUTORUN_KEY.test(value));
+}
+
 function redactDataValues(text, entries) {
   let redacted = String(text ?? '');
   const values = [...new Set(entries.map(entry => entry.value).filter(Boolean))].sort((a, b) => b.length - a.length);
@@ -108,6 +125,9 @@ export async function runReadOnlyPowerShell(script, { timeoutMs = DEFAULT_TIMEOU
   }
 
   const dataEntries = normalizePowerShellData(data);
+  if (isLiveAutorunMutationInTest(script, data)) {
+    throw Object.assign(new Error(`${LIVE_AUTORUN_REGISTRY_FORBIDDEN_IN_TEST}: tests must never change the live autorun registry`), { code: LIVE_AUTORUN_REGISTRY_FORBIDDEN_IN_TEST });
+  }
   const childEnv = buildPowerShellChildEnv(data);
 
   try {
