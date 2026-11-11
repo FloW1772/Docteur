@@ -85,7 +85,7 @@ try {
     ok((await page.getByTestId('arcade-panel').innerText()).includes('optionnelle'));
   });
   await scenario('B fixed registry foundation only', async () => {
-    eq(await page.getByTestId('arcade-game-list').locator('li').count(), 1);
+    eq(await page.getByTestId('arcade-game-list').locator('li').count(), 2); // [FILAMENT-1] Synapse Run + Filament
     eq(await page.getByTestId('arcade-game-synapse-run').getAttribute('data-status'), 'PLAYABLE_CORE');
     const card = await page.getByTestId('arcade-game-list').innerText();
     ok(card.includes('MAINTENANCE') && card.includes('audio synthétisé') && !card.includes('ni son'), card);

@@ -1,4 +1,5 @@
-// [GAME-2] Docteur Arcade — host ↔ game postMessage protocol v1 (game side: public/arcade/synapse-run/foundation.js).
+// [GAME-2] Docteur Arcade — host ↔ game postMessage protocol v1 (game side: public/arcade/synapse-run/foundation.js,
+// [FILAMENT-1] public/arcade/filament/host.js).
 // The game page runs in <iframe sandbox="allow-scripts"> (opaque origin "null"), so event.origin proves nothing:
 // the host accepts a message only if event.source is the live iframe's contentWindow AND the envelope is exactly
 // one of the shapes below for the current gameId + instanceId. Everything else is dropped without side effect.
@@ -22,7 +23,8 @@ export const ARCADE_IFRAME_SANDBOX = 'allow-scripts';
 export const ARCADE_IFRAME_ALLOW = "camera 'none'; microphone 'none'; geolocation 'none'; display-capture 'none'; fullscreen 'none'; payment 'none'; usb 'none'; clipboard-read 'none'; clipboard-write 'none'";
 
 export type ArcadeHostCommandType = 'ARCADE_INIT' | 'ARCADE_PAUSE' | 'ARCADE_RESUME' | 'ARCADE_STOP';
-export type ArcadeGameEventType = 'ARCADE_READY' | 'ARCADE_STATE' | 'ARCADE_ERROR' | 'ARCADE_FULLSCREEN_EXIT';
+/** [FILAMENT-1] ARCADE_EXIT_REQUEST: the page asks to be closed; honoured only for HOST_EXIT_REQUEST games (host). */
+export type ArcadeGameEventType = 'ARCADE_READY' | 'ARCADE_STATE' | 'ARCADE_ERROR' | 'ARCADE_FULLSCREEN_EXIT' | 'ARCADE_EXIT_REQUEST';
 export type ArcadeSaveRequestType = 'ARCADE_SAVE_LOAD' | 'ARCADE_SAVE_WRITE' | 'ARCADE_SAVE_DELETE';
 export type ArcadeSaveOperation = 'LOAD' | 'WRITE' | 'DELETE';
 export type ArcadeGameState = 'active' | 'paused' | 'stopped';
@@ -56,6 +58,7 @@ export type ArcadeSaveRequest =
   | RequestEnvelope<'ARCADE_SAVE_DELETE', EmptyPayload>;
 
 export type ArcadeGameEvent =
+  | Envelope<'ARCADE_EXIT_REQUEST', EmptyPayload>
   | Envelope<'ARCADE_FULLSCREEN_EXIT', EmptyPayload>
   | Envelope<'ARCADE_READY', EmptyPayload>
   | Envelope<'ARCADE_STATE', { state: ArcadeGameState }>
@@ -145,6 +148,8 @@ export function parseArcadeGameEvent(data: unknown, expected: { gameId: ArcadeGa
   switch (data.type) {
     case 'ARCADE_FULLSCREEN_EXIT':
       return keySet(payload) === '' ? { ...base, type: 'ARCADE_FULLSCREEN_EXIT', payload: {} } : null;
+    case 'ARCADE_EXIT_REQUEST':
+      return keySet(payload) === '' ? { ...base, type: 'ARCADE_EXIT_REQUEST', payload: {} } : null;
     case 'ARCADE_READY':
       return keySet(payload) === '' ? { ...base, type: 'ARCADE_READY', payload: {} } : null;
     case 'ARCADE_STATE':
