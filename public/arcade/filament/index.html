@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<!-- [FILAMENT-1] Same page-specific policy as every Arcade game: no network, no plugins, no frames, no forms; only this
+     folder's own CSS/JS. The page is always loaded inside <iframe sandbox="allow-scripts"> (opaque origin) by the
+     Docteur Arcade host. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filament — Arcade Docteur</title>
+<link rel="stylesheet" href="./filament.css">
+</head>
+<body>
+<main class="fl-app" aria-labelledby="fl-title">
+  <div class="fl-stage" id="fl-stage">
+    <canvas class="fl-canvas" id="fl-canvas" tabindex="0" role="img" aria-label="Filament : chargement de la scène"></canvas>
+  </div>
+  <header class="fl-hud">
+    <h1 id="fl-title" class="fl-title">Filament <span class="fl-subtitle">Les Liens du Ciel</span></h1>
+    <p class="fl-level" id="fl-level">Jardins de l’Aube</p>
+    <p class="fl-stars" id="fl-stars" aria-label="Étoiles cueillies : 0 sur 3">☆☆☆ 0/3</p>
+    <div class="fl-hud-buttons">
+      <button type="button" class="fl-small" id="fl-pause" aria-pressed="false" hidden>Pause</button>
+      <button type="button" class="fl-small" id="fl-restart" hidden>Recommencer</button>
+      <button type="button" class="fl-small" id="fl-exit" hidden>Retour à l’Arcade</button>
+    </div>
+  </header>
+  <button type="button" class="fl-cut" id="fl-cut" hidden>Couper le fil</button>
+  <!-- [FILAMENT-4] shown only in a level that has a fan (chapter 2, once validated) -->
+  <button type="button" class="fl-fan" id="fl-fan" aria-pressed="false" hidden>Ventilateur : éteint</button>
+  <section class="fl-overlay" id="fl-overlay" aria-labelledby="fl-overlay-title">
+    <p class="fl-kicker" id="fl-overlay-kicker" hidden></p>
+    <h2 class="fl-overlay-title" id="fl-overlay-title">Filament</h2>
+    <p class="fl-overlay-text" id="fl-overlay-text">En attente de Docteur…</p>
+    <p class="fl-overlay-detail" id="fl-overlay-detail" hidden></p>
+    <div class="fl-buttons">
+      <button type="button" class="fl-action" id="fl-primary" hidden></button>
+      <button type="button" class="fl-secondary" id="fl-secondary" hidden></button>
+      <button type="button" class="fl-secondary" id="fl-tertiary" hidden></button>
+    </div>
+    <!-- [FILAMENT-2] level grid, filled by game.js from the fixed level list (text only)
+         [FILAMENT-4] one tab and one grid per chapter (chapter 2: « en préparation » tiles) -->
+    <div class="fl-levels" id="fl-levels" hidden></div>
+  </section>
+  <p class="fl-visually-hidden" id="fl-announce" role="status" aria-live="polite" aria-atomic="true"></p>
+  <footer class="fl-footer">
+    <p class="fl-status" id="fl-status" role="status">État : en attente de Docteur</p>
+    <p class="fl-save" id="fl-save">Progression : non vérifiée</p>
+    <p class="fl-note">Préversion · chapitre 1 · projet original · aucun réseau · aucune donnée Docteur</p>
+  </footer>
+</main>
+<!-- game.js (bundled from src/arcade/filament/, built locally) only registers its listener; host.js (host protocol)
+     then sends READY and forwards INIT, which starts the game. -->
+<script src="./game.js"></script>
+<script src="./host.js"></script>
+</body>
+</html>
