@@ -42,6 +42,12 @@ export function wireCompanionConversation({
   const kgGate = knowledgePort ? gate : Object.freeze({ enabled: false, reason: gate.enabled ? 'KG_UNAVAILABLE' : gate.reason });
   const contextEngine = createCompanionContextEngine({ companion, memoryPort, knowledgePort, getSettings, ...(now ? { now } : {}) });
   const companionModel = model ?? createCompanionModel({ client, store, getSettings, getHardware });
-  const conversation = createCompanionConversation({ contextEngine, model: companionModel, kgGate, logger, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
+  // A memory may have been disabled/forgotten while the local model was answering. Do not redisplay its excerpt.
+  const canShowMemorySource = (id) => {
+    if (!companion.preferences().memoryEnabled || typeof id !== 'string') return false;
+    const v = companion.view(id);
+    return ['ACTIVE', 'DISPUTED'].includes(v?.state) && v?.companion?.companionEnabled === true;
+  };
+  const conversation = createCompanionConversation({ contextEngine, model: companionModel, kgGate, logger, canShowMemorySource, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
   return Object.freeze({ conversation, kgGate });
 }

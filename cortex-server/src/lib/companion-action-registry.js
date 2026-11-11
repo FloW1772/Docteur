@@ -10,10 +10,12 @@
 //   LOCAL_MUTATION      implemented — preview → user approval (single-use, ≤ 300 s) → bounded execution → audit
 //   EXTERNAL_ACTION     DEFINED_BUT_DISABLED — every entry needs a capability the Companion does not hold
 //   HIGH_IMPACT_ACTION  DEFINED_BUT_DISABLED — same, plus a human approval boundary
-// Parameters are ids, enums, booleans and bounded integers only — never free text — so a proposal row, a digest input
-// or an audit entry can never carry a memory statement, a prompt or a secret.
+// Model-proposable parameters are ids, enums, booleans and bounded integers only. REMEMBER (user-only) accepts bounded
+// user text, secret-screened before preview. Its draft is ephemeral (RAM); the action history keeps only its category and
+// process-keyed HMAC bindings (digest, preview hash), never the text nor a plain hash of it (companion-actions.js).
+// Action audit entries still contain only ids and codes, never the text.
 
-import { CompanionError, PRIVACY_SCOPE, checkPrivacyTransition, sha256Hex, boundedJson, freezeDeep, parseStrictJson } from './companion-contracts.js';
+import { CompanionError, PRIVACY_SCOPE, DURABLE_CATEGORIES, checkPrivacyTransition, sha256Hex, boundedJson, freezeDeep, parseStrictJson, limit } from './companion-contracts.js';
 
 export const ACTION_FRAMEWORK_VERSION = 'companion-actions-v1';
 export const ACTION_CLASS = Object.freeze({ READ_ONLY: 'READ_ONLY', LOCAL_MUTATION: 'LOCAL_MUTATION', EXTERNAL_ACTION: 'EXTERNAL_ACTION', HIGH_IMPACT_ACTION: 'HIGH_IMPACT_ACTION' });
@@ -50,6 +52,8 @@ const F = Object.freeze({
   memoryId: (opts = {}) => Object.freeze({ type: 'id', pattern: 'MEMORY_ID', ...opts }),
   requestId: (opts = {}) => Object.freeze({ type: 'id', pattern: 'REQUEST_ID', ...opts }),
   integer: (min, max, opts = {}) => Object.freeze({ type: 'integer', min, max, ...opts }),
+  // [PAI-1] bounded single-paragraph user text (no control characters); the owning module re-validates it
+  text: (maxChars, opts = {}) => Object.freeze({ type: 'text', maxChars, ...opts }),
 });
 const PATTERNS = { MEMORY_ID: MEMORY_ID_RE, REQUEST_ID: REQUEST_ID_RE };
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
@@ -59,6 +63,17 @@ function checkField(name, spec, v) {
   if (spec.type === 'enum') { if (typeof v !== 'string' || !spec.values.includes(v)) invalid('NOT_AN_ALLOWED_VALUE', name); return v; }
   if (spec.type === 'id') { if (typeof v !== 'string' || !PATTERNS[spec.pattern].test(v)) invalid('NOT_A_VALID_ID', name); return v; }
   if (spec.type === 'integer') { if (!Number.isSafeInteger(v) || v < spec.min || v > spec.max) invalid('INTEGER_OUT_OF_RANGE', name); return v; }
+  if (spec.type === 'text') {
+    if (typeof v !== 'string') invalid('NOT_A_STRING', name);
+    if (v.length > spec.maxChars) invalid('TEXT_TOO_LONG', name);
+    if (/[\u0000-\u001f\u007f]/.test(v)) invalid('CONTROL_CHARACTER', name);
+    const t = v.trim().replace(/\s+/g, ' ');
+    if (!t) invalid('REQUIRED_FIELD', name);
+    if (spec.minChars && t.length < spec.minChars) invalid('TEXT_TOO_SHORT', name);
+    if (t.length > spec.maxChars) invalid('TEXT_TOO_LONG', name);
+    if (/[\u0000-\u001f\u007f]/.test(t)) invalid('CONTROL_CHARACTER', name);
+    return t;
+  }
   return invalid('UNSUPPORTED_FIELD_TYPE', name);
 }
 /** Strict: plain object, no unknown field, required present, defaults materialised (so {} and the defaults digest alike). */
@@ -242,6 +257,36 @@ const DEFINITIONS = [
     },
   },
   {
+    // [PAI-1] The only product path for "remember this" (COMP-2 durable path 1, USER_EXPLICIT → NB-5 through its service).
+    // Never model-proposable: a model answer or a retrieved document can never ask for a memory to be written; the person
+    // types the statement and approves it. Two stores (NB-5, then the Companion overlay; NB-5 rolled back if the overlay
+    // fails), hence POINT_OF_NO_RETURN. Reversible by "Oublier" (COMPANION.MEMORY.FORGET).
+    actionId: 'COMPANION.MEMORY.REMEMBER', version: 1, riskClass: 'LOCAL_MUTATION', idempotency: 'NON_IDEMPOTENT', modelProposable: false, mode: 'POINT_OF_NO_RETURN',
+    description: 'Stores one statement typed by the person as a Docteur Memory the Companion may use (local only, NEVER_CLOUD/PRIVATE_LOCAL by sensitivity).',
+    inputSchema: { category: F.enum(DURABLE_CATEGORIES, { required: true }), value: F.text(limit('proposalValueChars'), { minChars: 8, required: true }) },
+    target: (_p, { ownerId }) => ({ kind: 'MEMORY_STORE', id: ownerId }),
+    preview: (ports, p) => {
+      const check = ports.companion.rememberCheck(p.value);
+      if (!check.ok) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'this statement cannot be remembered', { reason: check.reason });
+      return preview({
+        action: 'Remember a statement', actionId: 'COMPANION.MEMORY.REMEMBER', target: { kind: 'MEMORY_STORE' },
+        memory: { memoryId: null, state: 'NEW', category: p.category, privacyScope: check.privacyScope, companionEnabled: true, excerpt: excerpt(p.value) },
+        summary: `Remember (${p.category}): ${excerpt(p.value)}`, changes: [{ field: 'memory', from: null, to: 'ACTIVE' }], parameters: p,
+        effects: ['NB5_MEMORY_CREATED (origin USER_EXPLICIT)', 'COMPANION_METADATA_CREATED', 'MEMORY_USABLE_IN_LOCAL_CONTEXT', 'NEVER_SENT_TO_CLOUD_BY_THIS_ACTION'],
+        reversible: 'YES: COMPANION.MEMORY.FORGET', privacyImpact: { level: 'RELAXES_LOCAL' }, confirmation: { level: 'STANDARD' },
+        pointOfNoReturn: 'NB5_WRITE: cancellable before it starts',
+      });
+    },
+    execute: async (ports, p) => {
+      // The reviewed text may contain personal information. Classify conservatively, and forward the human
+      // approval to NB-5's existing sensitive-content gate (USER_FACT maps to PERSONAL_NOTE).
+      const v = await ports.companion.rememberExplicit({ category: p.category, value: p.value, sensitivity: 'SENSITIVE', confirmSensitive: true,
+        provenance: { origin: 'USER_EXPLICIT', sourceType: 'USER_INPUT' } });
+      return { result: { memoryId: v.memoryId, state: v.state, companionEnabled: v.companion?.companionEnabled ?? null }, complete: true, resultCode: 'MEMORY_REMEMBERED',
+        sideEffects: [{ kind: 'MEMORY_REMEMBERED', memoryId: v.memoryId, transactional: false }] };
+    },
+  },
+  {
     actionId: 'COMPANION.MEMORY.FORGET', version: 1, riskClass: 'LOCAL_MUTATION', idempotency: 'NON_IDEMPOTENT', modelProposable: true, mode: 'POINT_OF_NO_RETURN',
     supersedesTargetProposals: true,
     description: 'Forgets one memory everywhere (NB-5 record and vector, Companion metadata, linked proposals, session references, caches), verified.',
@@ -347,5 +392,6 @@ export function parseModelActionOutput(raw) {
   if (claims.length) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'a model can propose an action, never approve, confirm or execute it', { reason: 'MODEL_SELF_APPROVAL', fields: claims.slice(0, 10) });
   for (const k of Object.keys(obj)) if (!MODEL_FIELDS.includes(k)) invalid('UNKNOWN_FIELD', k.slice(0, 40));
   const def = lookupAction(obj.actionId);
+  if (def.modelProposable !== true) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'a model cannot propose this action', { reason: 'MODEL_NOT_ALLOWED' });
   return freezeDeep({ actionId: def.actionId, parameters: validateParameters(def, obj.parameters) });
 }

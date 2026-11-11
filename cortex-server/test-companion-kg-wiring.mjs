@@ -124,6 +124,10 @@ test('1. known video: real KG context reaches the local model, kgContextUsed = t
   assert.ok(kgTexts(r.lastMessages()).some(t => t.includes(VIDEO)), 'the model sees the video as KG data');
   assert.ok(out.kgProvenance.length > 0 && out.kgProvenance.every(p => p.authority === 'NONE' && p.sourceRef));
   assert.ok(out.kgProvenance.some(p => p.evidenceRefs.some(e => e.kind === 'neuron' && e.ref === 'v-1')), 'source identifier (Neurone page id) kept');
+  const transmitted = dataOf(r.lastMessages()).retrievedData.filter(i => i.kind === 'KG_RESULT');
+  assert.deepEqual(out.contextSources.map(s => s.itemId).sort(), transmitted.map(i => i.id).sort());
+  assert.ok(out.contextSources.some(s => s.excerpt.includes(VIDEO)), 'actual readable label, not an invented title');
+  assert.ok(out.contextSources.every(s => s.stage === 'TRANSMITTED' && s.citationStatus === 'NOT_ASSESSED' && s.authority === 'NONE'));
 });
 
 test('2. known collection retrieval', async () => {
@@ -193,7 +197,7 @@ test('8. privacy: private videos / collections never reach the context', async (
   const r = await rig();
   const out = await r.conversation.answer({ text: PRIVATE_VIDEO });
   // lexical overlap may surface unrelated PUBLIC items; nothing private (video, its collection, its page id) may appear
-  const all = JSON.stringify(r.srv.state.chatBodies.at(-1).messages.slice(0, 2)) + JSON.stringify(out.kgProvenance);
+  const all = JSON.stringify(r.srv.state.chatBodies.at(-1).messages.slice(0, 2)) + JSON.stringify(out.kgProvenance) + JSON.stringify(out.contextSources);
   for (const s of ['Zanzibar', 'v-priv', 'ch-priv', 'EEEEEEEEEEE']) assert.equal(all.includes(s), false, s);
   assert.ok(kgTexts(r.lastMessages()).every(t => !/priv[ée]e/i.test(JSON.parse(t).label ?? '')));
 });
@@ -252,6 +256,7 @@ test('12. secret-shaped KG text is excluded item by item; the answer is not bloc
   const out = await r.conversation.answer({ text: 'Tutoriel configuration' });
   assert.equal(out.text, 'DOCTEUR_LOCAL_OK');
   assert.equal(JSON.stringify(r.lastMessages()).includes('sk-ABCDEFGHIJ'), false);
+  assert.equal(JSON.stringify(out.contextSources).includes('sk-ABCDEFGHIJ'), false);
   assert.ok(out.diagnostics.kg.excluded.includes('SECRET'));
 });
 
@@ -523,5 +528,8 @@ test('30. isolation: 0 external network, loopback fake runtime only, real DB and
   assert.ok(loopbackCalls > 0);
   assert.deepEqual(REAL.map(fileHash), realBefore);
   const conv = fs.readFileSync(path.join(HERE, 'src', 'lib', 'companion-conversation.js'), 'utf8');
-  assert.deepEqual([...conv.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]).sort(), ['./companion-contracts.js', 'node:crypto']);
+  // Readable excerpts add the existing PURE secret detector, not a storage/graph/model/network capability.
+  assert.deepEqual([...conv.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]).sort(), ['./companion-contracts.js', './companion-secrets.js', 'node:crypto']);
+  const secrets = fs.readFileSync(path.join(HERE, 'src', 'lib', 'companion-secrets.js'), 'utf8');
+  assert.doesNotMatch(secrets, /from ['"](?:node:)?(?:fs|http|https|net|child_process)['"]|\bfetch\s*\(/);
 });

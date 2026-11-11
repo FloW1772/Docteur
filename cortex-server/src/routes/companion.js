@@ -46,7 +46,10 @@ const disabledStatus = Object.freeze({
 export function createCompanionUiRoute({ service = null, conversation = null, disabledReason = 'COMPANION_UNCERTIFIED_DISABLED', logger = null } = {}) {
   const app = new Hono();
   const body = async (c) => {
-    const value = await c.req.json().catch(() => null);
+    const text = await c.req.text().catch(() => null);
+    if (typeof text !== 'string' || Buffer.byteLength(text) > MODEL_BODY_BYTES) throw new CompanionError('INVALID_ACTION_PAYLOAD', 'bounded JSON object required');
+    let value;
+    try { value = parseStrictJson(text); } catch (e) { throw new CompanionError('INVALID_ACTION_PAYLOAD', 'unambiguous JSON object required', { reason: e?.details?.reason ?? 'NOT_JSON' }); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CompanionError('INVALID_ACTION_PAYLOAD', 'JSON object required');
     return value;
   };
@@ -82,7 +85,7 @@ export function createCompanionUiRoute({ service = null, conversation = null, di
   const fail = (c, error) => {
     const known = error instanceof CompanionError;
     const code = known ? error.code : 'ACTION_FAILED';
-    if (!known) logger?.error?.({ code, error: error?.message ?? String(error) }, 'COMPANION_UI_ROUTE_ERROR');
+    if (!known) logger?.error?.({ code }, 'COMPANION_UI_ROUTE_ERROR');
     return c.json({ ok: false, error: { code, message: known ? error.message : 'Erreur interne.', reason: known ? error.details?.reason ?? null : 'INTERNAL' } }, HTTP[code] ?? (known ? 400 : 500));
   };
   const wrap = (fn) => async (c) => { try { return await fn(c); } catch (error) { return fail(c, error); } };
@@ -94,7 +97,11 @@ export function createCompanionUiRoute({ service = null, conversation = null, di
   app.delete('/companion/sessions/:uiSessionId', wrap(async (c) => ok(c, await requireService().closeUiSession(c.req.param('uiSessionId')))));
   app.get('/companion/memories/:memoryId/explanation', wrap(async (c) => ok(c, await requireService().explainMemory(c.req.param('memoryId')))));
   app.get('/companion/contexts/:requestId/explanation', wrap(async (c) => ok(c, await requireService().explainContext(c.req.param('requestId')))));
-  app.post('/companion/proposals', wrap(async (c) => { const b = await body(c); return ok(c, await requireService().propose(b.actionId, b.parameters)); }));
+  app.post('/companion/proposals', wrap(async (c) => {
+    const b = await body(c);
+    if (Object.keys(b).some(k => !['actionId', 'parameters'].includes(k))) throw new CompanionError('INVALID_ACTION_PAYLOAD', 'unknown proposal field', { reason: 'UNKNOWN_FIELD' });
+    return ok(c, await requireService().propose(b.actionId, b.parameters));
+  }));
   app.post('/companion/model-proposals', wrap(async (c) => { const b = await modelBody(c); return ok(c, await requireService().proposeFromModel(b)); }));
   // [COMP-REMED-1] open proposals (PENDING / APPROVED) so the product panel shows model proposals; disabled → none
   app.get('/companion/proposals', wrap(async (c) => ok(c, service ? await service.listProposals() : [])));

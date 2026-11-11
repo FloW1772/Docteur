@@ -21,7 +21,7 @@
 // Every step is audited in companion_action_audit (append-only, hash-chained): ids, digest, class, status, codes,
 // timestamps — never a parameter value outside ids / enums, a preview, a statement, a prompt or a secret.
 
-import { CompanionError, newId, nowIso, sha256Hex, boundedJson, freezeDeep, limit } from './companion-contracts.js';
+import { CompanionError, newId, nowIso, sha256Hex, boundedJson, freezeDeep, limit, createEphemeralBinder } from './companion-contracts.js';
 import { detectSecretInValue } from './companion-secrets.js';
 import {
   ACTION_ERROR, ACTION_LIMITS, ACTION_CLASS, deny, lookupAction, validateParameters, canonicalJson, computeActionDigest, previewSha256, parseModelActionOutput, describeRegistry,
@@ -100,9 +100,28 @@ export function createCompanionActions({ store, companion, now = null, approvalT
   const guard = (fn, ctx = () => ({})) => { try { return fn(); } catch (e) { return refuse(e, ctx()); } };
 
   // ── persistence ──
+  // REMEMBER's raw text must never enter the immutable action history. Only its category and a KEYED binding are
+  // persisted: the action digest, the preview hash and the stored parameters of a REMEMBER proposal are HMACs under a
+  // random key held only by this process, so no plain hash of a short statement (guessable offline) ever reaches the
+  // proposal, approval or audit tables. The bounded draft lives here until decision/expiry; after a restart the key and
+  // the draft are gone, so an old proposal fails closed and the person types the information again.
+  // This is an ephemeral approval payload, never a retrieval source or a second durable memory store.
+  const REMEMBER = 'COMPANION.MEMORY.REMEMBER';
+  const bind = createEphemeralBinder();
+  const draftBinding = (params) => bind(JSON.stringify(['draft', params.category, params.value]));
+  const previewShaOf = (def, p) => (def.actionId === REMEMBER ? bind(JSON.stringify(['preview', canonicalJson(p, ACTION_LIMITS.previewBytes.value, 'action preview')])) : previewSha256(p));
+  const rememberDrafts = new Map();
+  const dropDraft = (id) => { const draft = rememberDrafts.get(id); if (draft) clearTimeout(draft.timer); rememberDrafts.delete(id); };
+  const parametersFor = (r) => {
+    const stored = JSON.parse(r.parameters_json);
+    if (r.action_id !== REMEMBER) return stored;
+    if (!OPEN.includes(r.status) || clock() >= Date.parse(r.expires_at)) { dropDraft(r.proposal_id); return stored; }
+    const draft = rememberDrafts.get(r.proposal_id);
+    return draft && stored.draftBinding === draftBinding(draft.params) && stored.category === draft.params.category ? draft.params : stored;
+  };
   const proposalRow = (r) => r && freezeDeep({
     proposalId: r.proposal_id, actionId: r.action_id, actionVersion: r.action_version, riskClass: r.risk_class, target: JSON.parse(r.target_json),
-    parameters: JSON.parse(r.parameters_json), canonicalParameters: r.parameters_json, digest: r.action_digest, previewSha256: r.preview_sha256,
+    parameters: parametersFor(r), canonicalParameters: r.parameters_json, digest: r.action_digest, previewSha256: r.preview_sha256,
     proposedBy: r.proposed_by, status: r.status, resultCode: r.result_code, createdAt: r.created_at, expiresAt: r.expires_at, decidedAt: r.decided_at, supersededBy: r.superseded_by,
   });
   const getRow = (proposalId) => proposalRow(db.prepare('SELECT * FROM companion_action_proposals WHERE owner_id = ? AND proposal_id = ?').get(owner, String(proposalId)));
@@ -113,6 +132,7 @@ export function createCompanionActions({ store, companion, now = null, approvalT
   function setStatus(proposalId, from, to, { resultCode = null, supersededBy = null } = {}) {
     const r = db.prepare(`UPDATE companion_action_proposals SET status = ?, decided_at = ?, result_code = ?, superseded_by = ?
       WHERE owner_id = ? AND proposal_id = ? AND status IN (${from.map(() => '?').join(', ')})`).run(to, iso(), resultCode, supersededBy, owner, proposalId, ...from);
+    if (r.changes === 1 && !OPEN.includes(to)) dropDraft(proposalId);
     return r.changes === 1;
   }
   const expired = (isoTime) => clock() >= Date.parse(isoTime);
@@ -120,16 +140,27 @@ export function createCompanionActions({ store, companion, now = null, approvalT
   function build(def, parameters) {
     const params = validateParameters(def, parameters);
     const target = def.target(params, { ownerId: owner });
-    const digest = computeActionDigest({ ownerId: owner, actionId: def.actionId, actionVersion: def.version, riskClass: def.riskClass, target, parameters: params });
+    // REMEMBER: the digest covers the keyed binding of the exact text (still one digest per exact text and category)
+    const digestParams = def.actionId === REMEMBER ? { category: params.category, draftBinding: draftBinding(params) } : params;
+    const digest = computeActionDigest({ ownerId: owner, actionId: def.actionId, actionVersion: def.version, riskClass: def.riskClass, target, parameters: digestParams });
     return { params, target, digest };
   }
   function previewOf(def, params) {
+    if (def.actionId === REMEMBER && typeof params?.value !== 'string') {
+      deny(ACTION_ERROR.PREVIEW_STALE, 'the temporary draft is unavailable: enter the information again', { reason: 'DRAFT_UNAVAILABLE' });
+    }
     let p;
     try { p = def.preview(ports, params); } catch (e) {
       if (e instanceof CompanionError && e.details?.decision) throw e;
       deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'the action target cannot be previewed', { reason: String(e?.code ?? 'PREVIEW_FAILED').slice(0, 60) });
     }
-    return { preview: p, sha: previewSha256(p) };
+    return { preview: p, sha: previewShaOf(def, p) };
+  }
+  // Recheck persisted origins at review, approval and execution too (including proposals created by older builds).
+  function requireOrigin(def, proposedBy) {
+    if (proposedBy !== 'USER' && (proposedBy !== 'MODEL' || def.modelProposable !== true)) {
+      deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'this action requires a user-originated proposal', { reason: 'MODEL_NOT_ALLOWED' });
+    }
   }
 
   // ── proposals ──
@@ -137,19 +168,20 @@ export function createCompanionActions({ store, companion, now = null, approvalT
     let def = null;
     return guard(() => {
       def = lookupAction(actionId);
+      requireOrigin(def, proposedBy);
       const { params, target, digest } = build(def, parameters);
       const { preview, sha } = previewOf(def, params);
       if (proposedBy === 'MODEL') {
-        if (!def.modelProposable) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'a model cannot propose this action', { reason: 'MODEL_NOT_ALLOWED' });
         if (preview.privacyImpact?.level === 'LOOSENS_CLOUD') deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'a model never proposes to loosen privacy toward the cloud: the user starts it', { reason: 'MODEL_PRIVACY_LOOSENING' });
       }
       const at = iso(); const expiresAt = nowIso(clock() + ACTION_LIMITS.proposalTtlMs.value); const id = newId();
       const targetJson = canonicalJson(target, 512, 'action target');
+      const persistedParams = def.actionId === REMEMBER ? { category: params.category, draftBinding: draftBinding(params) } : params;
       tx(() => {
         const open = db.prepare(`SELECT COUNT(*) AS n FROM companion_action_proposals WHERE owner_id = ? AND status IN ('PENDING','APPROVED') AND expires_at > ?`).get(owner, at).n;
         if (open >= ACTION_LIMITS.openProposals.value) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, `at most ${ACTION_LIMITS.openProposals.value} open action proposals`, { reason: 'TOO_MANY_OPEN_PROPOSALS' });
         db.prepare(`INSERT INTO companion_action_proposals (proposal_id, owner_id, action_id, action_version, risk_class, target_json, parameters_json, action_digest, preview_sha256, proposed_by, status, created_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`).run(id, owner, def.actionId, def.version, def.riskClass, targetJson, canonicalJson(params), digest, sha, proposedBy, at, expiresAt);
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`).run(id, owner, def.actionId, def.version, def.riskClass, targetJson, canonicalJson(persistedParams), digest, sha, proposedBy, at, expiresAt);
         // one open proposal per action and target: a changed payload replaces the previous one (and voids its approval)
         for (const old of db.prepare(`SELECT proposal_id, action_digest FROM companion_action_proposals WHERE owner_id = ? AND action_id = ? AND target_json = ? AND proposal_id <> ? AND status IN ('PENDING','APPROVED')`).all(owner, def.actionId, targetJson, id)) {
           setStatus(old.proposal_id, OPEN, 'SUPERSEDED', { supersededBy: id });
@@ -157,14 +189,19 @@ export function createCompanionActions({ store, companion, now = null, approvalT
         }
         audit('ACTION_PROPOSED', { def, proposalId: id, digest, details: { proposedBy, requiresApproval: def.requiresApproval, confirmationLevel: preview.confirmation?.level ?? 'NONE', privacyImpact: preview.privacyImpact?.level ?? 'NONE' } });
       });
+      if (def.actionId === REMEMBER) {
+        const timer = setTimeout(() => rememberDrafts.delete(id), ACTION_LIMITS.proposalTtlMs.value);
+        timer.unref?.(); rememberDrafts.set(id, { params, timer });
+      }
       return view(getRow(id), preview);
     }, () => ({ def, actionId: def?.actionId ?? null }));
   }
   function view(row, preview = undefined) {
     const def = lookupAction(row.actionId);
+    requireOrigin(def, row.proposedBy);
     let current = preview; let previewStale = false;
     if (current === undefined) {
-      try { current = previewOf(def, row.parameters).preview; previewStale = previewSha256(current) !== row.previewSha256; } catch { current = null; previewStale = true; }
+      try { current = previewOf(def, row.parameters).preview; previewStale = previewShaOf(def, current) !== row.previewSha256; } catch { current = null; previewStale = true; }
     }
     return freezeDeep({ ...row, preview: current, previewStale, requiresApproval: def.requiresApproval, idempotency: def.idempotency,
       confirmation: current?.confirmation ?? (def.requiresApproval ? null : { level: 'NONE' }), expired: OPEN.includes(row.status) && expired(row.expiresAt) });
@@ -199,6 +236,7 @@ export function createCompanionActions({ store, companion, now = null, approvalT
       row = getRow(proposalId) ?? deny(ACTION_ERROR.PROPOSAL_NOT_FOUND, 'action proposal not found', { reason: 'PROPOSAL_NOT_FOUND' });
       def = lookupAction(row.actionId);
       if (def.riskClass !== ACTION_CLASS.LOCAL_MUTATION) deny(ACTION_ERROR.ACTION_NOT_ALLOWED, 'a READ_ONLY action needs no approval', { reason: 'APPROVAL_NOT_APPLICABLE' });
+      requireOrigin(def, row.proposedBy);
       if (row.status !== 'PENDING') deny(ACTION_ERROR.ACTION_NOT_ALLOWED, `this proposal is ${row.status}`, { reason: `PROPOSAL_${row.status}` });
       if (expired(row.expiresAt)) { expireProposal(row, def); deny(ACTION_ERROR.PROPOSAL_EXPIRED, 'this proposal expired: propose again', { reason: 'PROPOSAL_EXPIRED' }); }
       if (digest !== row.digest) deny(ACTION_ERROR.APPROVAL_DIGEST_MISMATCH, 'the approved digest is not the proposal digest', { reason: 'APPROVED_DIGEST_DIFFERS' });
@@ -303,7 +341,15 @@ export function createCompanionActions({ store, companion, now = null, approvalT
       if (typeof approvalId !== 'string' || !ID_RE.test(approvalId)) deny(ACTION_ERROR.APPROVAL_NOT_FOUND, 'unknown approval', { reason: 'APPROVAL_NOT_FOUND' });
       ap = getApproval(approvalId) ?? deny(ACTION_ERROR.APPROVAL_NOT_FOUND, 'unknown approval', { reason: 'APPROVAL_NOT_FOUND' });
       row = getRow(ap.proposalId);
-      if (built.digest !== ap.actionDigest || built.digest !== row.digest) deny(ACTION_ERROR.APPROVAL_DIGEST_MISMATCH, 'the executed action is not the approved one', { reason: 'EXECUTED_DIGEST_DIFFERS' });
+      if (!row) deny(ACTION_ERROR.PROPOSAL_NOT_FOUND, 'action proposal not found', { reason: 'PROPOSAL_NOT_FOUND' });
+      requireOrigin(def, row.proposedBy);
+      if (built.digest !== ap.actionDigest || built.digest !== row.digest) {
+        // after a restart the REMEMBER binding key and RAM draft are gone: say so (the person types the information again)
+        if (def.actionId === REMEMBER && typeof row.parameters?.value !== 'string' && row.status === 'APPROVED' && !ap.consumedAt) {
+          deny(ACTION_ERROR.PREVIEW_STALE, 'the temporary draft is unavailable: enter the information again', { reason: 'DRAFT_UNAVAILABLE' });
+        }
+        deny(ACTION_ERROR.APPROVAL_DIGEST_MISMATCH, 'the executed action is not the approved one', { reason: 'EXECUTED_DIGEST_DIFFERS' });
+      }
       if (ap.consumedAt) deny(ACTION_ERROR.APPROVAL_ALREADY_USED, 'this approval was already used', { reason: 'APPROVAL_CONSUMED' });
       if (expired(ap.expiresAt)) { expireProposal(row, def); deny(ACTION_ERROR.APPROVAL_EXPIRED, 'this approval expired: approve again', { reason: 'APPROVAL_EXPIRED' }); }
       if (row.status !== 'APPROVED') deny(ACTION_ERROR.ACTION_NOT_ALLOWED, `this proposal is ${row.status}`, { reason: `PROPOSAL_${row.status}` });
@@ -319,7 +365,7 @@ export function createCompanionActions({ store, companion, now = null, approvalT
     }
     guard(() => {
       ({ preview } = previewOf(def, row.parameters));
-      if (previewSha256(preview) !== row.previewSha256) deny(ACTION_ERROR.PREVIEW_STALE, 'the state changed since the approved preview: approve a new proposal', { reason: 'PREVIEW_STALE' });
+      if (previewShaOf(def, preview) !== row.previewSha256) deny(ACTION_ERROR.PREVIEW_STALE, 'the state changed since the approved preview: approve a new proposal', { reason: 'PREVIEW_STALE' });
     }, () => ids);
 
     // atomic, single-use consumption
