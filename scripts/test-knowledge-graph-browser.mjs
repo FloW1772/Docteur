@@ -37,7 +37,8 @@ const xssClaim = assertClaim(store, { subjectEntityId: mallory, predicate: 'ceo'
 const stats = store.getStatistics();
 console.log(`# dataset: ${stats.entities.total} entities, ${stats.relationships.total} relations, ${stats.claims.total} claims (built in ${((Date.now() - tBuild) / 1000).toFixed(1)} s)`);
 let api = createKnowledgeGraphRoute(store);
-const disabledApi = createKnowledgeGraphRoute(null, { disabledReason: 'KG_UNCERTIFIED_DISABLED' });
+// [PAI-1] the real production disabled reason (kg-boot.js openProductionKnowledgeGraphAtBoot); KG_CERTIFIED is true
+const disabledApi = createKnowledgeGraphRoute(null, { disabledReason: 'KG_NOT_ACTIVATED' });
 const writesBefore = store.db.prepare('SELECT total_changes() AS n').get().n;
 
 const PORT = 5261;
@@ -397,7 +398,9 @@ try {
     await page.getByLabel('Rechercher une entité').fill('Acme');
     await page.getByRole('button', { name: 'Rechercher' }).click();
     await page.getByTestId('kg-disabled').waitFor();
-    ok((await page.getByTestId('kg-disabled').innerText()).includes('KG-CERT'), 'disabled state explained');
+    const disabledText = await page.getByTestId('kg-disabled').innerText();
+    ok(disabledText.includes('pas activé sur cette installation') && disabledText.includes('Motif : KG_NOT_ACTIVATED'), 'disabled state explained from the real reason');
+    ok(!disabledText.includes('KG-CERT') && !/certification/i.test(disabledText), 'no stale certification claim');
     await ctx.close();
   }
 

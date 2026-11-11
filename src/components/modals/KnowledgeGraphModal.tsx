@@ -12,6 +12,7 @@ import GraphCanvas, { type Selection } from '../knowledge-graph/GraphCanvas';
 import { ClaimDetails, EntityDetails, RelationDetails } from '../knowledge-graph/KgDetails';
 import KgTimeline from '../knowledge-graph/KgTimeline';
 import { cortexClient } from '../../lib/cortex/client';
+import { kgDisabledMessage } from '../../lib/kg/kg-availability';
 import type { KgClaimStatus, KgClaimView, KgEntityView, KgFilters, KgRelationView, KgSearchHit, KgTimeline as Timeline, KgViewError, KgVisibility } from '../../lib/cortex/client';
 import {
   createGraph, mergeNeighborhood, recenter as recenterGraph, fitTransform, zoomAt, centerOn, describeEdge, statusLabel, typeLabel,
@@ -66,6 +67,7 @@ export default function KnowledgeGraphModal({ onClose, scope = null, onOpenNeuro
   const [knownSources, setKnownSources] = useState<{ sourceId: string; name: string }[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [disabledReason, setDisabledReason] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [live, setLive] = useState('');
   const [metrics, setMetrics] = useState<{ lastMs: number; nodes: number; edges: number } | null>(null);
@@ -88,7 +90,11 @@ export default function KnowledgeGraphModal({ onClose, scope = null, onOpenNeuro
     });
   }, []);
 
-  const fail = useCallback((e: unknown) => setError(errorMessage(e)), []);
+  const fail = useCallback((e: unknown) => {
+    const err = e as KgViewError;
+    setDisabledReason(err?.code === 'KG_DISABLED' ? err.reason ?? null : null);
+    setError(errorMessage(e));
+  }, []);
   const announce = (g: GraphState, extra = '') => setLive(`${g.nodes.size} nœuds, ${g.edges.size} relations affichés.${extra ? ` ${extra}` : ''}`);
   const fit = useCallback((g: GraphState | null = graph) => { if (g) setTransform(fitTransform(g, size.current.w, size.current.h)); }, [graph]);
 
@@ -266,7 +272,14 @@ export default function KnowledgeGraphModal({ onClose, scope = null, onOpenNeuro
     return (
       <StudioShell icon={<Network size={18} />} title="Knowledge Graph" onClose={onClose}>
         <div className="studio-empty" data-testid="kg-disabled">
-          <p className="studio-empty-message">Le Knowledge Graph est désactivé tant que sa certification (KG-CERT) n’est pas terminée. Aucune donnée n’est créée dans votre base.</p>
+          {(() => {
+            const m = kgDisabledMessage(disabledReason);
+            return (<>
+              <p className="studio-empty-message" role="status">{m.title}</p>
+              <p className="studio-empty-message">{m.detail}</p>
+              {m.reason && <p className="studio-empty-message">Motif : {m.reason}</p>}
+            </>);
+          })()}
         </div>
       </StudioShell>
     );
