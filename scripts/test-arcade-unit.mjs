@@ -14,12 +14,23 @@ const id = 'a'.repeat(32), other = 'b'.repeat(32);
 const expected = { gameId: 'synapse-run', instanceId: id };
 const event = (type, payload = {}) => ({ channel: 'docteur-arcade', v: 1, ...expected, type, payload });
 
-test('registry: exactly one immutable original foundation, local approved route only', () => {
-  assert.equal(ARCADE_GAMES.length, 1);
+test('registry: exactly two immutable original games, local approved routes only', () => {
+  assert.equal(ARCADE_GAMES.length, 2);
   const game = ARCADE_GAMES[0];
   assert.deepEqual([game.id, game.title, game.route, game.status, game.availability], ['synapse-run', 'Synapse Run', '/arcade/synapse-run/index.html', 'PLAYABLE_CORE', 'PLAYABLE_PREVIEW']);
   assert.ok(Object.isFrozen(ARCADE_GAMES) && Object.isFrozen(game) && Object.isFrozen(game.capabilities));
   assert.equal(getArcadeGame('synapse-run'), game);
+  // [FILAMENT-1] second game: may ask the host to close it; Synapse Run may not
+  // [FILAMENT-3] it now saves its progression through the same host store (saveVersion window 1..1)
+  const filament = ARCADE_GAMES[1];
+  assert.deepEqual([filament.id, filament.title, filament.route, filament.status, filament.availability], ['filament', 'Filament', '/arcade/filament/index.html', 'PLAYABLE_CORE', 'PLAYABLE_PREVIEW']);
+  assert.ok(Object.isFrozen(filament) && Object.isFrozen(filament.capabilities) && Object.isFrozen(filament.save));
+  assert.equal(getArcadeGame('filament'), filament);
+  assert.equal(game.capabilities.includes('HOST_EXIT_REQUEST'), false);
+  assert.equal(filament.capabilities.includes('HOST_EXIT_REQUEST'), true);
+  assert.equal(filament.capabilities.includes('LOCAL_SAVE_V1'), true);
+  assert.deepEqual(filament.save, { currentVersion: 1, minSupportedVersion: 1 });
+  assert.equal(arcadeFrameSrc(filament.route, id), `${filament.route}#instance=${id}`);
   for (const bad of [null, {}, '../synapse-run', 'https://example.invalid', 'other']) assert.equal(getArcadeGame(bad), null);
   assert.equal(arcadeFrameSrc(game.route, id), `${game.route}#instance=${id}`);
   for (const route of ['https://example.invalid/index.html', '//example.invalid', '/arcade/other/index.html', '/arcade/../index.html', game.route + '?url=x', game.route + '#x', '/api/health']) assert.throws(() => arcadeFrameSrc(route, id), /ARCADE_BAD_ROUTE/);
@@ -42,8 +53,18 @@ test('standalone page keeps the exact restrictive page CSP and only local bootst
   assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]), ['./foundation.css', './game.js', './foundation.js']);
 });
 
+test('[FILAMENT-1] Filament page keeps the same restrictive CSP and only its own local assets', () => {
+  const synapse = fs.readFileSync(new URL('../public/arcade/synapse-run/index.html', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../public/arcade/filament/index.html', import.meta.url), 'utf8');
+  const policyOf = text => /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(text)[1];
+  assert.equal(policyOf(html), policyOf(synapse));
+  assert.deepEqual([...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => match[1]), ['./filament.css', './game.js', './host.js']);
+});
+
 test('game protocol accepts every exact allowed payload', () => {
-  for (const data of [event('ARCADE_READY'), ...['active', 'paused', 'stopped'].map(state => event('ARCADE_STATE', { state })), event('ARCADE_ERROR', { code: 'GAME_RUNTIME_ERROR' })]) assert.deepEqual(parseArcadeGameEvent(data, expected), data);
+  for (const data of [event('ARCADE_READY'), ...['active', 'paused', 'stopped'].map(state => event('ARCADE_STATE', { state })), event('ARCADE_ERROR', { code: 'GAME_RUNTIME_ERROR' }), event('ARCADE_EXIT_REQUEST')]) assert.deepEqual(parseArcadeGameEvent(data, expected), data);
+  // [FILAMENT-1] the exit request carries nothing
+  assert.equal(parseArcadeGameEvent(event('ARCADE_EXIT_REQUEST', { target: 'x' }), expected), null);
 });
 
 test('game protocol rejects unknown types, malformed envelopes and payloads', () => {

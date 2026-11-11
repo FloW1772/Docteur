@@ -84,6 +84,8 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
   const droppedRef = useRef(0);
   const saveInFlightRef = useRef(0);
   const saveRequestsRef = useRef(0);
+  // [FILAMENT-1] the latest stop() (it closes over props); an exit request does exactly what the Stop button does
+  const stopRef = useRef<() => void>(() => {});
   const [saveNote, setSaveNote] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenError, setFullscreenError] = useState('');
@@ -177,6 +179,11 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         case 'ARCADE_FULLSCREEN_EXIT':
           if (readyRef.current && document.fullscreenElement === rootRef.current) void document.exitFullscreen().catch(() => {});
           return;
+        case 'ARCADE_EXIT_REQUEST':
+          // [FILAMENT-1] only after READY, only for a game that declares it; otherwise counted as dropped
+          if (!readyRef.current || !game.capabilities.includes('HOST_EXIT_REQUEST')) { drop(); return; }
+          stopRef.current();
+          return;
         case 'ARCADE_STATE':
           if (readyRef.current) setPhase(message.payload.state);
           return;
@@ -215,7 +222,7 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
       window.removeEventListener('message', onMessage);
       window.clearTimeout(readyTimer);
     };
-  }, [game.id, instanceId, post, closeWithError, frameMounted]);
+  }, [game.id, game.capabilities, instanceId, post, closeWithError, frameMounted]);
 
   const onFrameLoad = () => {
     loadsRef.current += 1;
@@ -228,6 +235,7 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
     closedRef.current = true;
     onStop();
   };
+  stopRef.current = stop;
 
   const status = PHASE_STATUS[phase];
   return (
@@ -271,8 +279,8 @@ export default function ArcadeGameHost({ game, onStop }: Props) {
         <button type="button" className="arc-btn danger" data-testid="arcade-stop" onClick={stop}>Arrêter</button>
       </div>
       {fullscreenError && <p className="arc-muted" role="status">{fullscreenError}</p>}
-      <p className="arc-muted" role="status" data-testid="arcade-save-status">{saveNote ?? 'Sauvegarde locale : en attente du jeu'}</p>
-      <p className="arc-muted">Clavier : cliquez dans le jeu ou atteignez-le avec Tab, puis ← → (ou A D) pour changer de couloir, ↑ / W / Espace pour sauter, ↓ / S pour glisser, Entrée pour démarrer ou rejouer. Tab en ressort.</p>
+      <p className="arc-muted" role="status" data-testid="arcade-save-status">{game.save ? (saveNote ?? 'Sauvegarde locale : en attente du jeu') : 'Sauvegarde locale : aucune pour ce jeu'}</p>
+      <p className="arc-muted">{game.controlsHint}</p>
     </section>
   );
 }
