@@ -206,6 +206,32 @@ export function createMemoryService(deps) {
 
   // ── writes ────────────────────────────────────────────────────────────────
   const audit = (id, action, actor = 'user', oldS = null, newS = null) => db().prepare('INSERT INTO dmem_audit (memory_id, action, actor, old_status, new_status, at) VALUES (?,?,?,?,?,?)').run(id, action, actor, oldS, newS, nowIso());
+
+  // C3a: a vector the store could not delete is reported ('PENDING') and recorded in the content-free audit (ids only),
+  // then retried by sweepRetention. An orphan vector is never used meanwhile: retrieval needs dmem_embeddings + the item.
+  async function purgeVector(id) {
+    try { await vectorStore.delete([id]); return 'DONE'; } catch {
+      try { audit(id, 'VECTOR_PURGE_PENDING', 'system'); } catch { /* DB unavailable: retrieval still ignores the orphan */ }
+      log('warn', { memoryId: id, operation: 'memory_vector_purge' }, 'memory vector purge pending');
+      return 'PENDING';
+    }
+  }
+  // A memory that is live again with a current embedding owns its vector (re-indexed after an edit): never deleted.
+  const ownsVector = (id) => !!db().prepare(`SELECT 1 FROM dmem_items m JOIN dmem_embeddings e ON e.memory_id = m.memory_id
+    WHERE m.memory_id = ? AND m.status != 'REVOKED' AND e.statement_hash = m.statement_hash`).get(id);
+  async function retryVectorPurges({ limit = 100 } = {}) {
+    const pending = db().prepare(`SELECT DISTINCT p.memory_id FROM dmem_audit p WHERE p.action = 'VECTOR_PURGE_PENDING'
+      AND NOT EXISTS (SELECT 1 FROM dmem_audit d WHERE d.memory_id = p.memory_id AND d.action = 'VECTOR_PURGE_DONE' AND d.audit_id > p.audit_id) LIMIT ?`).all(limit).map(r => r.memory_id);
+    let vectorPurged = 0; let vectorPurgePending = 0;
+    for (const id of pending) {
+      if (!ownsVector(id)) {
+        try { await vectorStore.delete([id]); } catch { vectorPurgePending += 1; continue; }
+        if (ownsVector(id)) await indexVector(id); // re-indexed while we deleted: write its vector back
+      }
+      audit(id, 'VECTOR_PURGE_DONE', 'system'); vectorPurged += 1;
+    }
+    return { vectorPurged, vectorPurgePending };
+  }
   const revision = (id, version, action, f = {}) => db().prepare('INSERT INTO dmem_revisions (revision_id, memory_id, version, action, old_statement, new_statement, old_status, new_status, reason, at) VALUES (?,?,?,?,?,?,?,?,?,?)')
     .run(newId('nrev'), id, version, action, f.oldStatement ?? null, f.newStatement ?? null, f.oldStatus ?? null, f.newStatus ?? null, f.reason ?? null, nowIso());
   const projectName = (pid) => (pid ? (getProject(pid)?.name ?? pid) : '');
@@ -245,7 +271,7 @@ export function createMemoryService(deps) {
       await vectorStore.upsert([{ memory_id: memoryId, scope_kind: m.scope_kind, project_id: m.project_id, notebook_id: m.notebook_id, vector: v }]);
     } catch { return 'VECTOR_UNAVAILABLE'; }
     const cur = db().prepare('SELECT statement_hash, status FROM dmem_items WHERE memory_id = ?').get(memoryId);
-    if (!cur || cur.status === 'REVOKED' || cur.statement_hash !== m.statement_hash) { await vectorStore.delete([memoryId]).catch(() => {}); return cur ? 'STALE' : 'DELETED'; } // deleted / edited meanwhile: never leave a stale or resurrected vector
+    if (!cur || cur.status === 'REVOKED' || cur.statement_hash !== m.statement_hash) { await purgeVector(memoryId); return cur ? 'STALE' : 'DELETED'; } // deleted / edited meanwhile: never leave a stale or resurrected vector
     db().prepare('INSERT OR REPLACE INTO dmem_embeddings (memory_id, provider, model, dimension, embed_version, statement_hash, created_at) VALUES (?,?,?,?,?,?,?)').run(memoryId, provider, model, v.length, embedFormat.version, m.statement_hash, nowIso());
     return 'READY';
   }
@@ -382,9 +408,9 @@ export function createMemoryService(deps) {
       db().prepare(`DELETE FROM dmem_conflicts WHERE (memory_a = ? OR memory_b = ?) AND status = 'OPEN'`).run(id, id);
       db().prepare(`DELETE FROM dmem_suggestions WHERE (new_id = ? OR old_id = ?) AND status = 'PENDING'`).run(id, id);
     })();
-    await vectorStore.delete([id]).catch(() => {}); // old vector removed before the new one is written
+    const vectorPurge = await purgeVector(id); // old vector removed before the new one is written
     const fin = await finalize(id);
-    return { memory: getMemory(id), ...fin, redacted: prepared.redacted };
+    return { memory: getMemory(id), ...fin, redacted: prepared.redacted, vectorPurge };
   }
 
   async function revoke(id, o = {}) {
@@ -400,8 +426,8 @@ export function createMemoryService(deps) {
       db().prepare(`UPDATE dmem_conflicts SET status = 'RESOLVED', resolution = 'REVOKED', resolved_at = ? WHERE (memory_a = ? OR memory_b = ?) AND status = 'OPEN'`).run(t, id, id);
       db().prepare(`UPDATE dmem_suggestions SET status = 'DISMISSED', decided_at = ? WHERE (new_id = ? OR old_id = ?) AND status = 'PENDING'`).run(t, id, id);
     })();
-    await vectorStore.delete([id]).catch(() => {}); // active retrieval of a revoked memory is 0 — in FTS and vectors alike
-    return { memory: getMemory(id) };
+    const vectorPurge = await purgeVector(id); // active retrieval of a revoked memory is 0 — in FTS and vectors alike
+    return { memory: getMemory(id), vectorPurge };
   }
 
   function setArchived(id, archived, o = {}) {
@@ -431,8 +457,8 @@ export function createMemoryService(deps) {
       db().prepare('DELETE FROM dmem_items WHERE memory_id = ?').run(id);
       audit(id, 'DELETE', actor, row.status, null);
     })();
-    await vectorStore.delete([id]).catch(() => {});
-    return { ok: true };
+    const vectorPurge = await purgeVector(id);
+    return { ok: true, vectorPurge };
   }
 
   // ── supersession (suggested by the system, CONFIRMED by a human) ──────────
@@ -555,7 +581,9 @@ export function createMemoryService(deps) {
     const expired = db().prepare(`SELECT memory_id FROM dmem_items WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?`).all(nowIso(), limit).map(r => r.memory_id);
     const stale = db().prepare(`SELECT memory_id FROM dmem_items WHERE retention = 'SESSION_ONLY' AND (session_id IS NULL OR session_id != ?) LIMIT ?`).all(sessionId, limit).map(r => r.memory_id);
     for (const id of [...expired, ...stale]) { try { await deleteMemory(id, { actor: 'retention' }); } catch { /* already gone */ } }
-    return { expired: expired.length, staleSession: stale.length };
+    let purge = { vectorPurged: 0, vectorPurgePending: 0 };
+    try { purge = await retryVectorPurges({ limit }); } catch { /* DB not ready: retried on the next sweep */ }
+    return { expired: expired.length, staleSession: stale.length, ...purge };
   }
   try { ensureMemorySchema(db()); } catch { /* DB not ready: the document service creates the same idempotent schema */ }
   const ready = sweepRetention({ limit: 1000 }).catch(() => ({}));

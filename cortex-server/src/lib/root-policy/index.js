@@ -148,9 +148,10 @@ export function enforce(request) {
 export function enforceCloudAi({ provider, messages, strictLocal, cloudEnabled }) {
   let containsSecret = false;
   try { containsSecret = containsSecretShape(JSON.stringify(messages)); } catch { containsSecret = false; }
+  // C3d: explicit opt-in only — an absent, null or non-boolean cloudEnabled is "not enabled" (fail closed).
   return enforce({
     action: 'AI_CLOUD_REQUEST', module: 'ai', trustDomain: 'AI',
-    context: { provider: String(provider ?? ''), strictLocal: strictLocal === true, cloudEnabled: cloudEnabled !== false, providerConfigured: true, containsSecret, localEquivalentAvailable: true, userChoseCloud: true },
+    context: { provider: String(provider ?? ''), strictLocal: strictLocal === true, cloudEnabled: cloudEnabled === true, providerConfigured: true, containsSecret, localEquivalentAvailable: true, userChoseCloud: true },
   });
 }
 
