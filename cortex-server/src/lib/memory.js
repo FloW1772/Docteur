@@ -29,11 +29,13 @@ import { isLocalOnlySource } from './source-privacy.js';
 
 const MEMORY_SETTINGS_DEFAULTS = {
   enabled: true,           // "Apprentissage contextuel local" master switch
-  learn_from_searches: true,
-  learn_from_neurons: true,
-  learn_from_corrections: true,
+  // C2: automatic learning is opt-in — each source stays off until the user turns it on in Settings.
+  learn_from_searches: false,
+  learn_from_neurons: false,
+  learn_from_corrections: false,
   budget: 'normal',        // 'low' | 'normal' | 'extended'
 };
+const LEARNING_SOURCES = ['learn_from_searches', 'learn_from_neurons', 'learn_from_corrections'];
 
 const BUDGET_LEVELS = {
   low:      { maxMemories: 3, maxChunks: 3 },
@@ -43,7 +45,10 @@ const BUDGET_LEVELS = {
 
 export function getMemorySettings() {
   const stored = getMeta('memory_settings', {});
-  return { ...MEMORY_SETTINGS_DEFAULTS, ...stored };
+  const settings = { ...MEMORY_SETTINGS_DEFAULTS, ...stored };
+  // C2: only the boolean true opts in — a stored string, number, object or null leaves the source off.
+  for (const k of LEARNING_SOURCES) settings[k] = settings[k] === true;
+  return settings;
 }
 
 export function setMemorySettings(updates) {
