@@ -65,8 +65,9 @@ export function guardCloudCall({ messages, provider, functionCalled, simulate = 
   // untrusted policy. The synthetic self-test (simulate) never reaches a provider and is not a real request.
   if (!simulate) {
     let settings = null;
-    try { settings = getRouterSettings(); } catch { /* db not ready: defaults below */ }
-    enforceCloudAi({ provider, messages, strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled !== false });
+    try { settings = getRouterSettings(); } catch { /* unreadable settings: cloud stays closed below */ }
+    // C1a: cloud only on an explicit boolean opt-in — absent, null, non-boolean or unreadable never enables it.
+    enforceCloudAi({ provider, messages, strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled === true });
   }
 }
 

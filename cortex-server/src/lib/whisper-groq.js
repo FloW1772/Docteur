@@ -16,8 +16,9 @@ const TIMEOUT_MS = 180_000; // 3 minutes
 export async function transcribeWithGroq(audioPath, apiKey) {
   // ROOT POLICY (AI_CLOUD_REQUEST): audio leaves the machine — strict local, explicit cloud opt-in, fail closed on an untrusted policy.
   let settings = null;
-  try { settings = getRouterSettings(); } catch { /* db not ready: defaults */ }
-  enforceCloudAi({ provider: 'groq-whisper', messages: [], strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled !== false });
+  try { settings = getRouterSettings(); } catch { /* unreadable settings: cloud stays closed below */ }
+  // C1a: cloud only on an explicit boolean opt-in — absent, null, non-boolean or unreadable never enables it.
+  enforceCloudAi({ provider: 'groq-whisper', messages: [], strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled === true });
   const stat = fs.statSync(audioPath);
   if (stat.size > MAX_FILE_BYTES) {
     const err = new Error(

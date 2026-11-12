@@ -378,7 +378,8 @@ async function buildTaskCandidates({ keys, settings, preferredProvider, preferre
   // cloud → local fallback is kept) or, decided up front, when no local
   // candidate can serve the required capabilities.
   if (local && (!preferredProvider || preferredProvider === 'local')) return candidates;
-  if (!allowCloud || settings?.strict_local_mode === true || settings?.cloud_enabled === false) return candidates;
+  // C1a: cloud candidates only on an explicit boolean opt-in (cloud_enabled === true).
+  if (!allowCloud || settings?.strict_local_mode === true || settings?.cloud_enabled !== true) return candidates;
 
   const cloud = (await cloudCandidates(keys, settings, logger, preferredModel))
     .filter(candidate => allowPaid || !candidate.paid)
@@ -410,7 +411,7 @@ export async function runAiTask({
 } = {}) {
   const startedAt = Date.now();
   const strictLocal = settings?.strict_local_mode === true;
-  const cloudAllowed = allowCloud && !strictLocal && settings?.cloud_enabled !== false;
+  const cloudAllowed = allowCloud && !strictLocal && settings?.cloud_enabled === true; // C1a: explicit boolean opt-in only
   const keys = getCloudKeys();
   const candidates = await buildTaskCandidates({
     keys, settings, preferredProvider, preferredModel, requiredCapabilities,
@@ -551,7 +552,7 @@ export async function routedCompletion(client, { action, input, context = {}, me
   const wordCount = context.word_count ?? 0;
 
   const keys         = getCloudKeys();
-  const cloudEnabled = settings?.cloud_enabled !== false;
+  const cloudEnabled = settings?.cloud_enabled === true; // C1a: explicit boolean opt-in only
   const hasCandidates = (await cloudCandidates(keys, settings, logger)).length > 0;
   const quotaBlocked  = quotaCurrentlyExhausted();
 
