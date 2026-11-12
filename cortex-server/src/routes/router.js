@@ -8,6 +8,11 @@ import { publicErrorBody } from '../lib/safe-error-contract.js';
 
 const ROUTER_FAILED = { code: 'ROUTER_REQUEST_FAILED', message: 'Opération du routeur impossible.', status: 500 };
 const PAIR_TEST_FAILED = 'PAIR injoignable ou en erreur : vérifiez l’endpoint et que le serveur PAIR tourne.';
+// C1b: router settings that open the cloud, leave Strict Local or allow billed APIs — booleans only.
+const BOOLEAN_SWITCHES = Object.freeze(['cloud_enabled', 'strict_local_mode', 'paying_apis_enabled']);
+const settingsInvalid = (field) => (field
+  ? { error: `Réglage invalide : ${field} doit être true ou false.`, code: 'ROUTER_SETTINGS_INVALID', field }
+  : { error: 'Réglages invalides : un objet JSON est attendu.', code: 'ROUTER_SETTINGS_INVALID' });
 import {
   getRouterSettings, getRouterStats, setRouterSettings,
   getCloudKeys, setCloudKey, getCloudKeysMasked, getCloudKeyStatuses, getCloudStatsThisMonth,
@@ -106,7 +111,13 @@ export function createRouterRoute({ services }) {
   // POST /api/router/settings
   route.post('/router/settings', async (c) => {
     try {
-      const body = await c.req.json();
+      // C1b: the privacy / cost switches are stored only as real booleans. A present non-boolean value (or a body
+      // that is not a JSON object) is refused with 400 and nothing is stored; an absent field keeps its value.
+      let body;
+      try { body = await c.req.json(); } catch { return c.json(settingsInvalid(null), 400); }
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) return c.json(settingsInvalid(null), 400);
+      const bad = BOOLEAN_SWITCHES.find((k) => Object.hasOwn(body, k) && typeof body[k] !== 'boolean');
+      if (bad) return c.json(settingsInvalid(bad), 400);
       setRouterSettings(body);
       return c.json({ ok: true, settings: getRouterSettings() });
     } catch (error) {
