@@ -10,9 +10,10 @@ const MAX_PROMPT_CHARS = 4_000;
 
 /**
  * deps: { client, getSettings(), getKeys(), getHardware() → Promise<profile|null>,
- *         isPairConfigured() → Promise<boolean>, logger }
+ *         isPairConfigured() → Promise<boolean>, logger,
+ *         enforcePolicy — test seam only; absent ⇒ executeRoute uses the real Root Policy (C3b) }
  */
-export function createModelRouterRoute({ client, getSettings, getKeys, getHardware = async () => null, isPairConfigured = async () => false, logger = null }) {
+export function createModelRouterRoute({ client, getSettings, getKeys, getHardware = async () => null, isPairConfigured = async () => false, logger = null, enforcePolicy = undefined }) {
   const route = new Hono();
 
   async function snapshot() {
@@ -70,6 +71,7 @@ export function createModelRouterRoute({ client, getSettings, getKeys, getHardwa
           if (!candidate) throw new ModelRouteError('PROVIDER_UNAVAILABLE', 'Provider cloud non disponible.');
           return candidate.call(messages);
         },
+        enforcePolicy,
       });
       return c.json({ ok: true, decision: decision.decision, warnings: decision.warnings, result });
     } catch (err) { return fail(c, err, 'model_router.run'); }

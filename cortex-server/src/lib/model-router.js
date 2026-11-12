@@ -19,6 +19,7 @@ import { MODEL_CATALOG, MODEL_DISTRIBUTIONS } from './local-ai-catalog.js';
 import { evaluateModelFit } from './local-model-fit.js';
 import { getTotalVramBytes } from './local-hardware-profile.js';
 import { SAFE_PROVIDER_ERROR_MESSAGE, providerErrorHint, safeModelTag } from './provider-error-contract.js'; // [SEC-REMED-4]
+import { enforce as rootPolicyEnforce } from './root-policy/index.js';
 
 export const CAPABILITIES = Object.freeze(['TEXT', 'VISION', 'AUDIO', 'EMBEDDING', 'TOOL_USE', 'STRUCTURED_OUTPUT', 'IMAGE_GENERATION', 'LONG_CONTEXT']);
 /** Context length from which a model is tagged LONG_CONTEXT (tokens). */
@@ -420,9 +421,16 @@ function runCancellable(start, { signal, timeoutMs }) {
  * did not say which model answered — never filled with the requested one), usage { inputTokens, outputTokens,
  * totalTokens } (null when unknown), abortPropagated (null without a signal).
  */
-export async function executeRoute(route, { messages, responseFormat = 'text', runtimeOptions, timeoutMs = LIMITS.defaultTimeoutMs, registry = null, signal = null } = {}, { client, cloudCall } = {}) {
+export async function executeRoute(route, { messages, responseFormat = 'text', runtimeOptions, timeoutMs = LIMITS.defaultTimeoutMs, registry = null, signal = null } = {}, { client, cloudCall, enforcePolicy = rootPolicyEnforce } = {}) {
   if (!route?.ok) throw new ModelRouteError(route?.error?.code ?? 'NO_ROUTE', route?.error?.message ?? 'Aucune route.', { hint: route?.error?.hint ?? null });
   const { decision } = route;
+  // C3b: Root Policy AI_LOCAL_REQUEST (module `ai`) before any local model call — same request as the Companion local
+  // model. A denial (kill switch, lockdown, disabled module) stops here: the local runtime is never called.
+  if (decision.provider === 'ollama') {
+    try { enforcePolicy({ action: 'AI_LOCAL_REQUEST', module: 'ai', trustDomain: 'AI', context: { provider: 'ollama', networkClass: 'loopback' } }); } catch {
+      throw new ModelRouteError('ROOT_POLICY_DENIED', 'La politique de sécurité de Docteur a refusé la requête au modèle local.', { status: 403, detail: { provider: decision.provider, model: decision.model, stage: 'BEFORE_REQUEST' } });
+    }
+  }
   const timeout = Math.min(Math.max(Number(timeoutMs) || LIMITS.defaultTimeoutMs, LIMITS.timeoutMinMs), LIMITS.timeoutMaxMs);
   if (signal !== null && typeof signal?.aborted !== 'boolean') throw new ModelRouteError('INVALID_REQUEST', 'signal doit être un AbortSignal.', { status: 400 });
   if (signal?.aborted) throw new ModelRouteError('CANCELLED', 'Requête annulée avant l’appel.', { status: 499, detail: { provider: decision.provider, model: decision.model, stage: 'BEFORE_REQUEST' } });
