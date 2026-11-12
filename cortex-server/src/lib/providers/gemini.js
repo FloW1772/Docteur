@@ -262,6 +262,8 @@ export async function completeWithCascade({ apiKey, messages, maxTokens = 4096, 
 // Returns { text, model, sources: Array<{title, url}> }.
 // Throws with err.isQuota / err.isAuth / err.isModelNotFound on HTTP errors.
 export async function completeWithGrounding({ apiKey, model, prompt }) {
+  // C1c: same cloud guard as complete() — explicit cloud_enabled === true, Strict Local first, no private content.
+  guardCloudCall({ messages: [{ role: 'user', content: String(prompt ?? '') }], provider: 'gemini', functionCalled: 'completeWithGrounding' });
   await _waitForRateSlot();
 
   const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
