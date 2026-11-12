@@ -45,6 +45,37 @@ export class PrivacyViolationError extends Error {
   }
 }
 
+// C3c: credential shapes the Root Policy SECRET_SHAPES list (signed module, unchanged) does not cover. High precision
+// only — a fixed vendor prefix plus a long token body — so ordinary text, code and public keys are never blocked.
+const CLOUD_SECRET_SHAPES = Object.freeze([
+  /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/,         // OpenAI project / service-account / admin keys
+  /\b[sr]k_(?:live|test)_[A-Za-z0-9]{20,}/,                 // Stripe secret / restricted keys
+  /\bhf_[A-Za-z0-9]{30,}/,                                  // Hugging Face
+  /\bglpat-[A-Za-z0-9_-]{20,}/,                             // GitLab personal access token
+  /\bgh[osur]_[A-Za-z0-9]{36,}/,                            // GitHub OAuth / server / user / refresh tokens
+  /\bASIA[0-9A-Z]{16}\b/,                                   // AWS temporary access key id
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,       // any PEM / PGP private key block
+  /\bAGE-SECRET-KEY-1[0-9A-Z]{20,}/,                        // age secret key
+  /\bGOCSPX-[A-Za-z0-9_-]{20,}/,                            // Google OAuth client secret
+  /\bnpm_[A-Za-z0-9]{36}\b/,                                // npm access token
+  /\b\d{8,10}:AA[A-Za-z0-9_-]{33}\b/,                       // Telegram bot token
+]);
+
+export function containsCloudSecretShape(messages) {
+  let text;
+  try { text = JSON.stringify(messages) ?? ''; } catch { return false; }
+  return CLOUD_SECRET_SHAPES.some((re) => re.test(text));
+}
+
+export class SecretExposureError extends PrivacyViolationError {
+  constructor(provider, functionCalled) {
+    super(provider, functionCalled);
+    this.message = `Appel cloud bloqué : secret ou identifiant détecté (${provider} / ${functionCalled})`;
+    this.name = 'SecretExposureError';
+    this.reason = 'SECRET_SHAPE';
+  }
+}
+
 // Call at the top of every cloud provider complete() before any HTTP request.
 // Throws PrivacyViolationError and logs the incident (without content) if
 // private content is detected.
@@ -68,6 +99,11 @@ export function guardCloudCall({ messages, provider, functionCalled, simulate = 
     try { settings = getRouterSettings(); } catch { /* unreadable settings: cloud stays closed below */ }
     // C1a: cloud only on an explicit boolean opt-in — absent, null, non-boolean or unreadable never enables it.
     enforceCloudAi({ provider, messages, strictLocal: settings?.strict_local_mode === true, cloudEnabled: settings?.cloud_enabled === true });
+    // C3c: after the policy (Strict Local / opt-in refusals keep their order), the complementary credential shapes.
+    if (containsCloudSecretShape(messages)) {
+      try { insertPrivacyViolation({ functionCalled, providerTargeted: provider }); } catch { /* db might not be ready */ }
+      throw new SecretExposureError(provider, functionCalled);
+    }
   }
 }
 
