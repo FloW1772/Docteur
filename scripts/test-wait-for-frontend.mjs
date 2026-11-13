@@ -114,20 +114,38 @@ test('frontend process dies after starting: readiness is not latched from an ear
 });
 
 test('launcher: option 1 opens Chrome only after the HTTP gate, stops on failure; LAN options stay refused', () => {
+  // [STARTUP-2] the gate now runs inside scripts/docteur-launch.mjs (frontend probe = probeFrontend above, plus process
+  // identity); the .bat opens Chrome only when that sequence exits 0. Full contract: scripts/test-docteur-launch.mjs.
   const bat = fs.readFileSync('Docteur-Launcher.bat', 'utf8').replace(/\r\n/g, '\n');
   const pc = bat.slice(bat.indexOf(':MODE_PC'), bat.indexOf(':MODE_RESEAU'));
-  const frontend = pc.indexOf('start "Docteur Frontend" cmd /k "cd /d C:\\dev\\Docteur && npm run dev"');
-  const gate = pc.indexOf('node scripts/wait-for-frontend.mjs\nif errorlevel 1 goto STARTUP_STOPPED');
+  const gate = pc.indexOf('node scripts/docteur-launch.mjs %LAUNCH_ARGS%\nif errorlevel 10 goto BROWSER_ALREADY_OPEN\nif errorlevel 1 goto STARTUP_STOPPED');
   const chrome = pc.indexOf('start chrome --app=http://localhost:5173');
-  assert.ok(frontend > 0 && gate > frontend && chrome > gate, 'frontend start < HTTP gate < Chrome');
+  assert.ok(gate > 0 && chrome > gate, 'gated launch < Chrome');
   assert.ok(!/timeout \/t \d+[^\n]*\n[^\n]*\n?echo Ouverture de Chrome/.test(pc), 'no blind delay before Chrome');
   assert.ok(!pc.includes('dev:local'), 'mode PC never uses the LAN dev server');
-  assert.ok(pc.indexOf('node scripts/wait-for-cortex.mjs') < frontend, 'backend readiness still precedes the frontend');
-  assert.match(pc, /call :FREE_PORTS\nif errorlevel 1 goto STARTUP_STOPPED/);
+  const launch = fs.readFileSync('scripts/docteur-launch.mjs', 'utf8');
+  assert.match(launch, /import \{ DEFAULT_URL as FRONTEND_URL, loopbackTarget, probeFrontend \} from '\.\/wait-for-frontend\.mjs';/);
+  assert.ok(launch.indexOf('await waitBackendReady(') < launch.indexOf("d.startService('frontend')"), 'backend readiness still precedes the frontend');
   const stopped = bat.slice(bat.indexOf(':STARTUP_STOPPED'), bat.indexOf(':QUITTER'));
-  assert.ok(stopped.includes('pause') && stopped.includes('exit /b 1') && !/start |taskkill/.test(stopped), 'stop path: no Chrome, nothing killed');
+  assert.ok(stopped.includes('pause') && stopped.includes('exit /b 1') && !/^start |taskkill/m.test(stopped), 'stop path: no Chrome, nothing killed');
   for (const label of ['MODE_RESEAU', 'MODE_MOBILE']) assert.match(bat, new RegExp(`:${label}\\nREM [^\\n]*\\ngoto LAN_REFUSED\\n`), label);
-  const free = bat.slice(bat.indexOf(':FREE_FRONTEND_PORT'));
-  assert.ok(free.indexOf('node scripts/wait-for-frontend.mjs --identify') < free.indexOf('taskkill /PID %~1'), '5173 is killed only after identification');
-  assert.match(free, /if errorlevel 1 \(\n\s+set "PORT_BUSY=1"/);
+  assert.ok(!/taskkill/i.test(bat), '5173 (and 3001) are never killed by the launcher any more: a healthy Docteur frontend is reused');
+});
+
+test('launcher: runs from its own folder (no hard-coded checkout path), so any checkout launches itself', () => {
+  // [H1] the .bat used to `cd /d` into one fixed checkout; a second checkout (clean worktree) would have launched the first.
+  const BS = String.fromCharCode(92);
+  const lines = fs.readFileSync('Docteur-Launcher.bat', 'utf8').replace(/\r\n/g, '\n').split('\n');
+  const menu = lines.indexOf(':MENU');
+  const cdSelf = lines.indexOf('cd /d "%~dp0"');
+  assert.ok(cdSelf > 0 && cdSelf < menu, 'the launcher moves to its own folder before the menu');
+  assert.equal(lines[cdSelf + 1], 'set "DOCTEUR_ROOT=%CD%"', 'the repository root is captured right after');
+  const absolute = new RegExp('[A-Za-z]:' + BS + BS);
+  const allowed = 'C:' + BS + 'Program Files' + BS + 'Google' + BS + 'Chrome' + BS;
+  for (const l of lines.filter(x => absolute.test(x))) assert.ok(l.includes(allowed), `only the standard Chrome install path may be absolute: ${l}`);
+  for (const l of lines.filter(x => /cd \/d /i.test(x))) {
+    assert.match(l, /cd \/d "(%~dp0|%DOCTEUR_ROOT%[^"]*)"/, `every cd targets this checkout, quoted: ${l.trim()}`);
+  }
+  const check = lines.filter(x => x.includes('check-docteur.bat"'));
+  assert.ok(check.length >= 2 && check.every(x => x.includes('"%DOCTEUR_ROOT%' + BS + 'check-docteur.bat"')), 'option 4 runs this checkout\'s check script');
 });
